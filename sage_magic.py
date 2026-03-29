@@ -588,11 +588,11 @@ def _render_markdown_with_files(text: str) -> bool:
 # Agent streaming with tool detail display
 # ---------------------------------------------------------------------------
 
-async def _run_agent_async(prompt: str) -> str:
+async def _run_agent_async(prompt: str) -> tuple[str, dict]:
     """Create and stream the agent, displaying tool calls with details.
 
-    Returns the final text response so the caller can render it with
-    embedded file references via _render_markdown_with_files().
+    Returns (final_text, tool_counts) where tool_counts is a dict mapping
+    tool name → number of times it was invoked in this cell.
     """
     from IPython.display import display, Markdown
 
@@ -628,6 +628,7 @@ async def _run_agent_async(prompt: str) -> str:
     tool_call_buffers: dict = {}
     displayed_tool_ids: set = set()
     text_buffer: list[str] = []
+    tool_counts: dict = {}  # tool_name → invocation count for this cell
 
     # Dedup state: track msg_id transitions to catch text→text (no tool call) duplicates.
     _cur_text_msg_id: list = [None]
@@ -738,6 +739,7 @@ async def _run_agent_async(prompt: str) -> str:
             # Flush any pending narration before showing the tool call
             _flush_text()
             _display_tool_call(buf["name"], parsed_args)
+            tool_counts[buf["name"]] = tool_counts.get(buf["name"], 0) + 1
 
     # Content-based fallback: if the same message was emitted twice with the same
     # msg_id (msg_id dedup can't catch it), the buffer contains identical duplicated
@@ -750,7 +752,7 @@ async def _run_agent_async(prompt: str) -> str:
         repeat_pos = final.find(marker, half - 5)
         if repeat_pos > 0:
             final = final[:repeat_pos].strip()
-    return final
+    return final, tool_counts
 
 
 # ---------------------------------------------------------------------------
@@ -846,12 +848,27 @@ try:
         # Snapshot output folder before run
         before = _snapshot(SAGE_OUTPUT_DIR)
 
-        # Run agent with streaming tool display; get back the final report text.
+        # Run agent with streaming tool display; get back final report + tool counts.
         # Use run_until_complete on the existing loop (patched by nest_asyncio)
         # instead of asyncio.run(), which conflicts with Python 3.13's task cleanup.
-        final_text = asyncio.get_event_loop().run_until_complete(
+        import time as _time
+        _t_start = _time.time()
+        final_text, tool_counts = asyncio.get_event_loop().run_until_complete(
             _run_agent_async(full_prompt)
         )
+        _elapsed = round(_time.time() - _t_start, 1)
+
+        # Append run entry to .sage_run.jsonl (hidden file, never deleted by %reset)
+        _log_path = Path(SAGE_OUTPUT_DIR) / ".sage_run.jsonl"
+        _log_entry = {
+            "timestamp": datetime.now(UTC).isoformat(),
+            "prompt": prompt[:200] + ("…" if len(prompt) > 200 else ""),
+            "elapsed_sec": _elapsed,
+            "tool_calls": tool_counts,
+            "total_tool_calls": sum(tool_counts.values()),
+        }
+        with open(_log_path, "a", encoding="utf-8") as _lf:
+            _lf.write(json.dumps(_log_entry) + "\n")
 
         # Update conversation history for cross-cell memory
         SAGE_MESSAGES.append({"role": "user", "content": prompt})
@@ -887,11 +904,13 @@ try:
         import shutil
         from IPython.display import display, Markdown
 
-        # Clear output files
+        # Clear output files — keep sage_run.jsonl so run history accumulates
         output_path = Path(SAGE_OUTPUT_DIR)
         files_deleted = 0
         if output_path.exists():
             for f in output_path.iterdir():
+                if f.name == ".sage_run.jsonl":
+                    continue
                 if f.is_file():
                     f.unlink()
                     files_deleted += 1
