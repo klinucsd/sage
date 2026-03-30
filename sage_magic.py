@@ -858,7 +858,7 @@ try:
         )
         _elapsed = round(_time.time() - _t_start, 1)
 
-        # Append run entry to .sage_run.jsonl (hidden file, never deleted by %reset)
+        # Append run entry to .sage_run.jsonl (hidden file, cleared by %reset)
         _log_path = Path(SAGE_OUTPUT_DIR) / ".sage_run.jsonl"
         _log_entry = {
             "timestamp": datetime.now(UTC).isoformat(),
@@ -904,13 +904,11 @@ try:
         import shutil
         from IPython.display import display, Markdown
 
-        # Clear output files — keep sage_run.jsonl so run history accumulates
+        # Clear output files including .sage_run.jsonl (reset = start fresh)
         output_path = Path(SAGE_OUTPUT_DIR)
         files_deleted = 0
         if output_path.exists():
             for f in output_path.iterdir():
-                if f.name == ".sage_run.jsonl":
-                    continue
                 if f.is_file():
                     f.unlink()
                     files_deleted += 1
