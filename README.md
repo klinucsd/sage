@@ -187,13 +187,22 @@ All generated files (scripts, GeoJSON, CSV, PNG) are saved to `_{notebook_name}_
 
 ### Built-in skills
 
+These four skills ship with every Sage deployment.
+
 | Skill | Data Source | Description |
 |---|---|---|
-| `skillsmp` | SkillsMP marketplace | Discover and install skills from the community catalog |
-| `sage-metrics` | Local `.sage_run.jsonl` logs | Analyze execution metrics across notebooks |
+| `skillsmp` | SkillsMP marketplace | Discover and install community skills from the [SkillsMP](https://skillsmp.com) catalog |
+| `sage-metrics` | Local `.sage_run.jsonl` logs | Analyze execution metrics and self-correction counts across notebooks |
+| `us-states` | KnowWhereGraph / FRINK | US state geometries as GeoDataFrames |
+| `us-counties` | KnowWhereGraph / FRINK | US county geometries as GeoDataFrames |
+
+### Example skills
+
+These skills are included as working examples used by the [demo notebooks](#demo-notebooks). They illustrate how to connect Sage to real scientific data services and can serve as templates for writing your own skills.
+
+| Skill | Data Source | Description |
+|---|---|---|
 | `usgs-earthquake-events` | USGS Earthquake Catalog | Fetch seismic events as GeoDataFrames |
-| `us-states` | KnowWhereGraph / FRINK | US state geometries |
-| `us-counties` | KnowWhereGraph / FRINK | US county geometries |
 | `ndp-search` | NDP OpenSearch catalog | Search the National Data Platform dataset catalog |
 | `ndp-workspaces` | NDP Workspace API | List and filter NDP JupyterHub workspace configs |
 | `kanawha-flood-depth` | USACE HEC-RAS / GeoServer | Flood depth for the Kanawha River at a given flow |
