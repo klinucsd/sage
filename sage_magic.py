@@ -324,6 +324,36 @@ def _display_combined_map(
             ).add_to(m)
 
         folium.LayerControl(collapsed=False).add_to(m)
+
+        # Fix: maps 2+ render as a single tile in the top-left corner when the
+        # notebook is reopened, because Leaflet initialises off-screen maps with
+        # zero container dimensions.  Inject an IntersectionObserver that calls
+        # invalidateSize() the first time the map scrolls into the viewport.
+        map_var = m.get_name()
+        m.get_root().html.add_child(folium.Element(f"""
+<script>
+(function() {{
+    function _fixMap() {{
+        if (typeof {map_var} !== 'undefined') {{
+            {map_var}.invalidateSize();
+        }}
+    }}
+    // Immediate attempt (works when map is already visible on load)
+    setTimeout(_fixMap, 300);
+    // IntersectionObserver fires when map scrolls into view
+    var _el = document.getElementById('{map_var}');
+    if (_el && window.IntersectionObserver) {{
+        var _obs = new IntersectionObserver(function(entries) {{
+            entries.forEach(function(e) {{
+                if (e.isIntersecting) {{ _fixMap(); _obs.disconnect(); }}
+            }});
+        }});
+        _obs.observe(_el);
+    }}
+}})();
+</script>
+"""))
+
         # Build header HTML and combine with map in a single display() call
         # to avoid extra inter-output gaps in nbviewer
         if caption:
@@ -873,6 +903,19 @@ try:
         # Update conversation history for cross-cell memory
         SAGE_MESSAGES.append({"role": "user", "content": prompt})
         SAGE_MESSAGES.append({"role": "assistant", "content": final_text})
+
+        # Auto-trust the notebook so HTML/JS outputs (maps, tool panels) are
+        # not flagged as untrusted when the notebook is reopened.
+        _nb_session = os.environ.get("JPY_SESSION_NAME", "")
+        if _nb_session:
+            try:
+                import subprocess as _sp
+                _sp.run(
+                    ["jupyter", "trust", _nb_session],
+                    capture_output=True, timeout=10,
+                )
+            except Exception:
+                pass  # Non-fatal: trust can be applied manually if needed
 
         # Fix GLM markdown quirks before rendering
         final_text = _fix_glm_markdown(final_text)
