@@ -341,9 +341,10 @@ def _display_combined_map(
         folium.LayerControl(collapsed=False).add_to(m)
 
         # Fix: maps 2+ render as a single tile in the top-left corner when the
-        # notebook is reopened, because Leaflet initialises off-screen maps with
-        # zero container dimensions.  Inject an IntersectionObserver that calls
-        # invalidateSize() the first time the map scrolls into the viewport.
+        # notebook is reopened.  Folium maps run inside iframes, so
+        # IntersectionObserver cannot detect parent-page scroll position.
+        # Instead, retry invalidateSize() at increasing intervals so that
+        # even the last map on the page is fixed before the user scrolls to it.
         map_var = m.get_name()
         m.get_root().html.add_child(folium.Element(f"""
 <script>
@@ -353,18 +354,9 @@ def _display_combined_map(
             {map_var}.invalidateSize();
         }}
     }}
-    // Immediate attempt (works when map is already visible on load)
-    setTimeout(_fixMap, 300);
-    // IntersectionObserver fires when map scrolls into view
-    var _el = document.getElementById('{map_var}');
-    if (_el && window.IntersectionObserver) {{
-        var _obs = new IntersectionObserver(function(entries) {{
-            entries.forEach(function(e) {{
-                if (e.isIntersecting) {{ _fixMap(); _obs.disconnect(); }}
-            }});
-        }});
-        _obs.observe(_el);
-    }}
+    [300, 1000, 2000, 4000].forEach(function(ms) {{
+        setTimeout(_fixMap, ms);
+    }});
 }})();
 </script>
 """))
