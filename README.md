@@ -74,13 +74,14 @@ Sage works with any LangChain-compatible LLM endpoint. Configure your preferred 
 
 ## Demo Notebooks
 
-See Sage in action across three scientific domains:
+See Sage in action across four scientific domains:
 
 | Notebook | Description | View |
 |---|---|---|
 | [earthquake_gnss.ipynb](examples/earthquake_gnss.ipynb) | USGS earthquake discovery → GNSS station search → time-series displacement analysis → null coseismic result interpretation | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/earthquake_gnss.ipynb) |
 | [flood_impacts.ipynb](examples/flood_impacts.ipynb) | Kanawha River flood depth → school and commercial building impacts → elderly population exposure | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/flood_impacts.ipynb) |
 | [skills_manage.ipynb](examples/skills_manage.ipynb) | SkillsMP marketplace search → live skill installation → hurricane emergency response planning | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/skills_manage.ipynb) |
+| [fusion_study.ipynb](examples/fusion_study.ipynb) | DIII-D tokamak analysis: plasma shape characterization, current and energy evolution, multi-shot elongation statistics | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/fusion_study.ipynb) |
 
 ---
 
