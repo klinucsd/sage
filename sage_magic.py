@@ -257,9 +257,24 @@ def _display_combined_map(
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", message="Non closed ring")
                     gdf = gpd.read_file(path)
+                import numpy as _np
                 for col in gdf.columns:
+                    if col == "geometry":
+                        continue
                     if str(gdf[col].dtype).startswith("datetime"):
                         gdf[col] = gdf[col].astype(str)
+                    elif gdf[col].dtype == object:
+                        # Array-valued properties (e.g. "tags", "resource_formats")
+                        # are read by geopandas as numpy arrays, which Folium cannot
+                        # serialize to JSON. Convert them to comma-joined strings.
+                        try:
+                            gdf[col] = gdf[col].apply(
+                                lambda v: ", ".join(str(x) for x in v)
+                                if isinstance(v, (_np.ndarray, list))
+                                else v
+                            )
+                        except Exception:
+                            pass
                 geojson_layers.append((path.stem, gdf))
             except Exception:
                 continue
