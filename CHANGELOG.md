@@ -1,0 +1,154 @@
+# Changelog
+
+All notable changes to the Sage Docker image are documented here.
+
+---
+
+## v1.0.72 — 2026-04-01
+- Fix: add `jupyter_config.py` alongside `jupyter_server_config.py` so the `jupyter trust` CLI and JupyterLab server both use the same persistent notary paths
+
+## v1.0.71 — 2026-04-01
+- Fix: also persist the notary **secret key** on persistent storage; a new secret is generated on every pod restart, invalidating all signatures in the DB even when the DB was persisted
+
+## v1.0.70 — 2026-04-01
+- Fix: API errors (rate limit, authentication, connection) now show a clean inline message instead of a 600-line traceback
+
+## v1.0.69 — 2026-04-01
+- Fix: extend notary DB persistence to local Docker users (uses mounted work dir `-v ~/workspace:/home/jovyan/work`)
+
+## v1.0.68 — 2026-04-01
+- Fix: replace timed retries with `ResizeObserver` for Folium map rendering; fires exactly when JupyterLab adds the cell to the DOM and the map container gets real dimensions — reliably fixes corner-tile bug for all maps on notebook reopen
+
+## v1.0.67 — 2026-04-01
+- Fix: redirect notary database to NRP CephBlock persistent storage so notebook trust survives JupyterHub pod restarts
+
+## v1.0.66 — 2026-04-01
+- Fix: replace `IntersectionObserver` with multiple timed retries of `invalidateSize()` for Folium maps (IntersectionObserver fires immediately inside iframe context, ignoring parent-page scroll)
+
+## v1.0.65 — 2026-04-01
+- Fix: GeoJSON properties containing arrays (e.g. `tags`, `resource_formats`) caused "ndarray is not JSON serializable" map render error; geopandas reads JSON arrays as numpy ndarrays — convert to comma-joined strings before passing to Folium
+
+## v1.0.64 — 2026-03-29
+- Fix: inject `IntersectionObserver` into each Folium map to call `invalidateSize()` when scrolled into view; fixes corner-tile bug for maps 2+ on notebook reopen
+- Fix: auto-run `jupyter trust` after each `%%ask` run so HTML/JS outputs are not flagged as untrusted on reopen
+
+## v1.0.63 — 2026-03-29
+- Change: `%reset` now clears `.sage_run.jsonl` execution log (reset = start completely fresh)
+
+## v1.0.62 — 2026-03-28
+- Fix: `sage-metrics` skill — added CRITICAL "do not search for log files" rule; fixed bare stem resolution so `earthquake_gnss` (no `.ipynb`) works as well as `earthquake_gnss.ipynb`
+
+## v1.0.61 — 2026-03-27
+- Fix: re-push of v1.0.60 under new tag (NRP had cached v1.0.60 before the final skill was ready)
+
+## v1.0.60 — 2026-03-27
+- Feature: rename log file to `.sage_run.jsonl` (hidden, won't clutter output folder)
+- Feature: add `sage-metrics` built-in skill for analyzing execution metrics and self-correction counts across notebooks
+
+## v1.0.59 — 2026-03-26
+- Feature: per-cell execution logging to `.sage_run.jsonl` — records timestamp, prompt, elapsed time, tool call counts; `%reset` preserves log
+
+## v1.0.58 — 2026-03-25
+- Fix: strip single-column table rows (`| content |` → `content`)
+- Fix: `asyncio.run()` → `loop.run_until_complete()` for Python 3.13 compatibility
+- Fix: suppress pyogrio "Non closed ring" warning on GeoJSON load
+
+## v1.0.57 — 2026-03-24
+- Fix: bold marker regex Phase 2b — `[^*]` → `[^*\n]` to prevent cross-line matching that was inserting spaces into unrelated bold pairs
+
+## v1.0.55–v1.0.56 — 2026-03-24
+- Debug: added logging to trace bold corruption; discovered cross-line matching bug fixed in v1.0.57
+
+## v1.0.54 — 2026-03-24
+- Fix: complete rewrite of bold `**` regex strategy — Phase 1 uses paired regex for internal spacing; Phase 2 uses narrowed `\w**\w` patterns to prevent cross-pair matching
+
+## v1.0.53 — 2026-03-23
+- Fix: skillsmp SKILL.md — forceful CRITICAL instruction to always run API key-loading code
+
+## v1.0.52 — 2026-03-23
+- Fix: table layout regression — `##` heading regex now excludes `|`, `#`, whitespace as preceding char so table cells like `| # Tag |` are not broken
+
+## v1.0.44–v1.0.51 — 2026-03-22
+- Fix/Feature: skillsmp SKILL.md rewrites; `%reset` magic; image dimension caps; code fence fix; heading-newline fix; numbered list fix; bold regex improvements
+
+## v1.0.43 — 2026-03-21
+- Fix: GLM writes multiple table rows on one line — split collapsed rows; add prompt rule for table formatting
+
+## v1.0.42 — 2026-03-21
+- Fix: skillsmp SKILL.md — use `dotenv.load_dotenv()` for key loading; add skill lookup by name
+
+## v1.0.41 — 2026-03-21
+- Fix: skillsmp SKILL.md — correct API key loading order; always use Python for API calls (never curl)
+
+## v1.0.40 — 2026-03-20
+- Fix: bold marker regex — use `\s+` to catch non-breaking space (U+00A0) and other Unicode whitespace GLM emits after `**`
+
+## v1.0.39 — 2026-03-20
+- Fix: escape all `$` as `&#36;` to prevent JupyterLab MathJax from consuming `$...$` spans
+- Fix: skip silently when a referenced file is not found (was showing broken "Image" alt text)
+
+## v1.0.38 — 2026-03-20
+- Fix: apply `_fix_glm_markdown` in streaming narration (`_flush_text`) as well as final report — bold markers in mid-stream text were going unpatched
+
+## v1.0.37 — 2026-03-19
+- Fix: inject `sys.executable` path into prompt so agent uses the correct Python interpreter without searching
+
+## v1.0.36 — 2026-03-19
+- Fix: broken table separator rows from GLM (`|:Label:|` → `|---|`); moved all GLM markdown fixes into shared `_fix_glm_markdown()`
+
+## v1.0.35 — 2026-03-19
+- Fix: double-display bug — `_render_markdown_with_files` was displaying remaining text even when no file refs found, then returning False, causing caller to display again
+
+## v1.0.18–v1.0.34 — 2026-03-15 to 2026-03-18
+- Rework: agent backend refactored to use `create_deep_agent` + `LocalShellBackend`; `SAGE_MESSAGES` for cross-cell memory; message deduplication in streaming loop
+
+## v1.0.17 — 2026-03-14
+- Fix: insert space after closing `**` bold markers when immediately followed by non-space (GLM quirk)
+
+## v1.0.16 — 2026-03-14
+- Fix: PNG display — max-width 600px, width:auto (caps large images, no upscaling)
+
+## v1.0.15 — 2026-03-13
+- Fix: robust duplicate message detection — detect text→text transition with no tool call in between in streaming loop; discard second message at source
+
+## v1.0.14 — 2026-03-13
+- Fix: improved duplicate detection search range (35–65%); superseded by v1.0.15
+
+## v1.0.13 — 2026-03-13
+- Fix: prompt rule with correct/wrong example to prevent agent from creating separate maps for layers that should be combined
+
+## v1.0.12 — 2026-03-12
+- Fix: duplicate final summary — LangGraph replays final AIMessage with `durability="exit"`; strip exact duplication before returning
+
+## v1.0.11 — 2026-03-12
+- Feature: integrated markdown output — agent embeds `![caption](file.geojson)` and `![caption](file.png)` inline in final report; `_render_markdown_with_files()` renders maps/images where referenced
+
+## v1.0.10 — 2026-03-11
+- Fix: `bash: n#: command not found` error in terminal — use `printf` instead of `echo` for `.bashrc` newline
+
+## v1.0.9 — 2026-03-10
+- Fix: add 12px bottom margin after each tool call panel for cleaner visual separation
+
+## v1.0.8 — 2026-03-10
+- Fix: narration now displays in correct order — before each tool call, not all at end
+
+## v1.0.7 — 2026-03-09
+- Fix: prevent agent from reading binary files (PNG, GeoTIFF) with `read_file` — they crash the agent
+
+## v1.0.6 — 2026-03-09
+- Feature: thinking-out-loud narration before each tool call; PNG display capped at 800px wide
+
+## v1.0.5 — 2026-03-08
+- Feature: persistent output directory next to notebook (`_{notebook_stem}_sage_/`); fallback to `/tmp/sage/{thread_id}` for terminal kernels
+
+## v1.0.4 — 2026-03-07
+- Feature: add `rasterio`; add 4 Kanawha flood skills (`kanawha-flood-depth`, `kanawha-reach-impact`, `kanawha-cikr-impact`, `kanawha-nsi-impact`)
+
+## v1.0.3 — 2026-03-06
+- Feature: WMS layer support — `.wms.json` files auto-displayed on combined Folium map
+
+## v1.0.2 — 2026-03-05
+- Fix: short thread ID (8 chars); all generated files directed to output dir instead of `/tmp`
+
+## v1.0.1 — 2026-03-04
+- Initial release: Sage image with `%ask`/`%%ask` magic, NRP GLM-4.7 provider, core sage_skills

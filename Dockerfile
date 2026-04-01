@@ -56,6 +56,7 @@ COPY sage_skills /tmp/build/skills
 COPY apply_sage_patch.py /tmp/build/
 COPY sage_magic.py /tmp/build/
 COPY jupyter_server_config.py /tmp/build/
+COPY jupyter_config.py /tmp/build/
 
 # -----------------------------------------------------------------------------
 # Step 3: Apply Sage Patches to config.py
@@ -94,9 +95,13 @@ RUN mkdir -p /home/jovyan/.ipython/profile_default/startup && \
     cp /tmp/build/sage_magic.py \
        /home/jovyan/.ipython/profile_default/startup/00-sage-magic.py
 
-# Store notebook trust DB on persistent storage so signatures survive pod restarts
+# Store notebook trust DB and secret on persistent storage so signatures survive pod restarts.
+# jupyter_config.py is loaded by ALL jupyter commands (including `jupyter trust` CLI).
+# jupyter_server_config.py is loaded by Jupyter Server (JupyterLab).
+# Both are needed so the same persistent paths are used by server and CLI.
 RUN mkdir -p /home/jovyan/.jupyter && \
-    cp /tmp/build/jupyter_server_config.py /home/jovyan/.jupyter/jupyter_server_config.py
+    cp /tmp/build/jupyter_server_config.py /home/jovyan/.jupyter/jupyter_server_config.py && \
+    cp /tmp/build/jupyter_config.py /home/jovyan/.jupyter/jupyter_config.py
 
 # Source persistent .env in .bashrc so terminal users get NRP_API_KEY
 # regardless of which task folder they work in.
