@@ -341,10 +341,13 @@ def _display_combined_map(
         folium.LayerControl(collapsed=False).add_to(m)
 
         # Fix: maps 2+ render as a single tile in the top-left corner when the
-        # notebook is reopened.  Folium maps run inside iframes, so
-        # IntersectionObserver cannot detect parent-page scroll position.
-        # Instead, retry invalidateSize() at increasing intervals so that
-        # even the last map on the page is fixed before the user scrolls to it.
+        # notebook is reopened.  JupyterLab uses cell windowing — off-screen
+        # cells are not added to the DOM until scrolled into view, so their
+        # iframes don't exist yet when the page loads.  When an iframe is finally
+        # created, the map container briefly has wrong dimensions.
+        # ResizeObserver fires as soon as the container gets its real size,
+        # which is the correct moment to call invalidateSize().
+        # Timed retries are kept as a fallback for browsers without ResizeObserver.
         map_var = m.get_name()
         m.get_root().html.add_child(folium.Element(f"""
 <script>
@@ -354,9 +357,24 @@ def _display_combined_map(
             {map_var}.invalidateSize();
         }}
     }}
-    [300, 1000, 2000, 4000].forEach(function(ms) {{
-        setTimeout(_fixMap, ms);
-    }});
+    var _el = document.getElementById('{map_var}');
+    if (_el && window.ResizeObserver) {{
+        var _ro = new ResizeObserver(function(entries) {{
+            for (var i = 0; i < entries.length; i++) {{
+                var r = entries[i].contentRect;
+                if (r.width > 0 && r.height > 0) {{
+                    _fixMap();
+                    _ro.disconnect();
+                    break;
+                }}
+            }}
+        }});
+        _ro.observe(_el);
+    }} else {{
+        [300, 1000, 2000, 4000].forEach(function(ms) {{
+            setTimeout(_fixMap, ms);
+        }});
+    }}
 }})();
 </script>
 """))
