@@ -228,6 +228,36 @@ def _new_files(before: dict, after: dict) -> list:
     ]
 
 
+# Internal files that should never be tracked as cell outputs
+_SAGE_INTERNAL_FILES = {".sage_cells.json", ".sage_run.jsonl"}
+
+
+def _get_cell_id() -> str | None:
+    """Return the current cell's unique ID from IPython kernel metadata, or None."""
+    try:
+        return get_ipython().parent_header.get('metadata', {}).get('cellId')  # noqa: F821
+    except Exception:
+        return None
+
+
+def _load_cell_registry() -> dict:
+    """Load .sage_cells.json — maps cell_id → list of files it created."""
+    p = Path(SAGE_OUTPUT_DIR) / ".sage_cells.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_cell_registry(registry: dict) -> None:
+    """Persist .sage_cells.json."""
+    (Path(SAGE_OUTPUT_DIR) / ".sage_cells.json").write_text(
+        json.dumps(registry, indent=2)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Output file display
 # ---------------------------------------------------------------------------
@@ -900,6 +930,20 @@ try:
             f"{prompt}"
         )
 
+        # True rerun: delete only this cell's previous output files so a rerun
+        # starts clean without affecting files produced by other cells.
+        cell_id = _get_cell_id()
+        if cell_id:
+            _reg = _load_cell_registry()
+            for _f in _reg.get(cell_id, []):
+                try:
+                    Path(_f).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if cell_id in _reg:
+                del _reg[cell_id]
+                _save_cell_registry(_reg)
+
         # Snapshot output folder before run
         before = _snapshot(SAGE_OUTPUT_DIR)
 
@@ -907,10 +951,32 @@ try:
         # Use run_until_complete on the existing loop (patched by nest_asyncio)
         # instead of asyncio.run(), which conflicts with Python 3.13's task cleanup.
         import time as _time
+        from IPython.display import display, HTML
         _t_start = _time.time()
-        final_text, tool_counts = asyncio.get_event_loop().run_until_complete(
-            _run_agent_async(full_prompt)
-        )
+        try:
+            final_text, tool_counts = asyncio.get_event_loop().run_until_complete(
+                _run_agent_async(full_prompt)
+            )
+        except Exception as _err:
+            _err_str = str(_err)
+            _err_type = type(_err).__name__
+            # Classify common API errors for a user-friendly message
+            if "429" in _err_str or "RateLimitError" in _err_type or "limit" in _err_str.lower():
+                import re as _re
+                _reset = _re.search(r"reset at ([^'\"}\s]+\s+[^'\"}\s]+)", _err_str)
+                _reset_msg = f"<br>Limit resets at: <b>{_reset.group(1)}</b>" if _reset else ""
+                _msg = f"⏳ <b>Rate limit reached.</b>{_reset_msg}<br>Please wait and try again."
+            elif "401" in _err_str or "AuthenticationError" in _err_type or "api key" in _err_str.lower():
+                _msg = "🔑 <b>Authentication failed.</b> Check that your API key is set correctly."
+            elif "ConnectionError" in _err_type or "connect" in _err_str.lower():
+                _msg = "🔌 <b>Connection error.</b> Check your network and try again."
+            else:
+                _msg = f"❌ <b>{_err_type}:</b> {_err_str[:300]}"
+            display(HTML(
+                f'<div style="background:#fff3cd; border-left:4px solid #f0ad4e; '
+                f'padding:10px 14px; margin:6px 0; font-size:0.95em;">{_msg}</div>'
+            ))
+            return
         _elapsed = round(_time.time() - _t_start, 1)
 
         # Append run entry to .sage_run.jsonl (hidden file, cleared by %reset)
@@ -945,6 +1011,17 @@ try:
         # Fix GLM markdown quirks before rendering
         final_text = _fix_glm_markdown(final_text)
 
+        # Compute new/modified files and update the cell registry so reruns
+        # only delete this cell's outputs, not other cells' files.
+        after = _snapshot(SAGE_OUTPUT_DIR)
+        new = _new_files(before, after)
+        if cell_id:
+            _trackable = [f for f in new if Path(f).name not in _SAGE_INTERNAL_FILES]
+            if _trackable:
+                _reg = _load_cell_registry()
+                _reg[cell_id] = _trackable
+                _save_cell_registry(_reg)
+
         # Render the final report — file references become maps/images inline
         rendered = _render_markdown_with_files(final_text)
 
@@ -953,8 +1030,6 @@ try:
             if final_text.strip():
                 from IPython.display import display, Markdown
                 display(Markdown(final_text))
-            after = _snapshot(SAGE_OUTPUT_DIR)
-            new = _new_files(before, after)
             if new:
                 _display_new_outputs(new)
 
@@ -984,14 +1059,15 @@ try:
                     shutil.rmtree(f)
                     files_deleted += 1
 
-        # Clear conversation history
+        # Clear conversation history and cell registry
         global SAGE_MESSAGES
         SAGE_MESSAGES.clear()
 
         display(Markdown(
             f"**Sage reset.**\n"
             f"- Output folder cleared: `{SAGE_OUTPUT_DIR}` ({files_deleted} items removed)\n"
-            f"- Conversation history cleared"
+            f"- Conversation history cleared\n"
+            f"- Cell file registry cleared"
         ))
 
     del reset  # keep IPython namespace clean
