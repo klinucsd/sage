@@ -1063,22 +1063,8 @@ try:
         global SAGE_MESSAGES
         SAGE_MESSAGES.clear()
 
-        # Show a brief confirmation, then clear all cell outputs in the notebook.
-        # The JS runs after a short delay so the message is visible for a moment
-        # before everything disappears. Works in JupyterLab and classic notebook.
-        from IPython.display import display, Markdown, Javascript
-        display(Markdown("**Sage reset.** Clearing all cell outputs..."))
-        display(Javascript("""
-setTimeout(function() {
-    if (window.jupyterapp) {
-        window.jupyterapp.commands.execute('notebook:clear-all-cell-outputs');
-    } else if (window.jupyterApp) {
-        window.jupyterApp.commands.execute('notebook:clear-all-cell-outputs');
-    } else if (typeof Jupyter !== 'undefined') {
-        Jupyter.notebook.clear_all_output();
-    }
-}, 1500);
-"""))
+        from IPython.display import display, Markdown
+        display(Markdown("**Sage reset.** Output folder cleared, history cleared."))
 
     del reset  # keep IPython namespace clean
 
