@@ -1063,8 +1063,44 @@ try:
         global SAGE_MESSAGES
         SAGE_MESSAGES.clear()
 
-        from IPython.display import display, Markdown
+        from IPython.display import display, Markdown, HTML
         display(Markdown("**Sage reset.** Output folder cleared, history cleared."))
+        display(HTML("""
+<script>
+(function() {
+    setTimeout(function() {
+        var content = document.querySelector('.jp-scrollbar-tiny > .lm-MenuBar-content');
+        if (!content) return;
+        var editItem = null;
+        Array.from(content.children).forEach(function(c) {
+            if (c.textContent.trim() === 'Edit') editItem = c;
+        });
+        if (!editItem) return;
+        var rect = editItem.getBoundingClientRect();
+        editItem.dispatchEvent(new MouseEvent('mousedown', {
+            bubbles: true, cancelable: true,
+            clientX: rect.left + rect.width/2, clientY: rect.top + rect.height/2
+        }));
+        setTimeout(function() {
+            var labels = document.querySelectorAll('.lm-Menu-itemLabel');
+            labels.forEach(function(lbl) {
+                if (lbl.textContent.trim() === 'Clear Outputs of All Cells') {
+                    var menuItem = lbl.closest('.lm-Menu-item');
+                    var menuNode = menuItem.closest('.lm-Menu');
+                    var r = menuItem.getBoundingClientRect();
+                    var opts = {
+                        bubbles: true, cancelable: true,
+                        clientX: r.left + r.width/2, clientY: r.top + r.height/2
+                    };
+                    menuNode.dispatchEvent(new MouseEvent('mousemove', opts));
+                    menuNode.dispatchEvent(new MouseEvent('mouseup', opts));
+                }
+            });
+        }, 80);
+    }, 1500);
+})();
+</script>
+"""))
 
     del reset  # keep IPython namespace clean
 
