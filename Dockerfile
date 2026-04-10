@@ -53,6 +53,7 @@ RUN pip install --no-cache-dir "deepagents-cli[openai]" nest_asyncio folium geop
 # Step 2: Copy Assets
 # -----------------------------------------------------------------------------
 COPY sage_skills /tmp/build/skills
+COPY sage_scripts /opt/sage_scripts
 COPY apply_sage_patch.py /tmp/build/
 COPY sage_magic.py /tmp/build/
 COPY jupyter_server_config.py /tmp/build/

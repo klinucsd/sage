@@ -1,360 +1,189 @@
 ---
 name: ndp-search
-description: Search the National Data Platform catalog using a proxy API with keyword, spatial, and temporal filters.
+description: Search the National Data Platform catalog using keyword, spatial, and temporal filters. Use for finding datasets, sensors, stations, or services in NDP by topic, location, or time range.
 license: Apache-2.0
 ---
 
 # NDP Search Skill
 
-Search the National Data Platform CKAN catalog via the NDP OpenSearch Proxy API. Supports keyword search, spatial filtering (bounding box), and temporal filtering (date range).
+Search the National Data Platform CKAN catalog via the NDP CQE Search API.
 
-**Proxy URL:** `https://kaiucsd-ndp-opensearch.hf.space`
+**API base URL:** `http://awesome-compute.sdsc.edu:8081`
 
-## Workflow Requirements
-
-### TODO List for Complex Searches
-
-Before executing complex searches (geographic queries, multi-filter searches, queries with 3+ requirements), create a detailed TODO list breaking down all steps:
-
-```
-User request: "Find all datasets collected from GPS stations in San Diego County since 2023"
-
-TODO:
-1. Get San Diego County geometry and bounding box from us-counties skill
-2. Build search request with keywords, spatial filter, temporal filter
-3. Execute search via proxy API
-4. Apply post-search relevance filtering with required/excluded terms
-5. MANDATORY: Verify each dataset intersects San Diego County geometry using verify_geometry_intersection()
-6. Export results to JSON and GeoJSON
-```
-
-### Geographic Query Requirements
-
-For queries specifying a county, state, or region, you MUST:
-1. Use bounding box for initial spatial filtering
-2. Apply post-search relevance filtering
-3. MANDATORY: Verify geometry intersection using verify_geometry_intersection()
-
-Bounding boxes are rectangular and include areas outside actual boundaries. Without geometry verification, results will include datasets from wrong locations.
-
-Example: San Diego County's bounding box includes parts of Mexico and neighboring counties. You must verify actual intersection with county geometry.
-
-## Implementation
-
-### Connection
-```python
-import requests
-
-PROXY_URL = "https://kaiucsd-ndp-opensearch.hf.space"
-```
-
-### Keyword Search
-```python
-response = requests.post(f"{PROXY_URL}/search", json={
-    "query": "climate data wildfire",
-    "size": 1000
-})
-
-data = response.json()
-print(f"Found {data['total']} datasets")
-results = data['results']  # List of dataset objects
-```
-
-### Spatial Search (Bounding Box)
-```python
-# bbox format: [min_lon, min_lat, max_lon, max_lat]
-bbox = [-117.6, 32.5, -116.1, 33.5]
-
-response = requests.post(f"{PROXY_URL}/search", json={
-    "query": "GNSS GPS station",
-    "size": 100,
-    "bbox": bbox
-})
-```
-
-### Temporal Search (Date Range)
-```python
-response = requests.post(f"{PROXY_URL}/search", json={
-    "query": "temperature weather",
-    "size": 100,
-    "temporal_start": "2024-01-01",
-    "temporal_end": "2024-12-31"
-})
-```
-
-### Combined Search
-```python
-response = requests.post(f"{PROXY_URL}/search", json={
-    "query": "GNSS GPS station receiver",
-    "size": 100,
-    "bbox": bbox,
-    "temporal_start": "2023-01-01",
-    "temporal_end": "2024-12-31"
-})
-```
-
-## Processing Results
-
-### Response Structure
-```python
-data = response.json()
-
-# Total number of matching datasets
-total = data['total']
-
-# List of dataset results
-results = data['results']
-
-for dataset in results:
-    dataset_name = dataset['name']  # Use for CKAN URLs
-    title = dataset['title']
-    description = dataset['notes']
-
-    organization = dataset.get('organization', {})
-    tags = [tag['name'] for tag in dataset.get('tags', [])]
-
-    resources = dataset.get('resources', [])
-    resource_count = dataset.get('resource_count', 0)
-    resource_formats = dataset.get('resource_formats', [])
-
-    spatial = dataset.get('spatial')  # GeoJSON Point or Polygon
-    spatial_text = dataset.get('spatial_text')
-
-    temporal_start = dataset.get('temporal_start')
-    temporal_end = dataset.get('temporal_end')
-
-    # Build CKAN URL using 'name' field
-    ckan_url = f"https://nationaldataplatform.org/catalog/dataset/{dataset_name}"
-```
-
-## Query Expansion
-
-Expand queries with synonyms and related terms:
+## Step 1 — Search
 
 ```python
-# Combine related terms, synonyms, technical variations
-query = "GPS GNSS station receiver positioning geodetic"
-```
+import requests, re
 
-## Post-Search Relevance Filtering
+API_URL = "http://awesome-compute.sdsc.edu:8081"
 
-CRITICAL: Apply filtering after the proxy returns results to ensure datasets match user's actual request.
-
-### Filter Function
-```python
-def filter_relevant_datasets(results, required_terms=None, excluded_terms=None, required_any=None):
+def ndp_search(text, bbox=None, start_time=None, end_time=None, rows=100, start=0):
     """
-    Filter search results for semantic relevance.
+    Search NDP catalog.
 
-    Args:
-        results: List of dataset objects from proxy API
-        required_terms: List of terms that MUST ALL appear (AND logic)
-        excluded_terms: List of terms that indicate wrong dataset (automatic rejection)
-        required_any: List of term groups where at least ONE must appear (OR logic)
+    bbox: [min_lon, min_lat, max_lon, max_lat]
+    start_time / end_time: ISO date strings e.g. "2024-01-01"
+    """
+    params = {"text": text, "rows": rows, "start": start}
+    if bbox:
+        # Solr ENVELOPE order: (min_lon, max_lon, max_lat, min_lat)
+        params["location"] = f"ENVELOPE({bbox[0]},{bbox[2]},{bbox[3]},{bbox[1]})"
+    if start_time:
+        params["start_time"] = start_time
+    if end_time:
+        params["end_time"] = end_time
+    resp = requests.get(f"{API_URL}/v1/cqe/search_adv", params=params)
+    resp.raise_for_status()
+    return resp.json()
+```
 
-    Returns:
-        Filtered list of relevant datasets
+## Step 2 — Normalize Results
+
+The API returns raw Solr documents where every field is an array. Always normalize before using:
+
+```python
+def _extract_center(wkt):
+    """Extract center (lon, lat) from a WKT polygon."""
+    coords = re.findall(r'[-\d.]+', wkt)
+    if not coords:
+        return None, None
+    lons = [float(coords[i]) for i in range(0, len(coords), 2)]
+    lats = [float(coords[i]) for i in range(1, len(coords), 2)]
+    return round(sum(lons)/len(lons), 6), round(sum(lats)/len(lats), 6)
+
+def normalize_result(r):
+    """Convert raw Solr result to a clean, usable dict."""
+    name = r.get("name", [""])[0]
+    wkt  = r.get("spatial_elements", "")
+    lon, lat = _extract_center(wkt)
+    temporal = r.get("temporal_elements", [])
+    res_names   = r.get("resources_name", [])
+    res_urls    = r.get("resources_url", [])
+    res_formats = r.get("resources_format", [])
+    return {
+        "id":             r.get("ckan-id", [""])[0],
+        "name":           name,
+        "title":          r.get("title", [""])[0],
+        "notes":          r.get("notes", [""])[0],
+        "organization":   r.get("organization_title", [""])[0],
+        "tags":           r.get("tags", []),
+        "resources":      [{"name": n, "url": u, "format": f}
+                           for n, u, f in zip(res_names, res_urls, res_formats)],
+        "lon":            lon,
+        "lat":            lat,
+        "temporal_start": temporal[0] if len(temporal) > 0 else None,
+        "temporal_end":   temporal[1] if len(temporal) > 1 else None,
+        "ckan_url":       f"https://nationaldataplatform.org/catalog/dataset/{name}",
+    }
+
+def normalize_all(data):
+    return [normalize_result(r) for r in data.get("results", [])]
+```
+
+## Step 3 — Fetch All Pages (for large result sets)
+
+```python
+def fetch_all_datasets(text, bbox=None, start_time=None, end_time=None, page_size=100):
+    all_results = []
+    offset = 0
+    while True:
+        data = ndp_search(text, bbox=bbox, start_time=start_time,
+                          end_time=end_time, rows=page_size, start=offset)
+        page = data.get("results", [])
+        all_results.extend(page)
+        if len(all_results) >= data.get("hits", 0) or not page:
+            break
+        offset += len(page)
+    return normalize_all({"results": all_results})
+```
+
+## Step 4 — Post-Search Relevance Filtering
+
+```python
+def filter_relevant_datasets(datasets, required_terms=None, excluded_terms=None, required_any=None):
+    """
+    datasets: list of normalized dicts from normalize_all()
+    required_terms: all must appear (AND)
+    excluded_terms: any present → reject
+    required_any: list of groups; at least one term per group must appear (OR within group, AND across groups)
     """
     filtered = []
-
-    for dataset in results:
-        searchable_text = ' '.join([
-            dataset.get('title', ''),
-            dataset.get('notes', ''),
-            ' '.join([tag.get('name', '') for tag in dataset.get('tags', [])])
-        ]).lower()
-
-        # Check excluded terms (automatic rejection)
-        if excluded_terms and any(term.lower() in searchable_text for term in excluded_terms):
+    for d in datasets:
+        text = f"{d['title']} {d['notes']} {' '.join(d['tags'])}".lower()
+        if excluded_terms and any(t.lower() in text for t in excluded_terms):
             continue
-
-        # Check required terms (all must be present)
-        if required_terms and not all(term.lower() in searchable_text for term in required_terms):
+        if required_terms and not all(t.lower() in text for t in required_terms):
             continue
-
-        # Check required_any (at least one from each group)
         if required_any:
-            matches_all_groups = True
-            for term_group in required_any:
-                if not any(term.lower() in searchable_text for term in term_group):
-                    matches_all_groups = False
-                    break
-            if not matches_all_groups:
+            if not all(any(t.lower() in text for t in grp) for grp in required_any):
                 continue
-
-        filtered.append(dataset)
-
+        filtered.append(d)
     return filtered
 ```
 
-### Usage Example
+## Step 5 — Geometry Verification (MANDATORY for county/state/region queries)
+
+Bounding boxes are rectangular and include areas outside the actual boundary. Always verify after spatial search.
+
 ```python
-# User: "Find datasets for wildfire probability in California"
-
-# Step 1: Proxy search (wide net)
-response = requests.post(f"{PROXY_URL}/search", json={
-    "query": "wildfire fire probability risk hazard",
-    "size": 100
-})
-
-data = response.json()
-
-# Step 2: Post-filter for relevance
-filtered_results = filter_relevant_datasets(
-    data['results'],
-    required_terms=['wildfire'],
-    required_any=[['probability', 'risk', 'hazard']],
-    excluded_terms=['debris', 'post-fire', 'erosion', 'landslide']
-)
-```
-
-### Term Selection Guidelines
-
-**required_terms**: Core subject that must be mentioned
-- Example: ['wildfire'], ['earthquake'], ['lidar']
-
-**required_any**: Synonyms or alternative expressions for same concept
-- Example: [['probability', 'risk', 'hazard']], [['station', 'receiver', 'site']]
-
-**excluded_terms**: Related but different topics to reject
-- Post-event data when asking for predictions: 'post-', 'aftermath', 'damage'
-- Models when asking for observations: 'model', 'simulation', 'forecast'
-- Derived when asking for raw: 'derived', 'product', 'processed'
-- Administrative when asking for data: 'boundary', 'jurisdiction', 'operational unit'
-
-Be generous with excluded terms. Better to exclude marginal datasets than include wrong ones.
-
-## Geometry Verification (MANDATORY for Geographic Queries)
-
-When user specifies a county, state, or region, you MUST verify geometry intersection after bounding box search.
-
-### Implementation
-```python
-from shapely.geometry import shape
+from shapely import wkt as shapely_wkt
+from shapely.geometry import Point
 
 def verify_geometry_intersection(datasets, target_geometry):
-    """
-    MANDATORY for geographic queries. Verify datasets actually intersect target geometry.
-    Bounding boxes are rectangular and include areas outside actual boundaries.
-
-    Args:
-        datasets: List of filtered dataset objects from proxy API
-        target_geometry: Shapely geometry object from us-counties or us-states skill
-
-    Returns:
-        List of datasets that truly intersect target geometry
-    """
-    verified_datasets = []
-
-    for dataset in datasets:
-        dataset_spatial = dataset.get('spatial')
-
-        if not dataset_spatial:
+    """Keep only datasets whose location truly intersects target_geometry."""
+    verified = []
+    for d in datasets:
+        lon, lat = d.get("lon"), d.get("lat")
+        if lon is None or lat is None:
             continue
-
         try:
-            dataset_geom = shape(dataset_spatial)
-            if dataset_geom.intersects(target_geometry):
-                verified_datasets.append(dataset)
-        except Exception as e:
+            if Point(lon, lat).intersects(target_geometry):
+                verified.append(d)
+        except Exception:
             continue
-
-    return verified_datasets
+    return verified
 ```
 
-### Complete Workflow for Geographic Queries
+## Complete Example
+
 ```python
-# User: "Find datasets from GPS stations in San Diego County since 2023"
+# "Find GNSS stations within 100 miles of lat=39.1675, lon=-119.0238"
+# 100 miles ≈ 1.45 degrees
+lat, lon = 39.1675, -119.0238
+pad = 1.45
+bbox = [lon - pad, lat - pad, lon + pad, lat + pad]
 
-# Step 1: Get geometry and bounding box
-san_diego_geojson = {...}  # From us-counties skill
-county_geometry = shape(san_diego_geojson['geometry'])
-bbox = county_geometry.bounds  # (min_lon, min_lat, max_lon, max_lat)
+datasets = fetch_all_datasets("GNSS GPS station", bbox=bbox)
 
-# Step 2: Proxy search with bounding box
-response = requests.post(f"{PROXY_URL}/search", json={
-    "query": "GPS GNSS station receiver",
-    "size": 100,
-    "bbox": list(bbox),
-    "temporal_start": "2023-01-01"
-})
-
-data = response.json()
-
-# Step 3: Relevance filtering
-filtered_results = filter_relevant_datasets(
-    data['results'],
-    required_terms=['GPS'],
-    required_any=[['station', 'receiver', 'site']],
-    excluded_terms=['model', 'simulation', 'derived']
+stations = filter_relevant_datasets(
+    datasets,
+    required_any=[["gnss", "gps", "station", "receiver"]],
+    excluded_terms=["model", "simulation"]
 )
 
-# Step 4: MANDATORY geometry verification
-verified_results = verify_geometry_intersection(filtered_results, county_geometry)
-
-# verified_results now contains only datasets truly in San Diego County
+for s in stations:
+    print(f"{s['title']:30s}  lat={s['lat']}, lon={s['lon']}")
+    for res in s['resources']:
+        print(f"  [{res['format']}] {res['url']}")
 ```
-
-## Pagination
-
-The proxy supports `size` (max 1000 per page) and `from` (offset) for pagination. Use `page_size=100` to keep individual responses small (some datasets have thousands of resources). Use `fetch_all_datasets` to retrieve all results automatically:
-
-```python
-def fetch_all_datasets(query, bbox=None, temporal_start=None, temporal_end=None, page_size=100):
-    """Fetch all datasets matching the criteria using pagination."""
-    all_results = []
-    offset = 0
-
-    while True:
-        body = {"query": query, "size": page_size, "from": offset}
-        if bbox is not None:
-            body["bbox"] = bbox
-        if temporal_start is not None:
-            body["temporal_start"] = temporal_start
-        if temporal_end is not None:
-            body["temporal_end"] = temporal_end
-
-        data = requests.post(f"{PROXY_URL}/search", json=body).json()
-        page = data["results"]
-        all_results.extend(page)
-
-        if len(all_results) >= data["total"] or not page:
-            break
-        offset += len(page)
-
-    return all_results
-```
-
-Apply post-search filtering and geometry verification AFTER retrieving all results.
 
 ## Output Format
 
-**CRITICAL**: Present results listing top 10 datasets:
+Present results as a numbered list (top 10):
 ```
-1. [Dataset Title]
-   URL: https://nationaldataplatform.org/catalog/dataset/[name]
-   Description: [clean text without HTML tags]
-   Time Range: [temporal_start to temporal_end]
-   Formats: [resource_formats]
+1. [Title]  (lat, lon)
+   Organization: ...
+   Time range: temporal_start → temporal_end
+   Resources: CSV, PNG, ...
+   CKAN: https://nationaldataplatform.org/catalog/dataset/[name]
 ```
 
-Save the result as JSON. If all datasets have spatial locations or coverages, also save the result to GeoJSON.
+Save final results as JSON. If datasets have coordinates, also save as GeoJSON (point features).
 
-Handle serialization:
-- Convert numpy arrays to lists
-- Convert datetime objects to strings
-- Handle NaN/None values with fillna() or where()
+## Key Rules
 
-Delete intermediate files, keep only final JSON and GeoJSON.
-
-## Key Requirements
-
-1. **TODO lists**: Create for all complex searches, especially geographic queries
-2. **Post-search filtering**: Always apply filter_relevant_datasets() for specific queries
-3. **Geometry verification**: MANDATORY for county/state/region queries - use verify_geometry_intersection()
-4. **Query strategy**:
-   - Avoid generic terms alone (management, system, network, data, station)
-   - Use specific names, technical terms, unique identifiers
-   - Do NOT use geographic names as keywords (filter spatially instead)
-5. **Pagination**: Use `fetch_all_datasets()` with `page_size=100` (default); do NOT request large page sizes — some datasets have thousands of resources and will produce huge responses
-6. **Meeting requirements**: Only return datasets matching user's exact request, not related topics
+1. **Always normalize** — call `normalize_all()` before using any result fields.
+2. **Expand keywords** — use synonyms and technical terms (e.g., `"GPS GNSS station receiver geodetic"`).
+3. **No geographic keywords** — filter spatially via `bbox`, not by putting place names in `text`.
+4. **Geometry verification** — mandatory for county/state/region queries.
+5. **Spatial envelope order** — `ENVELOPE(min_lon, max_lon, max_lat, min_lat)` — Solr's order has max_lat before min_lat.

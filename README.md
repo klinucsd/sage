@@ -82,6 +82,7 @@ See Sage in action across four scientific domains:
 | [flood_impacts.ipynb](examples/flood_impacts.ipynb) | Kanawha River flood depth → school and commercial building impacts → elderly population exposure | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/flood_impacts.ipynb) |
 | [skills_manage.ipynb](examples/skills_manage.ipynb) | SkillsMP marketplace search → live skill installation → hurricane emergency response planning | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/skills_manage.ipynb) |
 | [fusion_study.ipynb](examples/fusion_study.ipynb) | DIII-D tokamak analysis: plasma shape characterization, current and energy evolution, multi-shot elongation statistics | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/fusion_study.ipynb) |
+| [sdge_fire.ipynb](examples/sdge_fire.ipynb) | Wildfire situational awareness: GOES satellite fire detections, live fuel moisture mapping, per-detection risk classification, day-by-day activity trend | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/sdge_fire.ipynb) |
 
 ---
 
@@ -143,7 +144,7 @@ temperature = 0
 ```bash
 docker run -p 8888:8888 \
   -v ~/sage-workspace:/home/jovyan/work \
-  kaiucsd/sage-dev:v1.0.63 \
+  kaiucsd/sage-dev:v1.0.124 \
   jupyter lab --ip=0.0.0.0 --NotebookApp.token=''
 ```
 
@@ -210,6 +211,8 @@ These skills are included as working examples used by the [demo notebooks](#demo
 | `kanawha-nsi-impact` | FEMA NSI 2022 | Building-level flood impacts |
 | `kanawha-reach-impact` | USACE / USGS | Flood impacts per river reach |
 | `kanawha-cikr-impact` | FEMA / USACE | Critical infrastructure flood impacts |
+| `sdge-goes-fire` | SDG&E WIFIRE GeoServer | GOES satellite fire detections for Southern California |
+| `sdge-surface-fuels` | SDG&E WIFIRE GeoServer | Surface fuel model and live fuel moisture maps; fire risk classification |
 
 ### Adding a custom skill
 
@@ -232,7 +235,7 @@ API endpoint, parameters, response format, conversion to GeoDataFrame, etc.
 
 ## NRP JupyterHub Deployment
 
-On NRP JupyterHub, select the `kaiucsd/sage-dev:v1.0.63` image. No local setup needed — `NRP_API_KEY` is loaded from `/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env`.
+On NRP JupyterHub, select the `kaiucsd/sage-dev:v1.0.124` image. No local setup needed — `NRP_API_KEY` is loaded from `/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env`.
 
 ---
 

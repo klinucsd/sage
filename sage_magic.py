@@ -330,8 +330,11 @@ def _display_combined_map(
             center = [(miny + maxy) / 2, (minx + maxx) / 2]
         else:
             # bbox format: [min_lat, min_lon, max_lat, max_lon]
-            bbox = wms_layers[0]["bbox"]
-            center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+            bbox = wms_layers[0].get("bbox")
+            if bbox:
+                center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+            else:
+                center = [39.5, -98.5]  # continental US fallback
 
         m = folium.Map(location=center, zoom_start=6, tiles=None)
 
@@ -344,26 +347,52 @@ def _display_combined_map(
         # Add GeoJSON layers
         for i, (name, gdf) in enumerate(geojson_layers):
             color = _LAYER_COLORS[i % len(_LAYER_COLORS)]
-            popup_fields = [c for c in gdf.columns if c != "geometry"][:5]
+            popup_fields = [c for c in gdf.columns if c not in ("geometry", "_color")][:5]
             fg = folium.FeatureGroup(name=name, show=True)
+            # Auto-color fallback: if _color missing but risk/risk_level field present
+            if "_color" not in gdf.columns:
+                _risk_col = next((c for c in ["risk", "risk_level"] if c in gdf.columns), None)
+                if _risk_col:
+                    _risk_colors = {
+                        "critically dry": "red", "extreme": "red", "high": "red",
+                        "moderate": "orange",
+                        "low": "green", "safe": "green", "very low": "green",
+                    }
+                    gdf = gdf.copy()
+                    gdf["_color"] = (
+                        gdf[_risk_col].str.lower().map(_risk_colors).fillna("gray")
+                    )
+            has_color_col = "_color" in gdf.columns
             folium.GeoJson(
                 gdf,
-                marker=folium.CircleMarker(radius=3, fill=True),
-                style_function=lambda x, c=color: {
-                    "fillColor": c, "color": "#333333",
-                    "weight": 0.5, "fillOpacity": 0.8,
-                },
+                marker=folium.CircleMarker(radius=5, fill=True),
+                style_function=(
+                    lambda x: {
+                        "fillColor": x["properties"].get("_color") or "#3388ff",
+                        "color": "#333333",
+                        "weight": 0.5, "fillOpacity": 0.85,
+                    }
+                ) if has_color_col else (
+                    lambda x, c=color: {
+                        "fillColor": c, "color": "#333333",
+                        "weight": 0.5, "fillOpacity": 0.8,
+                    }
+                ),
                 popup=folium.GeoJsonPopup(fields=popup_fields) if popup_fields else None,
             ).add_to(fg)
             fg.add_to(m)
 
         # Add WMS layers
         for wms in wms_layers:
+            # layers must be a comma-separated string; accept list too
+            layers_val = wms["layers"]
+            if isinstance(layers_val, list):
+                layers_val = ",".join(layers_val)
             folium.raster_layers.WmsTileLayer(
                 url=wms["url"],
-                layers=wms["layers"],
+                layers=layers_val,
                 name=wms.get("name", "WMS Layer"),
-                fmt="image/png",
+                fmt=wms.get("fmt", "image/png"),
                 transparent=True,
                 opacity=wms.get("opacity", 0.7),
             ).add_to(m)
@@ -917,10 +946,18 @@ try:
             f"  ![Map caption](full_path_to_file.geojson)              — for a single-layer map\n"
             f"  ![Map caption](file1.geojson,file2.geojson)            — MULTIPLE layers on ONE map (comma-separated)\n"
             f"  ![Map caption](file.geojson,layer.wms.json)            — GeoJSON + WMS together on ONE map\n"
+            f"WMS RULE — to display a WMS layer, save a file whose name ends in exactly '.wms.json' "
+            f"(e.g. 'burn_probability.wms.json', NOT 'burn_probability_wms.json'). "
+            f"Required fields: url (string), layers (string, comma-separated if multiple), "
+            f"name (string), bbox ([min_lat, min_lon, max_lat, max_lon]). "
+            f"Optional: opacity (0–1, default 0.7). No other fields are needed.\n"
             f"MAP RULE — one map per report, all layers combined: your entire report must contain "
             f"exactly ONE map tag. Put every GeoJSON and WMS layer that is relevant to the result "
             f"into that single tag as comma-separated paths. Never create separate maps for different "
             f"layers — always combine them.\n"
+            f"MAP RULE — never plot GeoJSON data as a static matplotlib/PNG map. If you have a GeoJSON "
+            f"file, reference it with the map tag above — Sage will render it as an interactive Folium "
+            f"map automatically. Only use matplotlib/PNG for charts (bar, line, scatter, histogram, etc.).\n"
             f"Correct (one map, two layers):  "
             f"![Earthquake and GNSS Stations]({SAGE_OUTPUT_DIR}/earthquakes.geojson,{SAGE_OUTPUT_DIR}/gnss_stations.geojson)\n"
             f"Wrong (two separate maps):  "
@@ -1032,6 +1069,28 @@ try:
                 display(Markdown(final_text))
             if new:
                 _display_new_outputs(new)
+        elif new:
+            # Inline rendering succeeded. Only auto-display new GeoJSON/WMS if
+            # the agent referenced NO map files in its text at all (e.g. it
+            # referenced a PNG but left out its GeoJSON). If the agent already
+            # referenced at least one GeoJSON inline, trust that — don't add a
+            # second map.
+            import re as _re
+            inline_srcs = _re.findall(r'!\[[^\]]*\]\(([^)\n]+)\)', final_text)
+            agent_referenced_map = any(
+                '.geojson' in src or '.wms.json' in src
+                for src in inline_srcs
+            )
+            if not agent_referenced_map:
+                new_maps = [
+                    f for f in new
+                    if f.endswith('.geojson') or f.endswith('.wms.json')
+                ]
+                if new_maps:
+                    all_geojsons = sorted(Path(SAGE_OUTPUT_DIR).rglob("*.geojson"))
+                    all_wms = sorted(Path(SAGE_OUTPUT_DIR).rglob("*.wms.json"))
+                    if all_geojsons or all_wms:
+                        _display_combined_map(all_geojsons, all_wms)
 
     del ask  # keep IPython namespace clean
 
