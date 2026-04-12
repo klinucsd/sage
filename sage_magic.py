@@ -1006,7 +1006,9 @@ try:
             f'  {{"field": "magnitude_class", "title": "Earthquake Magnitude", '
             f'"palette": {{"M2-3": "#fee8c8", "M3-4": "#fdd49e", "M4-5": "#fc8d59", '
             f'"M5-6": "#e34a33", "M6+": "#b30000"}}}}\n'
-            f"Sage will automatically color each feature and add a legend. "
+            f"Sage will automatically color each feature and add a legend to the map. "
+            f"Do NOT write a separate legend, color key, or bullet list explaining the "
+            f"colors in your report text — the map legend is sufficient.\n"
             f"Use distinct color families for different layers to avoid conflicts:\n"
             f"  Reds/oranges (#b30000→#fee8c8) — severity, risk, danger, magnitude\n"
             f"  Blues (#08306b→#deebf7) — water, flood depth, coverage\n"
