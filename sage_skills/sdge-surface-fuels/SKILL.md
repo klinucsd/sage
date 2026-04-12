@@ -60,9 +60,8 @@ Use this when asked to color or classify fire detections by fuel moisture risk. 
 def classify_by_fuel_moisture(gdf):
     """
     Downloads live fuel moisture raster from SDG&E WIFIRE, samples each point,
-    classifies by risk level, and adds 'fuel_moisture', 'risk', and '_color' columns.
+    and adds 'fuel_moisture' and 'risk' columns.
     risk values: 'critically dry', 'moderate', 'safe', 'unknown'
-    _color values: 'red', 'orange', 'green', 'gray'
     """
     import requests, numpy as np, rasterio
     from io import BytesIO
@@ -102,10 +101,27 @@ def classify_by_fuel_moisture(gdf):
             return "moderate"
         return "safe"
 
-    COLORS = {"critically dry": "red", "moderate": "orange", "safe": "green", "unknown": "gray"}
     gdf["risk"] = gdf["fuel_moisture"].apply(_risk)
-    gdf["_color"] = gdf["risk"].map(COLORS)
     return gdf
+```
+
+After calling `classify_by_fuel_moisture(gdf)`, save a colormap sidecar so Sage colors the map and adds a legend automatically. Use the same base name as your output GeoJSON:
+
+```python
+import json, os
+output_dir = os.environ.get('SAGE_OUTPUT_DIR', '/tmp')
+# Replace 'your_output_file' with the actual GeoJSON filename you chose
+colormap = {
+    "field": "risk",
+    "title": "Fire Risk (Live Fuel Moisture)",
+    "palette": {
+        "critically dry": "#d73027",
+        "moderate":       "#fc8d59",
+        "safe":           "#1a9850",
+        "unknown":        "#999999"
+    }
+}
+json.dump(colormap, open(os.path.join(output_dir, 'your_output_file.colormap.json'), 'w'))
 ```
 
 ## Notes

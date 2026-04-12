@@ -113,6 +113,39 @@ url = "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&starttime
 url = "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&latitude=33.1581&longitude=-117.3506&maxradiuskm=100&starttime=2024-01-01&minmagnitude=2.5"
 ```
 
+## Map Coloring by Magnitude
+
+To display earthquakes with colors by magnitude class, add a classification column and save a colormap sidecar file (same base name as the GeoJSON, ending in `.colormap.json`):
+
+```python
+import json, os
+output_dir = os.environ.get('SAGE_OUTPUT_DIR', '/tmp')
+
+# Add magnitude class to GeoDataFrame
+def mag_class(m):
+    if m < 3: return "M2-3"
+    if m < 4: return "M3-4"
+    if m < 5: return "M4-5"
+    if m < 6: return "M5-6"
+    return "M6+"
+
+gdf["magnitude_class"] = gdf["magnitude"].apply(mag_class)
+
+# Save colormap sidecar (same base name as your GeoJSON output file)
+colormap = {
+    "field": "magnitude_class",
+    "title": "Earthquake Magnitude",
+    "palette": {
+        "M2-3": "#fee8c8",
+        "M3-4": "#fdd49e",
+        "M4-5": "#fc8d59",
+        "M5-6": "#e34a33",
+        "M6+":  "#b30000"
+    }
+}
+json.dump(colormap, open(os.path.join(output_dir, 'your_output_file.colormap.json'), 'w'))
+```
+
 ## Notes
 - The API has no authentication but respect reasonable usage limits
 - Response includes metadata: `count` shows total number of events returned

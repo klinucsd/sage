@@ -268,6 +268,25 @@ _LAYER_COLORS = [
 ]
 
 
+def _build_legend_html(title: str, palette: dict, bottom_offset: int) -> str:
+    """Build an HTML legend box for a categorical color palette."""
+    items = "".join(
+        f'<div style="display:flex;align-items:center;margin:3px 0">'
+        f'<div style="width:12px;height:12px;background:{color};border-radius:50%;'
+        f'margin-right:8px;flex-shrink:0;border:1px solid rgba(0,0,0,0.2)"></div>'
+        f'<span style="font-size:11px;white-space:nowrap">{label}</span></div>'
+        for label, color in palette.items()
+    )
+    return (
+        f'<div style="position:fixed;bottom:{bottom_offset}px;right:10px;z-index:9999;'
+        f'background:white;padding:8px 12px;border-radius:6px;'
+        f'box-shadow:0 2px 8px rgba(0,0,0,0.3);font-family:sans-serif;min-width:140px">'
+        f'<div style="font-weight:600;font-size:12px;margin-bottom:5px;'
+        f'border-bottom:1px solid #eee;padding-bottom:4px">{title}</div>'
+        f'{items}</div>'
+    )
+
+
 def _display_combined_map(
     geojson_files: list[Path],
     wms_files: list[Path],
@@ -281,7 +300,7 @@ def _display_combined_map(
         import geopandas as gpd
         import json as _json
 
-        geojson_layers = []
+        geojson_layers = []  # (name, gdf, colormap_or_None)
         for path in geojson_files:
             try:
                 with warnings.catch_warnings():
@@ -305,7 +324,15 @@ def _display_combined_map(
                             )
                         except Exception:
                             pass
-                geojson_layers.append((path.stem, gdf))
+                # Load colormap sidecar if present (same base name, .colormap.json)
+                colormap = None
+                cm_path = path.parent / (path.stem + ".colormap.json")
+                if cm_path.exists():
+                    try:
+                        colormap = _json.loads(cm_path.read_text())
+                    except Exception:
+                        pass
+                geojson_layers.append((path.stem, gdf, colormap))
             except Exception:
                 continue
 
@@ -322,7 +349,7 @@ def _display_combined_map(
 
         # Determine map center from GeoJSON bounds or WMS bbox
         if geojson_layers:
-            all_bounds = [gdf.total_bounds for _, gdf in geojson_layers]
+            all_bounds = [gdf.total_bounds for _, gdf, _ in geojson_layers]
             minx = min(b[0] for b in all_bounds)
             miny = min(b[1] for b in all_bounds)
             maxx = max(b[2] for b in all_bounds)
@@ -345,23 +372,25 @@ def _display_combined_map(
         folium.TileLayer("Esri.WorldImagery", name="Satellite", show=False).add_to(m)
 
         # Add GeoJSON layers
-        for i, (name, gdf) in enumerate(geojson_layers):
+        legend_entries = []  # (title, palette, n_items) for legend stacking
+        for i, (name, gdf, colormap) in enumerate(geojson_layers):
             color = _LAYER_COLORS[i % len(_LAYER_COLORS)]
             popup_fields = [c for c in gdf.columns if c not in ("geometry", "_color")][:5]
             fg = folium.FeatureGroup(name=name, show=True)
-            # Auto-color fallback: if _color missing but risk/risk_level field present
-            if "_color" not in gdf.columns:
-                _risk_col = next((c for c in ["risk", "risk_level"] if c in gdf.columns), None)
-                if _risk_col:
-                    _risk_colors = {
-                        "critically dry": "red", "extreme": "red", "high": "red",
-                        "moderate": "orange",
-                        "low": "green", "safe": "green", "very low": "green",
-                    }
+
+            # Apply colormap sidecar if present
+            if colormap:
+                field = colormap.get("field")
+                palette = colormap.get("palette", {})
+                if field and field in gdf.columns and palette:
                     gdf = gdf.copy()
-                    gdf["_color"] = (
-                        gdf[_risk_col].str.lower().map(_risk_colors).fillna("gray")
-                    )
+                    gdf["_color"] = gdf[field].map(palette).fillna("#999999")
+                    legend_entries.append((
+                        colormap.get("title", name),
+                        palette,
+                        len(palette),
+                    ))
+
             has_color_col = "_color" in gdf.columns
             folium.GeoJson(
                 gdf,
@@ -396,6 +425,14 @@ def _display_combined_map(
                 transparent=True,
                 opacity=wms.get("opacity", 0.7),
             ).add_to(m)
+
+        # Add legends for colormap layers (stacked bottom-right)
+        bottom = 30
+        for title, palette, n_items in legend_entries:
+            m.get_root().html.add_child(
+                folium.Element(_build_legend_html(title, palette, bottom))
+            )
+            bottom += n_items * 22 + 55  # approx height per legend box
 
         folium.LayerControl(collapsed=False).add_to(m)
 
@@ -955,6 +992,19 @@ try:
             f"exactly ONE map tag. Put every GeoJSON and WMS layer that is relevant to the result "
             f"into that single tag as comma-separated paths. Never create separate maps for different "
             f"layers — always combine them.\n"
+            f"COLOR RULE — to color a GeoJSON map layer by category, save a colormap "
+            f"sidecar file with the same base name as the GeoJSON but ending in "
+            f"'.colormap.json'. Example: if your data is 'earthquakes.geojson', also save "
+            f"'earthquakes.colormap.json':\n"
+            f'  {{"field": "magnitude_class", "title": "Earthquake Magnitude", '
+            f'"palette": {{"M2-3": "#fee8c8", "M3-4": "#fdd49e", "M4-5": "#fc8d59", '
+            f'"M5-6": "#e34a33", "M6+": "#b30000"}}}}\n'
+            f"Sage will automatically color each feature and add a legend. "
+            f"Use distinct color families for different layers to avoid conflicts:\n"
+            f"  Reds/oranges (#b30000→#fee8c8) — severity, risk, danger, magnitude\n"
+            f"  Blues (#08306b→#deebf7) — water, flood depth, coverage\n"
+            f"  Greens (#006837→#d9f0a3) — safe, low-risk, healthy, vegetation\n"
+            f"  Purples (#3f007d→#dadaeb) — density, count, intensity\n\n"
             f"MAP RULE — never plot GeoJSON data as a static matplotlib/PNG map. If you have a GeoJSON "
             f"file, reference it with the map tag above — Sage will render it as an interactive Folium "
             f"map automatically. Only use matplotlib/PNG for charts (bar, line, scatter, histogram, etc.).\n"
