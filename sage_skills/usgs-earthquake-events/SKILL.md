@@ -115,35 +115,34 @@ url = "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&latitude=
 
 ## Map Coloring by Magnitude
 
-To display earthquakes with colors by magnitude class, add a classification column and save a colormap sidecar file (same base name as the GeoJSON, ending in `.colormap.json`):
+To display earthquakes colored by magnitude class, copy this block as-is into your script. Replace `output_file` with the path you used to save the GeoJSON.
 
 ```python
 import json, os
-output_dir = os.environ.get('SAGE_OUTPUT_DIR', '/tmp')
 
-# Add magnitude class to GeoDataFrame
-def mag_class(m):
+# Single source of truth: category names used for both classification and palette
+_MAG_PALETTE = {
+    "M2-3": "#fee8c8",
+    "M3-4": "#fdd49e",
+    "M4-5": "#fc8d59",
+    "M5-6": "#e34a33",
+    "M6+":  "#b30000",
+}
+
+def _mag_class(m):
     if m < 3: return "M2-3"
     if m < 4: return "M3-4"
     if m < 5: return "M4-5"
     if m < 6: return "M5-6"
     return "M6+"
 
-gdf["magnitude_class"] = gdf["magnitude"].apply(mag_class)
+gdf["magnitude_class"] = gdf["magnitude"].apply(_mag_class)
 
-# Save colormap sidecar (same base name as your GeoJSON output file)
-colormap = {
-    "field": "magnitude_class",
-    "title": "Earthquake Magnitude",
-    "palette": {
-        "M2-3": "#fee8c8",
-        "M3-4": "#fdd49e",
-        "M4-5": "#fc8d59",
-        "M5-6": "#e34a33",
-        "M6+":  "#b30000"
-    }
-}
-json.dump(colormap, open(os.path.join(output_dir, 'your_output_file.colormap.json'), 'w'))
+# Save colormap sidecar — Sage reads this to color the map and show the legend
+json.dump(
+    {"field": "magnitude_class", "title": "Earthquake Magnitude", "palette": _MAG_PALETTE},
+    open(output_file.replace(".geojson", ".colormap.json"), "w")
+)
 ```
 
 ## Notes
