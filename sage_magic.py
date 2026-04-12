@@ -348,6 +348,7 @@ def _display_combined_map(
             return
 
         # Determine map center from GeoJSON bounds or WMS bbox
+        fit_bounds = None  # [[south, west], [north, east]] for auto-zoom
         if geojson_layers:
             all_bounds = [gdf.total_bounds for _, gdf, _ in geojson_layers]
             minx = min(b[0] for b in all_bounds)
@@ -355,15 +356,17 @@ def _display_combined_map(
             maxx = max(b[2] for b in all_bounds)
             maxy = max(b[3] for b in all_bounds)
             center = [(miny + maxy) / 2, (minx + maxx) / 2]
+            fit_bounds = [[miny, minx], [maxy, maxx]]
         else:
             # bbox format: [min_lat, min_lon, max_lat, max_lon]
             bbox = wms_layers[0].get("bbox")
             if bbox:
                 center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+                fit_bounds = [[bbox[0], bbox[1]], [bbox[2], bbox[3]]]
             else:
                 center = [39.5, -98.5]  # continental US fallback
 
-        m = folium.Map(location=center, zoom_start=6, tiles=None)
+        m = folium.Map(location=center, zoom_start=4, tiles=None)
 
         # Background tile layers (first = default)
         folium.TileLayer("OpenStreetMap", name="Street Map").add_to(m)
@@ -425,6 +428,10 @@ def _display_combined_map(
                 transparent=True,
                 opacity=wms.get("opacity", 0.7),
             ).add_to(m)
+
+        # Fit map to data extent
+        if fit_bounds:
+            m.fit_bounds(fit_bounds)
 
         # Add legends for colormap layers (stacked bottom-right)
         bottom = 30
