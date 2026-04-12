@@ -388,11 +388,15 @@ def _display_combined_map(
                 if field and field in gdf.columns and palette:
                     gdf = gdf.copy()
                     gdf["_color"] = gdf[field].map(palette).fillna("#999999")
-                    legend_entries.append((
-                        colormap.get("title", name),
-                        palette,
-                        len(palette),
-                    ))
+                    # Only show legend entries for categories present in the data
+                    present = set(gdf[field].dropna().unique())
+                    visible_palette = {k: v for k, v in palette.items() if k in present}
+                    if visible_palette:
+                        legend_entries.append((
+                            colormap.get("title", name),
+                            visible_palette,
+                            len(visible_palette),
+                        ))
 
             has_color_col = "_color" in gdf.columns
             folium.GeoJson(
@@ -429,9 +433,9 @@ def _display_combined_map(
                 opacity=wms.get("opacity", 0.7),
             ).add_to(m)
 
-        # Fit map to data extent
+        # Fit map to data extent; max_zoom prevents over-zooming on single points
         if fit_bounds:
-            m.fit_bounds(fit_bounds)
+            m.fit_bounds(fit_bounds, max_zoom=10)
 
         # Add legends for colormap layers (stacked bottom-right)
         bottom = 30
