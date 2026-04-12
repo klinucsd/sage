@@ -113,22 +113,11 @@ url = "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&starttime
 url = "https://earthquake.usgs.gov/fdsnws/event/1/query?format=geojson&latitude=33.1581&longitude=-117.3506&maxradiuskm=100&starttime=2024-01-01&minmagnitude=2.5"
 ```
 
-## Map Coloring by Magnitude
+## Magnitude Classification
 
-To display earthquakes colored by magnitude class, copy this block as-is into your script. Replace `output_file` with the path you used to save the GeoJSON.
+To show earthquakes colored by magnitude class, add a `magnitude_class` field to the GeoDataFrame:
 
 ```python
-import json, os
-
-# Single source of truth: category names used for both classification and palette
-_MAG_PALETTE = {
-    "M2-3": "#fee8c8",
-    "M3-4": "#fdd49e",
-    "M4-5": "#fc8d59",
-    "M5-6": "#e34a33",
-    "M6+":  "#b30000",
-}
-
 def _mag_class(m):
     if m < 3: return "M2-3"
     if m < 4: return "M3-4"
@@ -137,13 +126,9 @@ def _mag_class(m):
     return "M6+"
 
 gdf["magnitude_class"] = gdf["magnitude"].apply(_mag_class)
-
-# Save colormap sidecar — Sage reads this to color the map and show the legend
-json.dump(
-    {"field": "magnitude_class", "title": "Earthquake Magnitude", "palette": _MAG_PALETTE},
-    open(output_file.replace(".geojson", ".colormap.json"), "w")
-)
 ```
+
+Then save a `.colormap.json` sidecar (same base name as the GeoJSON) following the COLOR RULE — choose colors appropriate for the full set of map layers.
 
 ## Notes
 - The API has no authentication but respect reasonable usage limits

@@ -105,24 +105,7 @@ def classify_by_fuel_moisture(gdf):
     return gdf
 ```
 
-After calling `classify_by_fuel_moisture(gdf)`, save a colormap sidecar so Sage colors the map and adds a legend automatically. Use the same base name as your output GeoJSON:
-
-```python
-import json, os
-output_dir = os.environ.get('SAGE_OUTPUT_DIR', '/tmp')
-# Replace 'your_output_file' with the actual GeoJSON filename you chose
-colormap = {
-    "field": "risk",
-    "title": "Fire Risk (Live Fuel Moisture)",
-    "palette": {
-        "critically dry": "#d73027",
-        "moderate":       "#fc8d59",
-        "safe":           "#1a9850",
-        "unknown":        "#999999"
-    }
-}
-json.dump(colormap, open(os.path.join(output_dir, 'your_output_file.colormap.json'), 'w'))
-```
+After calling `classify_by_fuel_moisture(gdf)`, save a `.colormap.json` sidecar (same base name as your output GeoJSON) following the COLOR RULE — choose colors appropriate for the full set of map layers. The field to color by is `"risk"` with categories: `"critically dry"`, `"moderate"`, `"safe"`, `"unknown"`.
 
 ## Notes
 

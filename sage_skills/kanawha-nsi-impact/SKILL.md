@@ -241,23 +241,11 @@ print(by_cat[["structures", "total"]].assign(
 )[["structures", "total_M"]].to_string())
 ```
 
-## Map Coloring by Flood Depth
+## Depth Classification
 
-To display impacted structures with colors by depth category, add a depth class column and save a colormap sidecar file (same base name as the GeoJSON, ending in `.colormap.json`):
-
-Copy this block as-is into your script. Replace `output_file` with the path you used to save the GeoJSON.
+To show impacted structures colored by depth category, add a `depth_class` field to the GeoDataFrame:
 
 ```python
-import json
-
-# Single source of truth: category names used for both classification and palette
-_DEPTH_PALETTE = {
-    "< 1 ft": "#deebf7",
-    "1-3 ft": "#9ecae1",
-    "3-6 ft": "#3182bd",
-    "> 6 ft": "#08306b",
-}
-
 def _depth_class(d):
     if d < 1: return "< 1 ft"
     if d < 3: return "1-3 ft"
@@ -265,13 +253,9 @@ def _depth_class(d):
     return "> 6 ft"
 
 flooded["depth_class"] = flooded["depth_ft"].apply(_depth_class)
-
-# Save colormap sidecar — Sage reads this to color the map and show the legend
-json.dump(
-    {"field": "depth_class", "title": "Flood Depth", "palette": _DEPTH_PALETTE},
-    open(output_file.replace(".geojson", ".colormap.json"), "w")
-)
 ```
+
+Then save a `.colormap.json` sidecar (same base name as the GeoJSON) following the COLOR RULE — choose colors appropriate for the full set of map layers.
 
 ## Notes
 
