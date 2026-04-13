@@ -268,22 +268,35 @@ _LAYER_COLORS = [
 ]
 
 
-def _build_legend_html(title: str, palette: dict, bottom_offset: int) -> str:
-    """Build an HTML legend box for a categorical color palette."""
-    items = "".join(
-        f'<div style="display:flex;align-items:center;margin:3px 0">'
-        f'<div style="width:12px;height:12px;background:{color};border-radius:50%;'
-        f'margin-right:8px;flex-shrink:0;border:1px solid rgba(0,0,0,0.2)"></div>'
-        f'<span style="font-size:11px;white-space:nowrap">{label}</span></div>'
-        for label, color in palette.items()
-    )
+def _build_legend_panel_html(legend_entries: list) -> str:
+    """Build a single scrollable legend panel containing all layer legends.
+
+    legend_entries: list of (title, palette) tuples.
+    Rendered as a fixed bottom-right panel, ArcGIS-style.
+    """
+    sections = ""
+    for title, palette in legend_entries:
+        items = "".join(
+            f'<div style="display:flex;align-items:center;margin:2px 0">'
+            f'<div style="width:12px;height:12px;background:{color};border-radius:50%;'
+            f'flex-shrink:0;margin-right:7px;border:1px solid rgba(0,0,0,0.2)"></div>'
+            f'<span style="font-size:11px">{label}</span></div>'
+            for label, color in palette.items()
+        )
+        sections += (
+            f'<div style="margin-bottom:8px">'
+            f'<div style="font-weight:600;font-size:11px;color:#333;margin-bottom:3px;'
+            f'padding-bottom:3px;border-bottom:1px solid #e8e8e8">{title}</div>'
+            f'{items}</div>'
+        )
     return (
-        f'<div style="position:fixed;bottom:{bottom_offset}px;right:10px;z-index:9999;'
+        f'<div style="position:fixed;bottom:30px;right:10px;z-index:9999;'
         f'background:white;padding:8px 12px;border-radius:6px;'
-        f'box-shadow:0 2px 8px rgba(0,0,0,0.3);font-family:sans-serif;min-width:140px">'
-        f'<div style="font-weight:600;font-size:12px;margin-bottom:5px;'
-        f'border-bottom:1px solid #eee;padding-bottom:4px">{title}</div>'
-        f'{items}</div>'
+        f'box-shadow:0 2px 8px rgba(0,0,0,0.3);font-family:sans-serif;'
+        f'min-width:150px;max-width:200px;max-height:320px;overflow-y:auto">'
+        f'<div style="font-weight:700;font-size:12px;margin-bottom:6px;'
+        f'padding-bottom:4px;border-bottom:2px solid #ddd;color:#222">Legend</div>'
+        f'{sections}</div>'
     )
 
 
@@ -305,6 +318,7 @@ def _display_combined_map(
             try:
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", message="Non closed ring")
+                    warnings.filterwarnings("ignore", message="Could not parse column")
                     gdf = gpd.read_file(path)
                 import numpy as _np
                 for col in gdf.columns:
@@ -437,13 +451,12 @@ def _display_combined_map(
         if fit_bounds:
             m.fit_bounds(fit_bounds, max_zoom=10)
 
-        # Add legends for colormap layers (stacked bottom-right)
-        bottom = 30
-        for title, palette, n_items in legend_entries:
+        # Add single scrollable legend panel containing all colormap layers
+        if legend_entries:
+            panel_data = [(title, palette) for title, palette, _ in legend_entries]
             m.get_root().html.add_child(
-                folium.Element(_build_legend_html(title, palette, bottom))
+                folium.Element(_build_legend_panel_html(panel_data))
             )
-            bottom += n_items * 22 + 55  # approx height per legend box
 
         folium.LayerControl(collapsed=False).add_to(m)
 
@@ -669,7 +682,7 @@ def _fix_glm_markdown(text: str) -> str:
 # Integrated markdown+file renderer for final agent report
 # ---------------------------------------------------------------------------
 
-def _render_markdown_with_files(text: str) -> bool:
+def _render_markdown_with_files(text: str) -> tuple:
     """Render markdown that embeds file references inline.
 
     The agent writes standard markdown image syntax to reference output files:
@@ -678,19 +691,22 @@ def _render_markdown_with_files(text: str) -> bool:
       ![caption](full_path/to/file.png)             → inline image
 
     Text segments between file references are rendered as Markdown.
-    Returns True if at least one file reference was found and rendered.
+    Returns (found_any, map_rendered):
+      found_any   — True if at least one file reference was found and rendered
+      map_rendered — True if a GeoJSON/WMS map was actually rendered inline
     """
     import re
     from IPython.display import display, Markdown, HTML
 
     if not text.strip():
-        return False
+        return False, False
 
     # Standard markdown image: ![alt text](src)
     pattern = re.compile(r'!\[([^\]]*)\]\(([^)\n]+)\)')
 
     last_end = 0
     found_any = False
+    map_rendered = False
 
     for m in pattern.finditer(text):
         # Render prose before this file reference
@@ -724,6 +740,7 @@ def _render_markdown_with_files(text: str) -> bool:
 
         if geojsons or wms_files:
             found_any = True
+            map_rendered = True
             _display_combined_map(
                 geojsons, wms_files,
                 show_header=not alt,
@@ -738,12 +755,12 @@ def _render_markdown_with_files(text: str) -> bool:
 
     # Render any remaining prose after the last file reference
     if not found_any:
-        return False
+        return False, False
     remaining = text[last_end:].strip()
     if remaining:
         display(Markdown(remaining))
 
-    return True
+    return True, map_rendered
 
 
 # ---------------------------------------------------------------------------
@@ -1002,7 +1019,11 @@ try:
             f"MAP RULE — one map per report, all layers combined: your entire report must contain "
             f"exactly ONE map tag. Put every GeoJSON and WMS layer that is relevant to the result "
             f"into that single tag as comma-separated paths. Never create separate maps for different "
-            f"layers — always combine them.\n"
+            f"layers — always combine them. "
+            f"This includes files created by PREVIOUS cells that are directly related to the current "
+            f"analysis — for example, if this cell finds GPS stations near an earthquake, the map tag "
+            f"must include BOTH the earthquake GeoJSON from the previous cell AND the new GPS station "
+            f"GeoJSON, so the user can see both together.\n"
             f"COLOR RULE — to color a GeoJSON map layer by category, save a colormap "
             f"sidecar file with the same base name as the GeoJSON but ending in "
             f"'.colormap.json'. Example: if your data is 'earthquakes.geojson', also save "
@@ -1126,9 +1147,9 @@ try:
                 _save_cell_registry(_reg)
 
         # Render the final report — file references become maps/images inline
-        rendered = _render_markdown_with_files(final_text)
+        found_any, map_rendered = _render_markdown_with_files(final_text)
 
-        if not rendered:
+        if not found_any:
             # Fallback: plain markdown + auto-display new files separately
             if final_text.strip():
                 from IPython.display import display, Markdown
@@ -1136,18 +1157,10 @@ try:
             if new:
                 _display_new_outputs(new)
         elif new:
-            # Inline rendering succeeded. Only auto-display new GeoJSON/WMS if
-            # the agent referenced NO map files in its text at all (e.g. it
-            # referenced a PNG but left out its GeoJSON). If the agent already
-            # referenced at least one GeoJSON inline, trust that — don't add a
-            # second map.
-            import re as _re
-            inline_srcs = _re.findall(r'!\[[^\]]*\]\(([^)\n]+)\)', final_text)
-            agent_referenced_map = any(
-                '.geojson' in src or '.wms.json' in src
-                for src in inline_srcs
-            )
-            if not agent_referenced_map:
+            # Inline rendering found file refs. Auto-display new GeoJSON/WMS only
+            # if no map was actually rendered (e.g. agent referenced a PNG but its
+            # GeoJSON path was wrong or omitted entirely).
+            if not map_rendered:
                 new_maps = [
                     f for f in new
                     if f.endswith('.geojson') or f.endswith('.wms.json')
