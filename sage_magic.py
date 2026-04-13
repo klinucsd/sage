@@ -312,24 +312,39 @@ def _color_registry_prompt() -> str:
     registry = _load_color_registry()
     if not registry:
         return ""
-    lines = []
-    all_colors = set()
+
+    # Build per-scheme lines and collect all assigned color→category mappings
+    scheme_lines = []
+    color_owners = {}  # hex → "category (field)" for the forbidden list
     for field, entry in registry.items():
         palette = entry.get("palette", {})
-        all_colors.update(palette.values())
-        items = ", ".join(f"{cat} → {color}" for cat, color in palette.items())
         title = entry.get("title", field)
-        lines.append(f"  {field} ({title}): {items}")
-    used = ", ".join(sorted(all_colors))
+        items = ", ".join(f"{cat} → {color}" for cat, color in palette.items())
+        scheme_lines.append(f"  {field} ({title}): {items}")
+        for cat, color in palette.items():
+            if color not in color_owners:
+                color_owners[color] = f"{cat} in {field}"
+
+    forbidden_lines = "\n".join(
+        f"  {color} — already means '{owner}'"
+        for color, owner in sorted(color_owners.items())
+    )
+
     block = (
         "EXISTING CLASSIFICATION SCHEMES — earlier cells (or a previous session) of "
-        "this notebook have established these schemes. If your data fits naturally into "
-        "one of them, reuse it exactly (same category labels and same colors). If your "
-        "data genuinely needs different granularity, you may define a new scheme — but "
-        "never reuse a category label with a different color than shown here, and avoid "
-        "all colors already in use.\n"
-        + "\n".join(lines)
-        + f"\n  Already-used colors (do not reassign): {used}\n"
+        "this notebook have established these schemes. "
+        "If your data fits naturally into one of them, reuse it exactly (same category "
+        "labels and same colors). "
+        "If your data needs a different classification, you may define a new scheme — "
+        "but you MUST choose colors that do not appear in the FORBIDDEN list below.\n"
+        + "\n".join(scheme_lines)
+        + "\n"
+        "FORBIDDEN COLORS — these hex values are already assigned to specific categories "
+        "in this notebook. Do NOT use any of them for any new category. "
+        "Reusing a forbidden color for a different meaning will make the map legend "
+        "wrong and confuse the user:\n"
+        + forbidden_lines
+        + "\n"
     )
     return block
 
@@ -366,7 +381,7 @@ def _build_legend_panel_html(legend_entries: list) -> str:
             f'{items}</div>'
         )
     return (
-        f'<div style="position:fixed;bottom:30px;right:10px;z-index:9999;'
+        f'<div style="position:fixed;bottom:30px;left:10px;z-index:9999;'
         f'background:white;padding:8px 12px;border-radius:6px;'
         f'box-shadow:0 2px 8px rgba(0,0,0,0.3);font-family:sans-serif;'
         f'min-width:150px;max-width:200px;max-height:320px;overflow-y:auto">'
@@ -466,6 +481,7 @@ def _display_combined_map(
 
         # Add GeoJSON layers
         legend_entries = []  # (title, palette, n_items) for legend stacking
+        legend_fields_seen = set()  # deduplicate: one legend entry per field name
         for i, (name, gdf, colormap) in enumerate(geojson_layers):
             color = _LAYER_COLORS[i % len(_LAYER_COLORS)]
             popup_fields = [c for c in gdf.columns if c not in ("geometry", "_color")][:5]
@@ -478,15 +494,23 @@ def _display_combined_map(
                 if field and field in gdf.columns and palette:
                     gdf = gdf.copy()
                     gdf["_color"] = gdf[field].map(palette).fillna("#999999")
-                    # Only show legend entries for categories present in the data
-                    present = set(gdf[field].dropna().unique())
-                    visible_palette = {k: v for k, v in palette.items() if k in present}
-                    if visible_palette:
+                    # Add legend only once per field — multiple layers sharing the
+                    # same classification field (e.g. two earthquake GeoJSONs both
+                    # using magnitude_class) should not duplicate the legend entry.
+                    if field not in legend_fields_seen:
+                        present = set(gdf[field].dropna().unique())
+                        visible_palette = {k: v for k, v in palette.items() if k in present}
+                        # Fallback: if no palette keys match the data values (e.g. label
+                        # mismatch between colormap and classification code), show the
+                        # full palette rather than silently dropping the legend.
+                        if not visible_palette:
+                            visible_palette = palette
                         legend_entries.append((
                             colormap.get("title", name),
                             visible_palette,
                             len(visible_palette),
                         ))
+                        legend_fields_seen.add(field)
 
             has_color_col = "_color" in gdf.columns
             folium.GeoJson(
@@ -583,7 +607,7 @@ def _display_combined_map(
                 f'margin:10px 0 4px 0;">{caption}</div>'
             )
         elif show_header:
-            all_names = [name for name, _ in geojson_layers] + [w.get("name", "WMS") for w in wms_layers]
+            all_names = [name for name, _, _ in geojson_layers] + [w.get("name", "WMS") for w in wms_layers]
             header = f"<b>Map:</b> {', '.join(all_names)}<br>"
         else:
             header = ""
@@ -592,7 +616,11 @@ def _display_combined_map(
     except ImportError as e:
         display(HTML(f"Map — install folium+geopandas to render: {e}"))
     except Exception as e:
-        display(HTML(f"Map — error rendering: {e}"))
+        import traceback as _tb
+        display(HTML(
+            f'<div style="color:#c00;font-family:monospace;font-size:0.85em;'
+            f'white-space:pre-wrap">Map — error rendering: {e}\n\n{_tb.format_exc()}</div>'
+        ))
 
 
 def _display_csv(path: Path) -> None:
@@ -1093,13 +1121,15 @@ try:
             f"name (string), bbox ([min_lat, min_lon, max_lat, max_lon]). "
             f"Optional: opacity (0–1, default 0.7). No other fields are needed.\n"
             f"MAP RULE — one map per report, all layers combined: your entire report must contain "
-            f"exactly ONE map tag. Put every GeoJSON and WMS layer that is relevant to the result "
-            f"into that single tag as comma-separated paths. Never create separate maps for different "
-            f"layers — always combine them. "
-            f"This includes files created by PREVIOUS cells that are directly related to the current "
-            f"analysis — for example, if this cell finds GPS stations near an earthquake, the map tag "
-            f"must include BOTH the earthquake GeoJSON from the previous cell AND the new GPS station "
-            f"GeoJSON, so the user can see both together.\n"
+            f"exactly ONE map tag. Put every GeoJSON and WMS layer produced by this cell into that "
+            f"single tag as comma-separated paths. Never create separate maps for different layers — "
+            f"always combine them. "
+            f"Also include files from PREVIOUS cells ONLY when the current task explicitly uses or "
+            f"references that data — for example, if the user asked to find GPS stations near a "
+            f"specific earthquake, include the earthquake GeoJSON from the previous cell because the "
+            f"task directly references it. Do NOT include files from previous cells just because they "
+            f"exist in the output folder — only include them when the current question explicitly "
+            f"connects to them.\n"
             + (_color_registry_prompt())
             + f"COLOR RULE — to color a GeoJSON map layer by category, save a colormap "
             f"sidecar file with the same base name as the GeoJSON but ending in "
@@ -1109,6 +1139,16 @@ try:
             f'"palette": {{"M2-3": "#fee8c8", "M3-4": "#fdd49e", "M4-5": "#fc8d59", '
             f'"M5-6": "#e34a33", "M6+": "#b30000"}}}}\n'
             f"Sage will automatically color each feature and add a legend to the map. "
+            f"LABEL RULE — when category labels represent numeric thresholds or ranges "
+            f"(flood depth, magnitude, distance, risk levels, etc.), always embed the "
+            f"numeric definition in the label in parentheses so the legend is self-explanatory. "
+            f"Examples: 'Minor (1-3 ft)' not 'Minor', 'Moderate (3-6 ft)' not 'Moderate', "
+            f"'M4-5 (mag 4.0-5.0)' not 'M4-5', 'Near (< 50 mi)' not 'Near'. "
+            f"Pure descriptive labels with no numeric meaning (e.g. 'critically dry', 'unknown') "
+            f"do not need a parenthetical. "
+            f"CRITICAL: the label strings in your palette keys MUST exactly match the values "
+            f"your classification function returns — if the palette key is 'Minor (1-3 ft)' "
+            f"then the function must also return 'Minor (1-3 ft)', not 'Minor'.\n"
             f"NEVER describe color meanings in your report text in any form — "
             f"no legend, no color key, no bullet list, no 'blue = X' sentences, "
             f"no 'the map displays' color explanations. The map legend is the only "
