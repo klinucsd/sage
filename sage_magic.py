@@ -229,7 +229,7 @@ def _new_files(before: dict, after: dict) -> list:
 
 
 # Internal files that should never be tracked as cell outputs
-_SAGE_INTERNAL_FILES = {".sage_cells.json", ".sage_run.jsonl"}
+_SAGE_INTERNAL_FILES = {".sage_cells.json", ".sage_run.jsonl", ".sage_colors.json"}
 
 
 def _get_cell_id() -> str | None:
@@ -256,6 +256,82 @@ def _save_cell_registry(registry: dict) -> None:
     (Path(SAGE_OUTPUT_DIR) / ".sage_cells.json").write_text(
         json.dumps(registry, indent=2)
     )
+
+
+def _load_color_registry() -> dict:
+    """Load .sage_colors.json — maps field → {title, palette} for all classification
+    schemes established in this notebook (persists across kernel restarts)."""
+    p = Path(SAGE_OUTPUT_DIR) / ".sage_colors.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_color_registry(registry: dict) -> None:
+    """Persist .sage_colors.json."""
+    (Path(SAGE_OUTPUT_DIR) / ".sage_colors.json").write_text(
+        json.dumps(registry, indent=2)
+    )
+
+
+def _update_color_registry(new_files: list[str]) -> None:
+    """Scan newly created .colormap.json files and merge into the registry.
+
+    Only adds new fields — never overwrites an existing field's scheme,
+    since established classifications must remain stable.
+    """
+    registry = _load_color_registry()
+    changed = False
+    for f in new_files:
+        if not f.endswith(".colormap.json"):
+            continue
+        try:
+            cm = json.loads(Path(f).read_text())
+            field = cm.get("field")
+            palette = cm.get("palette")
+            if field and palette and field not in registry:
+                registry[field] = {
+                    "title": cm.get("title", field),
+                    "palette": palette,
+                }
+                changed = True
+        except Exception:
+            continue
+    if changed:
+        _save_color_registry(registry)
+
+
+def _color_registry_prompt() -> str:
+    """Build the EXISTING CLASSIFICATIONS prompt block from the color registry.
+
+    Returns an empty string when the registry is empty.
+    """
+    registry = _load_color_registry()
+    if not registry:
+        return ""
+    lines = []
+    all_colors = set()
+    for field, entry in registry.items():
+        palette = entry.get("palette", {})
+        all_colors.update(palette.values())
+        items = ", ".join(f"{cat} → {color}" for cat, color in palette.items())
+        title = entry.get("title", field)
+        lines.append(f"  {field} ({title}): {items}")
+    used = ", ".join(sorted(all_colors))
+    block = (
+        "EXISTING CLASSIFICATION SCHEMES — earlier cells (or a previous session) of "
+        "this notebook have established these schemes. If your data fits naturally into "
+        "one of them, reuse it exactly (same category labels and same colors). If your "
+        "data genuinely needs different granularity, you may define a new scheme — but "
+        "never reuse a category label with a different color than shown here, and avoid "
+        "all colors already in use.\n"
+        + "\n".join(lines)
+        + f"\n  Already-used colors (do not reassign): {used}\n"
+    )
+    return block
 
 
 # ---------------------------------------------------------------------------
@@ -1024,7 +1100,8 @@ try:
             f"analysis — for example, if this cell finds GPS stations near an earthquake, the map tag "
             f"must include BOTH the earthquake GeoJSON from the previous cell AND the new GPS station "
             f"GeoJSON, so the user can see both together.\n"
-            f"COLOR RULE — to color a GeoJSON map layer by category, save a colormap "
+            + (_color_registry_prompt())
+            + f"COLOR RULE — to color a GeoJSON map layer by category, save a colormap "
             f"sidecar file with the same base name as the GeoJSON but ending in "
             f"'.colormap.json'. Example: if your data is 'earthquakes.geojson', also save "
             f"'earthquakes.colormap.json':\n"
@@ -1139,6 +1216,10 @@ try:
         # only delete this cell's outputs, not other cells' files.
         after = _snapshot(SAGE_OUTPUT_DIR)
         new = _new_files(before, after)
+
+        # Merge any new colormap sidecars into the persistent color registry
+        _update_color_registry(new)
+
         if cell_id:
             _trackable = [f for f in new if Path(f).name not in _SAGE_INTERNAL_FILES]
             if _trackable:
