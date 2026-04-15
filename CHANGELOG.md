@@ -4,6 +4,15 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## v1.0.146 — 2026-04-15
+- Fix: last map in a long notebook still reopened stuck on a single global-extent tile. Root cause: previous retry logic locked out after a premature "success" (dimension check passed but Leaflet's tile render hadn't caught up). New approach: idempotent `invalidateSize()` + `fitBounds()` called unconditionally on a schedule (50 ms … 15 s) plus on `resize` / `load` / `ResizeObserver` callbacks, with no one-shot lock. Observer disconnects after 20 s to avoid interfering with user pan/zoom.
+
+## v1.0.145 — 2026-04-14
+- Fix: the last map in a long notebook could still reopen stuck on a single global-extent tile in the top-left corner. Combine scheduled retries (100 ms … 8 s) with the `ResizeObserver`, and only mark the map fixed after the container actually reports non-zero dimensions. Whichever mechanism sees real dimensions first wins; a `_fixed` flag prevents double-firing.
+
+## v1.0.144 — 2026-04-14
+- Fix: Folium `ResizeObserver` no longer disconnects after 3 s. Maps below the fold at page load weren't getting real dimensions within that window, so `invalidateSize()` + `fitBounds()` never ran and the last maps in a long notebook stayed zoomed out to global extent on reopen. Observer now disconnects only after it fires once with real dimensions.
+
 ## v1.0.72 — 2026-04-01
 - Fix: add `jupyter_config.py` alongside `jupyter_server_config.py` so the `jupyter trust` CLI and JupyterLab server both use the same persistent notary paths
 

@@ -560,43 +560,68 @@ def _display_combined_map(
 
         folium.LayerControl(collapsed=False).add_to(m)
 
-        # Fix: maps 2+ render as a single tile in the top-left corner when the
-        # notebook is reopened.  JupyterLab uses cell windowing — off-screen
-        # cells are not added to the DOM until scrolled into view, so their
-        # iframes don't exist yet when the page loads.  When an iframe is finally
-        # created, the map container briefly has wrong dimensions.
-        # ResizeObserver fires as soon as the container gets its real size,
-        # which is the correct moment to call invalidateSize().
-        # Timed retries are kept as a fallback for browsers without ResizeObserver.
+        # Fix: on notebook reopen, two problems occur:
+        # 1. Maps render as a single tile in the top-left corner (container has
+        #    zero size when Leaflet initializes → invalidateSize() fixes this).
+        # 2. fitBounds runs at page load before the container has real dimensions,
+        #    so Leaflet calculates the wrong zoom; after invalidateSize() the tiles
+        #    render but the extent stays at the wrong zoom.
+        # Both are fixed by calling invalidateSize() + fitBounds() together when
+        # the ResizeObserver fires (i.e. exactly when the container gets real size).
+        # The bounds are baked into the script at render time so they are always
+        # available, even after a kernel restart.
         map_var = m.get_name()
-        m.get_root().html.add_child(folium.Element(f"""
-<script>
+        if fit_bounds:
+            _s, _w = fit_bounds[0]   # [south, west]
+            _n, _e = fit_bounds[1]   # [north, east]
+            fit_js = (
+                f"{map_var}.fitBounds([[{_s},{_w}],[{_n},{_e}]],"
+                f"{{maxZoom:10}});"
+            )
+        else:
+            fit_js = ""
+        # Append to get_root().script (runs AFTER folium's own init +
+        # fit_bounds) rather than .html (which places the script BEFORE
+        # L.map(...) and fitBounds in the rendered output — at which point
+        # the map variable is undefined and the IIFE is racing Leaflet's
+        # own init).
+        m.get_root().script.add_child(folium.Element(f"""
 (function() {{
-    function _fixMap() {{
-        if (typeof {map_var} !== 'undefined') {{
+    // Reopen-time problems we're fixing:
+    //   (1) container is 0x0 when Leaflet initializes → only a single tile
+    //       in the top-left corner until invalidateSize() is re-run against
+    //       a container with real dimensions
+    //   (2) folium's init-time fitBounds() ran against that 0x0 container
+    //       → Leaflet picked a global zoom; it stays wrong even after tiles
+    //       render unless fitBounds() is called again
+    // Strategy: brute-force. invalidateSize() + fitBounds() are idempotent,
+    // so we call both on a schedule (plus on resize / load events). When the
+    // container is still 0x0 the calls are no-ops; once it has real size the
+    // next call fixes the map. No one-shot lock — previous bugs were caused
+    // by locking out after a premature "success" that didn't actually fix
+    // tile rendering. Eventually we stop to avoid interfering with user
+    // panning/zooming.
+    function _tick() {{
+        if (typeof {map_var} === 'undefined') return;
+        try {{
             {map_var}.invalidateSize();
-        }}
+            {fit_js}
+        }} catch (e) {{ /* ignore */ }}
     }}
-    var _el = document.getElementById('{map_var}');
-    if (_el && window.ResizeObserver) {{
-        var _ro = new ResizeObserver(function(entries) {{
-            for (var i = 0; i < entries.length; i++) {{
-                var r = entries[i].contentRect;
-                if (r.width > 0 && r.height > 0) {{
-                    _fixMap();
-                    _ro.disconnect();
-                    break;
-                }}
-            }}
-        }});
-        _ro.observe(_el);
-    }} else {{
-        [300, 1000, 2000, 4000].forEach(function(ms) {{
-            setTimeout(_fixMap, ms);
-        }});
+    [50, 150, 400, 800, 1500, 3000, 6000, 10000, 15000].forEach(function(ms) {{
+        setTimeout(_tick, ms);
+    }});
+    if (typeof window !== 'undefined' && window.addEventListener) {{
+        window.addEventListener('load', _tick);
+        window.addEventListener('resize', _tick);
+    }}
+    var _el0 = document.getElementById('{map_var}');
+    if (_el0 && window.ResizeObserver) {{
+        var _ro = new ResizeObserver(_tick);
+        _ro.observe(_el0);
+        setTimeout(function() {{ _ro.disconnect(); }}, 20000);
     }}
 }})();
-</script>
 """))
 
         # Build header HTML and combine with map in a single display() call
@@ -1096,6 +1121,12 @@ try:
             f"Use {SAGE_OUTPUT_DIR} as your working directory for ALL files — "
             f"including intermediate files, scripts, and final outputs (GeoJSON, CSV, PNG). "
             f"Do not write any files to /tmp directly.\n"
+            f"FILE ACCESS RULE — you may only read or search files in two locations: "
+            f"(1) {SAGE_OUTPUT_DIR} — your working directory for this notebook; "
+            f"(2) /opt/sage_scripts — pre-deployed helper scripts. "
+            f"Never read, list, search, or browse any other directory on the filesystem "
+            f"(e.g. /home, /data, /tmp, /root, or any path outside these two). "
+            f"All input data must come from external APIs or services, not from the local filesystem.\n"
             f"Never use read_file on binary files such as PNG, GeoTIFF, or other image files — "
             f"they will crash.\n\n"
             f"As you work, narrate your thought process naturally. Before each tool use, "
