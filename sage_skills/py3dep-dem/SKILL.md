@@ -381,21 +381,88 @@ plot_river_on_dem(dem, main_channel, 'carson river', output_path)
 
 ---
 
-## Example 4 — Elevation profile along a river
+## Example 4 — Elevation profile (copy this script verbatim, fill in the four variables)
 
 ```python
-# Case A: river from a saved GeoJSON file (most common when reusing previous output)
-river_elev, distances = elevation_profile(
-    f"{output_path}/carson_river_main_channel.geojson",
-    output_path,
-    river_name="Carson River",
-    dem_source=f"{output_path}/dem_30m.tif",   # omit to download automatically
-)
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "py3dep", "rioxarray", "pygeoutils"], check=True)
 
-# Case B: river GeoDataFrame already in memory (e.g. from nhd-rivers skill)
-# flw = fetch_flowlines(bbox)
-# river_line, main_channel = get_main_channel(flw, 'carson river')
-# river_elev, distances = elevation_profile(main_channel, output_path, river_name="Carson River")
+# ── fill in these four variables, do not change anything else ──────────────
+river_source = "/path/to/carson_river_main_channel.geojson"  # GeoJSON path or GeoDataFrame
+dem_source   = "/path/to/dem_30m.tif"   # saved DEM TIF path, or None to download
+output_path  = "/path/to/output_dir"
+river_name   = "Carson River"
+# ──────────────────────────────────────────────────────────────────────────
+
+import numpy as np
+import matplotlib.pyplot as plt
+import geopandas as gpd
+import rioxarray
+from shapely import ops
+
+
+def sample_elevation(river_line, main_channel, dem):
+    import numpy as np
+    import rasterio
+    import shapely
+    import pygeoutils
+    npts = int(np.ceil(river_line.length * 111_000 / 10))
+    river_line_smooth = pygeoutils.smooth_linestring(river_line, 0.1, npts)
+    url = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/USGS_Seamless_DEM_13.vrt"
+    with rasterio.open(url) as src:
+        xy_raster = shapely.get_coordinates(
+            pygeoutils.geo_transform(river_line_smooth, main_channel.crs, src.crs)
+        )
+        z = np.array([val[0] for val in src.sample(xy_raster)])
+    river_line_utm = pygeoutils.geo_transform(river_line_smooth, main_channel.crs, dem.rio.crs)
+    xy_utm = shapely.get_coordinates(river_line_utm)
+    river_elev = np.c_[xy_utm, z]
+    pts = shapely.points(river_line_smooth.coords)
+    distances = shapely.line_locate_point(river_line_smooth, pts)
+    distances = distances - distances[0]
+    print(f"sample_elevation: {len(river_elev)} points, elevation {z.min():.0f}–{z.max():.0f} m, length {distances[-1]/1000:.1f} km")
+    return river_elev, distances
+
+
+def elevation_profile(river_source, output_path, river_name="River", dem_source=None, res=30):
+    if isinstance(river_source, str):
+        river_gdf = gpd.read_file(river_source)
+    else:
+        river_gdf = river_source.copy()
+    if river_gdf.crs is None:
+        river_gdf = river_gdf.set_crs("EPSG:4326")
+    elif river_gdf.crs.to_epsg() != 4326:
+        river_gdf = river_gdf.to_crs("EPSG:4326")
+    if 'hydroseq' in river_gdf.columns:
+        river_gdf = river_gdf.sort_values('hydroseq', ascending=True)
+    segments = river_gdf.explode(index_parts=False).reset_index(drop=True)
+    river_line = ops.linemerge(segments.geometry.tolist())
+    if river_line.geom_type != 'LineString':
+        river_line = max(river_line.geoms, key=lambda g: g.length)
+        print(f"elevation_profile: using longest piece (~{river_line.length * 111:.0f} km)")
+    if dem_source is not None:
+        dem = rioxarray.open_rasterio(dem_source, masked=True).squeeze()
+    else:
+        import py3dep
+        west, south, east, north = river_gdf.total_bounds
+        dem = py3dep.get_dem((west, south, east, north), res)
+    river_elev, distances = sample_elevation(river_line, river_gdf, dem)
+    fig, ax = plt.subplots(figsize=(14, 8), dpi=150)
+    ax.plot(distances / 1000, river_elev[:, 2], linewidth=1.5, color='steelblue')
+    ax.set_xlabel('Distance along river (km)')
+    ax.set_ylabel('Elevation (m)')
+    ax.set_title(f'{river_name} — Longitudinal Elevation Profile')
+    z_min, z_max = np.nanmin(river_elev[:, 2]), np.nanmax(river_elev[:, 2])
+    ax.set_ylim(z_min - (z_max - z_min) * 0.05, z_max + (z_max - z_min) * 0.05)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_path}/elevation_profile.png", dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"elevation_profile: saved to {output_path}/elevation_profile.png")
+    return river_elev, distances
+
+
+river_elev, distances = elevation_profile(river_source, output_path, river_name, dem_source)
 ```
 
 ---
