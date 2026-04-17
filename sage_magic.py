@@ -261,17 +261,18 @@ def _display_tool_result(tool_name: str, content: str) -> None:
     escaped = _esc(shown)
     total_lines = len(lines)
 
-    html = f"""
-<div style="background:#f0fff4; border-left:3px solid #4caf50;
-            padding:5px 10px; margin:4px 0 12px 0; font-size:0.85em;">
-  🔍 <b>{tool_name}</b> output ({total_lines} lines)
-  <details>
-    <summary style="cursor:pointer; color:#888; font-size:0.9em;">show output</summary>
-    <div style="margin-top:4px; font-family:monospace; font-size:0.9em; white-space:pre-wrap;">
-      {escaped}
-    </div>
-  </details>
-</div>"""
+    html = (
+        '<div style="background:#f0fff4; border-left:3px solid #4caf50;'
+        '            padding:5px 10px; margin:4px 0 12px 0; font-size:0.85em;">'
+        f'  🔍 <b>{tool_name}</b> output ({total_lines} lines)'
+        '  <details>'
+        '    <summary style="cursor:pointer; color:#888; font-size:0.9em;">show output</summary>'
+        '    <div style="margin-top:4px; font-family:monospace; font-size:0.9em; white-space:pre-wrap;">'
+        f'{escaped}'
+        '    </div>'
+        '  </details>'
+        '</div>'
+    )
     display(HTML(html))
 
 
