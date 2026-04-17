@@ -4,7 +4,7 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
-## v1.0.148 — 2026-04-16
+## v1.0.149 — 2026-04-16
 - Feature: show tool output after each tool call. Results appear in a collapsible green block (🔍) beneath the blue tool call block, showing the first line as preview and full output on expand.
 
 ## v1.0.147 — 2026-04-16
