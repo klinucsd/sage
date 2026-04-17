@@ -18,12 +18,23 @@ import xarray as xr
 
 ---
 
-## CRITICAL — Never sample elevation manually
+## CRITICAL — Never write your own elevation sampling code
 
-Never sample elevation by loading a saved GeoTIFF and indexing the array with
-`~transform * (x, y)`. That pattern returns (col, row) not (row, col) and
-produces wrong elevations with large random spikes. Always call `sample_elevation()`
-defined below, even when a saved DEM file already exists.
+Two rules, no exceptions:
+
+1. **If you have a river GeoDataFrame** (from NHD or loaded from a saved GeoJSON),
+   always call `elevation_profile(river_gdf, output_path, river_name)`.
+   Never write your own loop to sample elevation from a DEM file.
+
+2. **If you have river_line + main_channel + dem already in memory**,
+   call `sample_elevation(river_line, main_channel, dem)`.
+
+Common wrong patterns that produce spikes — do NOT do these:
+- Opening a GeoTIFF with rasterio and calling `src.index()` or `~transform * (x, y)`
+- Concatenating segment coordinates with `list(line.coords)` in a loop
+- Using `interpolate()` on a manually merged line and sampling with pyproj + rasterio
+All of these have subtle bugs (closed dataset, swapped row/col, wrong segment direction)
+that cause large random spikes in the elevation profile.
 
 ## When to Use
 
