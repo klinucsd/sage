@@ -9,7 +9,7 @@ description: "Use this skill for digital elevation model (DEM) requests: check a
 
 ```python
 import subprocess
-subprocess.run(["pip", "install", "-q", "py3dep", "rioxarray", "xarray"], check=True)
+import sys; subprocess.run([sys.executable, "-m", "pip", "install", "-q", "py3dep", "rioxarray", "xarray"], check=True)
 
 import py3dep
 import rioxarray
@@ -190,9 +190,9 @@ def compute_rem(dem, river_elev, output_path):
     import opt_einsum as oe
     from pathlib import Path
 
-    import subprocess
+    import subprocess, sys
     subprocess.run(
-        ["pip", "install", "-q", "scipy", "opt_einsum", "xarray-spatial", "datashader"],
+        [sys.executable, "-m", "pip", "install", "-q", "scipy", "opt_einsum", "xarray-spatial", "datashader"],
         check=True
     )
 

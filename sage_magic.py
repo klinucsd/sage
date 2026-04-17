@@ -258,7 +258,7 @@ def _display_tool_result(tool_name: str, content: str) -> None:
 
     html = f"""
 <div style="background:#f0fff4; border-left:3px solid #4caf50;
-            padding:5px 10px; margin:-9px 0 12px 0; font-size:0.85em;">
+            padding:5px 10px; margin:4px 0 12px 0; font-size:0.85em;">
   🔍 <b>{tool_name}</b> output — {_esc(preview)}{"…" if len(content) > len(preview) else ""}
   <details>
     <summary style="cursor:pointer; color:#888; font-size:0.9em;">full output ({len(content)} chars)</summary>

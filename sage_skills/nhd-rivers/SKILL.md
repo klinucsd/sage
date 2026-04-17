@@ -15,7 +15,7 @@ defined below. This applies even when a DEM is already available.
 
 ```python
 import subprocess
-subprocess.run(["pip", "install", "-q", "pynhd", "pygeoutils", "rioxarray"], check=True)
+import sys; subprocess.run([sys.executable, "-m", "pip", "install", "-q", "pynhd", "pygeoutils", "rioxarray"], check=True)
 
 import pynhd
 import pygeoutils
