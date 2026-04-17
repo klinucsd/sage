@@ -33,18 +33,19 @@ defined below, even when a saved DEM file already exists.
 - When you need to sample elevation along a river and plot the profile, use Example 4
 - When you need to compute a REM, use Example 5
 - When you need the full pipeline (DEM + river + elevation profile + REM), use Example 6
+- When you have a river GeoDataFrame (from any source — NHD, saved GeoJSON, etc.) and need an elevation profile, use Example 7
 
 ---
 
 ## Usage
 
-This skill defines four functions. Copy all four function definitions into your
+This skill defines five functions. Copy all five function definitions into your
 notebook first, then call them as shown in the examples. Do not rewrite the
 function bodies.
 
 ---
 
-## Function Definitions — copy all four verbatim
+## Function Definitions — copy all five verbatim
 
 ```python
 def get_dem(bbox, res=10, output_path=None):
@@ -248,6 +249,78 @@ def compute_rem(dem, river_elev, output_path):
     ds_utils.export_image(img[::-1], Path(output_path, "rem").as_posix())
     print(f"compute_rem: saved to {Path(output_path, 'rem.png')}")
     return rem
+
+
+def elevation_profile(river_gdf, output_path, river_name="River", res=30):
+    """
+    Compute and plot an elevation profile for any river GeoDataFrame.
+
+    Handles all cases:
+    - river_gdf from NHD (has hydroseq column) or loaded from a saved GeoJSON
+    - river_gdf in any CRS — reprojects to EPSG:4326 automatically
+    - linemerge fallback: if segments don't connect cleanly, uses the longest piece
+
+    Never reimplement this by loading a GeoTIFF and indexing with ~transform.
+    That approach swaps row/col and produces random elevation spikes.
+
+    Parameters
+    ----------
+    river_gdf   : GeoDataFrame  river segments from any source
+    output_path : str           directory where elevation_profile.png is saved
+    river_name  : str           used in the plot title (default "River")
+    res         : int           DEM resolution in metres — 10 or 30 (default 30)
+
+    Returns
+    -------
+    river_elev : ndarray  shape (N, 3) — [utm_x, utm_y, elevation_m]
+    distances  : ndarray  shape (N,) — along-channel distances in metres
+    """
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from shapely import ops
+
+    # Ensure EPSG:4326
+    if river_gdf.crs is None:
+        river_gdf = river_gdf.set_crs("EPSG:4326")
+    elif river_gdf.crs.to_epsg() != 4326:
+        river_gdf = river_gdf.to_crs("EPSG:4326")
+
+    # Sort by hydroseq (NHD flow order) if the column exists
+    if 'hydroseq' in river_gdf.columns:
+        river_gdf = river_gdf.sort_values('hydroseq', ascending=True)
+
+    # Merge segments into a single LineString
+    segments = river_gdf.explode(index_parts=False).reset_index(drop=True)
+    river_line = ops.linemerge(segments.geometry.tolist())
+
+    if river_line.geom_type != 'LineString':
+        # Segments don't connect end-to-end — use the longest contiguous piece
+        river_line = max(river_line.geoms, key=lambda g: g.length)
+        print(f"elevation_profile: segments not fully connected — "
+              f"using longest piece (~{river_line.length * 111:.0f} km)")
+
+    # Download DEM for the river extent
+    west, south, east, north = river_gdf.total_bounds
+    bbox = (west, south, east, north)
+    dem = get_dem(bbox, res=res)
+
+    # Sample elevation and plot
+    river_elev, distances = sample_elevation(river_line, river_gdf, dem)
+
+    fig, ax = plt.subplots(figsize=(14, 8), dpi=150)
+    ax.plot(distances / 1000, river_elev[:, 2], linewidth=1.5, color='steelblue')
+    ax.set_xlabel('Distance along river (km)')
+    ax.set_ylabel('Elevation (m)')
+    ax.set_title(f'{river_name} — Longitudinal Elevation Profile')
+    z_min, z_max = np.nanmin(river_elev[:, 2]), np.nanmax(river_elev[:, 2])
+    ax.set_ylim(z_min - (z_max - z_min) * 0.05, z_max + (z_max - z_min) * 0.05)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{output_path}/elevation_profile.png", dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"elevation_profile: saved to {output_path}/elevation_profile.png")
+
+    return river_elev, distances
 ```
 
 ---
@@ -364,6 +437,19 @@ rem                      = compute_rem(dem, river_elev, output_path)
 
 ---
 
+## Example 7 — Elevation profile from any river GeoDataFrame
+
+```python
+import geopandas as gpd
+
+# Works with river loaded from a saved GeoJSON, NHD output, or any other source
+river_gdf = gpd.read_file(f"{output_path}/carson_river_main_channel.geojson")
+
+river_elev, distances = elevation_profile(river_gdf, output_path, river_name="Carson River")
+```
+
+---
+
 ## Notes
 
 - `get_dem()` returns UTM, not EPSG:4326. Always use `.to_crs(dem.rio.crs)` before plotting any vector layer on top — or use `plot_river_on_dem()` which handles this automatically.
@@ -371,3 +457,4 @@ rem                      = compute_rem(dem, river_elev, output_path)
 - `xarray-spatial` installs as `xarray-spatial` but **imports as `xrspatial`** — not `xarray_spatial`.
 - `output_path` must be defined as a string before calling any function.
 - `sample_elevation()` and `plot_river_on_dem()` both require `river_line` and `main_channel` from the nhd-rivers skill.
+- `elevation_profile()` handles any river GeoDataFrame regardless of source or CRS — use it whenever you have a saved river file or NHD output and need an elevation profile.
