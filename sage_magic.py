@@ -247,21 +247,26 @@ def _display_tool_call(tool_name: str, args: dict) -> None:
 
 
 def _display_tool_result(tool_name: str, content: str) -> None:
-    """Render a tool result as a collapsible output block."""
+    """Render a tool result as a collapsible output block, capped at 100 lines."""
     from IPython.display import display, HTML
 
     def _esc(s):
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
-    preview = content.split("\n")[0][:120] if content else ""
-    escaped = _esc(content)
+    lines = content.splitlines()
+    truncated = len(lines) > 100
+    shown = "\n".join(lines[:100])
+    if truncated:
+        shown += f"\n… ({len(lines) - 100} more lines)"
+    escaped = _esc(shown)
+    total_lines = len(lines)
 
     html = f"""
 <div style="background:#f0fff4; border-left:3px solid #4caf50;
             padding:5px 10px; margin:4px 0 12px 0; font-size:0.85em;">
-  🔍 <b>{tool_name}</b> output — {_esc(preview)}{"…" if len(content) > len(preview) else ""}
+  🔍 <b>{tool_name}</b> output ({total_lines} lines)
   <details>
-    <summary style="cursor:pointer; color:#888; font-size:0.9em;">full output ({len(content)} chars)</summary>
+    <summary style="cursor:pointer; color:#888; font-size:0.9em;">show output</summary>
     <div style="margin-top:4px; font-family:monospace; font-size:0.9em; white-space:pre-wrap;">
       {escaped}
     </div>
