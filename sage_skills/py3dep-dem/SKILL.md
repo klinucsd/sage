@@ -18,6 +18,13 @@ import xarray as xr
 
 ---
 
+## CRITICAL — Never sample elevation manually
+
+Never sample elevation by loading a saved GeoTIFF and indexing the array with
+`~transform * (x, y)`. That pattern returns (col, row) not (row, col) and
+produces wrong elevations with large random spikes. Always call `sample_elevation()`
+defined below, even when a saved DEM file already exists.
+
 ## When to Use
 
 - When you need to fetch a DEM for a bbox, use Example 1
@@ -75,6 +82,11 @@ def get_dem(bbox, res=10, output_path=None):
 def sample_elevation(river_line, main_channel, dem):
     """
     Sample elevation along the river centerline and return river_elev in UTM.
+
+    DO NOT reimplement this function. The common alternative — opening the saved
+    GeoTIFF with rasterio and using `~transform * (x, y)` — returns (col, row)
+    not (row, col), causing large random elevation spikes in the profile.
+    Always call this function.
 
     Parameters
     ----------
