@@ -250,13 +250,16 @@ def _display_tool_result(tool_name: str, content: str) -> None:
     """Render a tool result as a collapsible output block."""
     from IPython.display import display, HTML
 
+    def _esc(s):
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
     preview = content.split("\n")[0][:120] if content else ""
-    escaped = _html_escape(content)
+    escaped = _esc(content)
 
     html = f"""
 <div style="background:#f0fff4; border-left:3px solid #4caf50;
             padding:5px 10px; margin:-9px 0 12px 0; font-size:0.85em;">
-  🔍 <b>{tool_name}</b> output — {_html_escape(preview)}{"…" if len(content) > len(preview) else ""}
+  🔍 <b>{tool_name}</b> output — {_esc(preview)}{"…" if len(content) > len(preview) else ""}
   <details>
     <summary style="cursor:pointer; color:#888; font-size:0.9em;">full output ({len(content)} chars)</summary>
     <div style="margin-top:4px; font-family:monospace; font-size:0.9em; white-space:pre-wrap;">
