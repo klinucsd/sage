@@ -38,6 +38,7 @@ SAGE_THREAD_ID = generate_thread_id()[:8]
 # Conversation history for cross-cell memory — maintained in Python, no SQLite checkpointer.
 # Each entry is {"role": "user"|"assistant", "content": "..."}.
 SAGE_MESSAGES: list = []
+SAGE_SHOW_TOOL_OUTPUT: bool = False  # toggled by %tool_output_on / %tool_output_off
 
 # ---------------------------------------------------------------------------
 # Output directory — persistent, next to the notebook
@@ -247,19 +248,35 @@ def _display_tool_call(tool_name: str, args: dict) -> None:
 
 
 def _display_tool_result(tool_name: str, content: str) -> None:
-    """Render a tool result as a collapsible output block, capped at 100 lines."""
+    """Render a tool result as a collapsible output block, capped at 100 lines / 3000 chars."""
+    if not SAGE_SHOW_TOOL_OUTPUT:
+        return
+
     from IPython.display import display, HTML
 
     def _esc(s):
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
+    _CHAR_LIMIT = 3000
+    _LINE_LIMIT = 100
+
     lines = content.splitlines()
-    truncated = len(lines) > 100
-    shown = "\n".join(lines[:100])
-    if truncated:
-        shown += f"\n… ({len(lines) - 100} more lines)"
-    escaped = _esc(shown)
     total_lines = len(lines)
+    shown_lines = lines[:_LINE_LIMIT]
+    shown = "\n".join(shown_lines)
+
+    # Apply char limit after line limit
+    char_truncated = len(shown) > _CHAR_LIMIT
+    if char_truncated:
+        shown = shown[:_CHAR_LIMIT]
+
+    line_truncated = total_lines > _LINE_LIMIT
+    if line_truncated:
+        shown += f"\n… ({total_lines - _LINE_LIMIT} more lines)"
+    elif char_truncated:
+        shown += f"\n… (truncated at {_CHAR_LIMIT} chars)"
+
+    escaped = _esc(shown)
 
     html = (
         '<div style="background:#f0fff4; border-left:3px solid #4caf50;'
@@ -1431,6 +1448,24 @@ try:
     del ask  # keep IPython namespace clean
 
     from IPython.core.magic import register_line_magic
+
+    @register_line_magic
+    def tool_output_on(line):
+        """Show tool outputs after each tool call."""
+        global SAGE_SHOW_TOOL_OUTPUT
+        SAGE_SHOW_TOOL_OUTPUT = True
+        from IPython.display import display, HTML
+        display(HTML('<div style="color:#4caf50; font-size:0.9em;">Tool output display: <b>on</b></div>'))
+    del tool_output_on
+
+    @register_line_magic
+    def tool_output_off(line):
+        """Hide tool outputs (default)."""
+        global SAGE_SHOW_TOOL_OUTPUT
+        SAGE_SHOW_TOOL_OUTPUT = False
+        from IPython.display import display, HTML
+        display(HTML('<div style="color:#888; font-size:0.9em;">Tool output display: <b>off</b></div>'))
+    del tool_output_off
 
     @register_line_magic
     def reset(line):
