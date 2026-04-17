@@ -246,6 +246,27 @@ def _display_tool_call(tool_name: str, args: dict) -> None:
     display(HTML(html))
 
 
+def _display_tool_result(tool_name: str, content: str) -> None:
+    """Render a tool result as a collapsible output block."""
+    from IPython.display import display, HTML
+
+    preview = content.split("\n")[0][:120] if content else ""
+    escaped = _html_escape(content)
+
+    html = f"""
+<div style="background:#f0fff4; border-left:3px solid #4caf50;
+            padding:5px 10px; margin:-9px 0 12px 0; font-size:0.85em;">
+  🔍 <b>{tool_name}</b> output — {_html_escape(preview)}{"…" if len(content) > len(preview) else ""}
+  <details>
+    <summary style="cursor:pointer; color:#888; font-size:0.9em;">full output ({len(content)} chars)</summary>
+    <div style="margin-top:4px; font-family:monospace; font-size:0.9em; white-space:pre-wrap;">
+      {escaped}
+    </div>
+  </details>
+</div>"""
+    display(HTML(html))
+
+
 # ---------------------------------------------------------------------------
 # File change detection
 # ---------------------------------------------------------------------------
@@ -947,7 +968,7 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
     from deepagents.backends.local_shell import LocalShellBackend
     from deepagents_cli.config import create_model
     from deepagents_cli.model_config import ModelConfigError
-    from langchain_core.messages import AIMessage
+    from langchain_core.messages import AIMessage, ToolMessage
 
     try:
         result = create_model(None)
@@ -999,6 +1020,18 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
         if not isinstance(chunk, tuple) or len(chunk) < 2:
             continue
         message_obj, metadata = chunk[0], chunk[1]
+
+        if isinstance(message_obj, ToolMessage):
+            _flush_text()
+            tool_content = getattr(message_obj, "content", "") or ""
+            tool_name = getattr(message_obj, "name", "tool")
+            if isinstance(tool_content, list):
+                tool_content = "\n".join(
+                    (c.get("text", "") if isinstance(c, dict) else str(c))
+                    for c in tool_content
+                )
+            _display_tool_result(tool_name, str(tool_content))
+            continue
 
         if not isinstance(message_obj, AIMessage):
             continue

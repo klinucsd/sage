@@ -1,0 +1,659 @@
+diff --git a/sage_magic.py b/sage_magic.py
+index 897d14f..d6c5b70 100644
+--- a/sage_magic.py
++++ b/sage_magic.py
+@@ -65,6 +65,7 @@ def _init_output_dir() -> str:
+     return str(out)
+ 
+ SAGE_OUTPUT_DIR = _init_output_dir()
++os.environ["SAGE_OUTPUT_DIR"] = SAGE_OUTPUT_DIR  # expose to subprocesses
+ 
+ # Expose both in IPython namespace so users can reference them
+ try:
+@@ -459,6 +460,28 @@ def _display_png(path: Path, caption: str = None) -> None:
+         display(HTML(f"<b>{path.name}</b> — error displaying image: {e}"))
+ 
+ 
++def _display_workflow_html(path: Path, caption: str = None) -> None:
++    """Render a Mermaid workflow diagram saved as a self-contained HTML file."""
++    from IPython.display import display, HTML
++    import html as _html
++    try:
++        html_content = path.read_text()
++        escaped = _html.escape(html_content)
++        caption_html = (
++            f'<div style="font-size:0.85em; margin-bottom:4px;"><b>{caption}</b></div>'
++            if caption else ''
++        )
++        display(HTML(
++            f'<div style="margin:6px 0;">'
++            f'{caption_html}'
++            f'<iframe srcdoc="{escaped}" '
++            f'style="width:100%; height:420px; border:none; overflow:hidden;"></iframe>'
++            f'</div>'
++        ))
++    except Exception as e:
++        display(HTML(f"<b>{path.name}</b> — error displaying workflow: {e}"))
++
++
+ def _display_new_outputs(new: list) -> None:
+     new_paths = [Path(f) for f in new]
+ 
+@@ -479,6 +502,570 @@ def _display_new_outputs(new: list) -> None:
+             _display_csv(path)
+         elif path.suffix == ".png":
+             _display_png(path)
++        elif path.name.endswith(".workflow.html"):
++            _display_workflow_html(path)
++
++
++# ---------------------------------------------------------------------------
++# Workflow diagram generator (used by %workflow magic)
++# ---------------------------------------------------------------------------
++# Reads the notebook .ipynb, .sage_cells.json, and per-cell Python scripts
++# to produce workflow_diagram.workflow.html (cytoscape.js compound nodes).
++
++import ast as _ast
++import tokenize as _tokenize
++from io import BytesIO as _BytesIO
++
++_COMMON_UTIL_MODULES = {
++    'os', 'sys', 'json', 're', 'io', 'time', 'datetime', 'math', 'random',
++    'pathlib', 'typing', 'collections', 'functools', 'itertools', 'warnings',
++    'copy', 'ast', 'tokenize', 'subprocess', 'shutil', 'glob', 'tempfile',
++    'numpy', 'pandas', 'matplotlib', 'seaborn',
++}
++
++import re as _re_mod
++_WF_SKILL_RE = _re_mod.compile(
++    r'<b>read_file</b>[^<]*?Reading:\s*<code>([^<]*skills/([^/<]+)/SKILL\.md)</code>',
++    _re_mod.IGNORECASE,
++)
++_WF_EXEC_RE = _re_mod.compile(
++    r'<b>execute</b>[^<]*?Executing:\s*<code>([^<]+)</code>',
++    _re_mod.IGNORECASE,
++)
++
++
++def _wf_find_notebook(output_dir):
++    """Derive notebook path: /path/_{stem}_sage_/ → /path/{stem}.ipynb"""
++    out_path = Path(output_dir)
++    name = out_path.name
++    if name.startswith('_') and name.endswith('_sage_'):
++        stem = name[1:-len('_sage_')]
++        p = out_path.parent / f"{stem}.ipynb"
++        return p if p.exists() else None
++    return None
++
++
++def _wf_read_notebook_cells(notebook_path):
++    """Return %%ask/%ask cells in order: [{id, prompt, outputs_html}]."""
++    if not notebook_path or not notebook_path.exists():
++        return []
++    try:
++        nb = json.loads(notebook_path.read_text(encoding='utf-8'))
++    except Exception:
++        return []
++    cells = []
++    for cell in nb.get('cells', []):
++        if cell.get('cell_type') != 'code':
++            continue
++        src_lines = cell.get('source', [])
++        if isinstance(src_lines, str):
++            src_lines = [src_lines]
++        source = ''.join(src_lines).strip()
++        if not source:
++            continue
++        first_line = source.split('\n', 1)[0].strip()
++        if first_line.startswith('%%ask'):
++            prompt = '\n'.join(source.split('\n')[1:]).strip()
++        elif first_line.startswith('%ask'):
++            prompt = first_line[len('%ask'):].strip()
++        else:
++            continue
++        html_chunks = []
++        for out in cell.get('outputs', []):
++            if out.get('output_type', '') in ('display_data', 'execute_result'):
++                h = out.get('data', {}).get('text/html', '')
++                if isinstance(h, list):
++                    h = ''.join(h)
++                if h:
++                    html_chunks.append(h)
++        cells.append({
++            'id': cell.get('id', ''),
++            'prompt': prompt,
++            'outputs_html': '\n'.join(html_chunks),
++        })
++    return cells
++
++
++def _wf_parse_outputs(outputs_html):
++    """Extract skill names and execute commands from cell output HTML."""
++    skills = []
++    seen = set()
++    for m in _WF_SKILL_RE.finditer(outputs_html):
++        name = m.group(2)
++        if name not in seen:
++            seen.add(name)
++            skills.append(name)
++    commands = [m.group(1) for m in _WF_EXEC_RE.finditer(outputs_html)]
++    return skills, commands
++
++
++def _wf_detect_runners(commands):
++    """Reduce execute commands to runner labels (fdp run python, python, etc.)."""
++    runners, seen = [], set()
++    for cmd in commands:
++        cmd = cmd.strip()
++        if _re_mod.match(r'^fdp\s+(run\s+)?python\b', cmd):
++            label = 'fdp run python'
++        elif _re_mod.search(r'python[0-9.]*\s+(-c|-m|[^\s]*\.py)', cmd):
++            label = 'python'
++        else:
++            continue
++        if label not in seen:
++            seen.add(label)
++            runners.append(label)
++    return runners
++
++
++# Full execute command from the <pre> inside <details> (not truncated).
++# Uses DOTALL to allow .* to span newlines across the full command.
++_WF_EXEC_FULL_RE = _re_mod.compile(
++    r'<b>execute</b>.*?<pre[^>]*>(.*?)</pre>',
++    _re_mod.IGNORECASE | _re_mod.DOTALL,
++)
++
++
++def _wf_extract_inline_code(outputs_html):
++    """Extract Python source from all 'python -c "..."' execute commands.
++
++    Pulls the FULL command from the <pre> tag inside <details>, then unescapes
++    shell and HTML escapes so the result is parseable Python source.
++    """
++    code_blocks = []
++    for m in _WF_EXEC_FULL_RE.finditer(outputs_html):
++        full_cmd = m.group(1)
++        # Unescape HTML entities (content was escaped by _format_tool_details)
++        full_cmd = full_cmd.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
++        # Match: ... python[3] -c "code"
++        pym = _re_mod.match(r'.*?python[0-9.]*\s+-c\s+"(.*)"\s*$', full_cmd, _re_mod.DOTALL)
++        if not pym:
++            continue
++        code = pym.group(1)
++        # Shell escapes inside double quotes: \" \\ \$ \` → the unescaped char.
++        # Single-pass regex sub prevents re-processing of replaced chars.
++        code = _re_mod.sub(r'\\([\\"$`])', r'\1', code)
++        code_blocks.append(code)
++    return code_blocks
++
++
++# Regex for other tool calls in cell output HTML
++_WF_WRITE_RE = _re_mod.compile(
++    r'<b>write_file</b>[^<]*?Writing:\s*<code>([^<]+)</code>', _re_mod.IGNORECASE)
++_WF_HTTP_RE = _re_mod.compile(
++    r'<b>(?:http_request|fetch_url)</b>[^<]*?(?:Fetching|GET|POST):\s*<code>([^<]+)</code>',
++    _re_mod.IGNORECASE)
++_WF_READ_RE = _re_mod.compile(
++    r'<b>read_file</b>[^<]*?Reading:\s*<code>([^<]+)</code>', _re_mod.IGNORECASE)
++
++
++def _wf_tool_call_substeps(outputs_html):
++    """Extract sub-step descriptions from tool calls when no .py files exist.
++
++    Returns a list of short descriptions derived from write_file, http_request,
++    read_file, and execute tool calls in the cell output HTML.
++    """
++    steps = []
++    seen = set()
++
++    def _add(desc):
++        k = desc.lower()
++        if k not in seen:
++            seen.add(k)
++            steps.append(desc)
++
++    # HTTP / fetch calls
++    for m in _WF_HTTP_RE.finditer(outputs_html):
++        url = m.group(1).strip()
++        # Extract domain
++        dm = _re_mod.match(r'https?://([^/]+)', url)
++        domain = dm.group(1) if dm else url[:40]
++        _add(f"Fetch data from {domain}")
++
++    # Execute calls (non-inline — e.g., shell commands)
++    for m in _WF_EXEC_RE.finditer(outputs_html):
++        cmd = m.group(1).strip()
++        if 'python' in cmd and '-c' in cmd:
++            continue  # handled separately via inline code extraction
++        if len(cmd) > 50:
++            cmd = cmd[:47] + '…'
++        _add(f"Run: {cmd}")
++
++    # Write calls (non-.py files — .py writes are scripts, not workflow outputs)
++    for m in _WF_WRITE_RE.finditer(outputs_html):
++        fpath = m.group(1).strip()
++        fname = Path(fpath).name
++        if fname.endswith('.py'):
++            continue
++        _add(f"Write {fname}")
++
++    # Read calls (skip skill reads and internal files)
++    for m in _WF_READ_RE.finditer(outputs_html):
++        fpath = m.group(1).strip()
++        if '/skills/' in fpath or '.sage_' in fpath:
++            continue
++        fname = Path(fpath).name
++        _add(f"Read {fname}")
++
++    return steps[:6]
++
++
++def _wf_extract_docstring(script_text):
++    try:
++        tree = _ast.parse(script_text)
++        return _ast.get_docstring(tree)
++    except Exception:
++        return None
++
++
++def _wf_extract_imports(script_text):
++    """Return non-stdlib, non-utility module names imported."""
++    try:
++        tree = _ast.parse(script_text)
++    except SyntaxError:
++        return []
++    modules = set()
++    for node in _ast.walk(tree):
++        if isinstance(node, _ast.Import):
++            for alias in node.names:
++                modules.add(alias.name.split('.')[0])
++        elif isinstance(node, _ast.ImportFrom) and node.module:
++            modules.add(node.module.split('.')[0])
++    return sorted(m for m in modules if m and m not in _COMMON_UTIL_MODULES)
++
++
++def _wf_extract_comments(script_text, max_indent=8, max_count=6):
++    """Top-level comments from script → sub-step descriptions."""
++    comments = []
++    try:
++        tokens = _tokenize.tokenize(_BytesIO(script_text.encode('utf-8')).readline)
++        for tok in tokens:
++            if tok.type != _tokenize.COMMENT:
++                continue
++            if tok.start[1] > max_indent:
++                continue
++            text = tok.string.lstrip('#').strip()
++            if len(text) < 6:
++                continue
++            low = text.lower()
++            if any(s in low for s in ('noqa', 'type:', 'pylint', 'todo', 'fixme', 'coding:', '!/usr')):
++                continue
++            # Skip URL documentation / path comments — not workflow steps
++            if 'http://' in text or 'https://' in text:
++                continue
++            if low.startswith(('pattern:', 'to:', 'from:', 'e.g.', 'example:', 'note:')):
++                continue
++            if len(text) > 70:
++                text = text[:67] + '…'
++            comments.append(text)
++    except (_tokenize.TokenizeError, IndentationError):
++        pass
++    seen = set()
++    unique = []
++    for c in comments:
++        k = c.lower()
++        if k not in seen:
++            seen.add(k)
++            unique.append(c)
++    return unique[:max_count]
++
++
++def _wf_analyze_scripts(file_paths, inline_code_blocks=None):
++    """Aggregate sub-step info from .py files and inline code blocks for a cell."""
++    scripts = [Path(p) for p in file_paths if str(p).endswith('.py')]
++    docstring = None
++    sub_steps = []
++    imports = set()
++
++    # Analyze saved .py scripts
++    for script in scripts:
++        try:
++            text = script.read_text(encoding='utf-8', errors='replace')
++        except Exception:
++            continue
++        if docstring is None:
++            ds = _wf_extract_docstring(text)
++            if ds:
++                docstring = ds.split('\n')[0].strip()
++        sub_steps.extend(_wf_extract_comments(text))
++        imports.update(_wf_extract_imports(text))
++
++    # Analyze inline python -c "..." code blocks (no .py file saved)
++    for code in (inline_code_blocks or []):
++        sub_steps.extend(_wf_extract_comments(code))
++        imports.update(_wf_extract_imports(code))
++
++    seen = set()
++    unique = []
++    for s in sub_steps:
++        k = s.lower()
++        if k not in seen:
++            seen.add(k)
++            unique.append(s)
++    return {'docstring': docstring, 'sub_steps': unique[:6], 'imports': sorted(imports)}
++
++
++def _wf_wrap_text(text, width=36, max_lines=3):
++    """Word-wrap text for node labels."""
++    if not text:
++        return ''
++    words = text.replace('\n', ' ').split()
++    lines, cur, cur_len = [], [], 0
++    for w in words:
++        added = len(w) + (1 if cur else 0)
++        if cur_len + added > width and cur:
++            lines.append(' '.join(cur))
++            if len(lines) == max_lines:
++                lines[-1] = lines[-1][:width - 1] + '…'
++                return '\n'.join(lines)
++            cur, cur_len = [w], len(w)
++        else:
++            cur.append(w)
++            cur_len += added
++    if cur and len(lines) < max_lines:
++        lines.append(' '.join(cur))
++    return '\n'.join(lines)
++
++
++_WF_HTML_TEMPLATE = """\
++<!DOCTYPE html>
++<html>
++<head>
++<meta charset="utf-8">
++<style>
++  * { box-sizing: border-box; margin: 0; padding: 0; }
++  body { background: #0f0f1e; font-family: Helvetica, Arial, sans-serif; overflow: hidden; }
++  #cy { width: 100%; height: 100vh; }
++</style>
++</head>
++<body>
++<div id="cy"></div>
++<script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.29.2/cytoscape.min.js"></script>
++<script>
++var elements = __ELEMENTS__;
++var cy = cytoscape({
++  container: document.getElementById('cy'),
++  elements: elements,
++  layout: {
++    name: 'cose',
++    idealEdgeLength: 100,
++    nodeOverlap: 20,
++    fit: true,
++    padding: 30,
++    randomize: false,
++    componentSpacing: 120,
++    nodeRepulsion: 450000,
++    nestingFactor: 5,
++    gravity: 80,
++    numIter: 1500,
++    initialTemp: 200,
++    coolingFactor: 0.95,
++    minTemp: 1.0
++  },
++  style: [
++    {
++      selector: 'node[type="cell_container"]',
++      style: {
++        'background-color': '#2d1a4e',
++        'background-opacity': 0.25,
++        'border-color': '#7F77DD',
++        'border-width': 2,
++        'label': 'data(label)',
++        'color': '#CECBF6',
++        'font-size': '11px',
++        'font-weight': 'bold',
++        'text-wrap': 'wrap',
++        'text-max-width': '260px',
++        'text-valign': 'top',
++        'text-halign': 'center',
++        'text-margin-y': -8,
++        'padding': '32px',
++        'shape': 'round-rectangle',
++      }
++    },
++    {
++      selector: 'node[type="substep"]',
++      style: {
++        'background-color': '#2d1a4e',
++        'border-color': '#7F77DD',
++        'border-width': 2,
++        'label': 'data(label)',
++        'color': '#CECBF6',
++        'font-size': '10px',
++        'text-wrap': 'wrap',
++        'text-max-width': '140px',
++        'shape': 'round-rectangle',
++        'width': 150,
++        'height': 48,
++        'text-valign': 'center',
++        'text-halign': 'center',
++      }
++    },
++    {
++      selector: 'node[type="output_file"]',
++      style: {
++        'background-color': '#1a3a2a',
++        'border-color': '#4a9a5a',
++        'border-width': 2,
++        'label': 'data(label)',
++        'color': '#80d090',
++        'font-size': '9px',
++        'text-wrap': 'wrap',
++        'text-max-width': '130px',
++        'shape': 'round-rectangle',
++        'width': 140,
++        'height': 40,
++        'text-valign': 'center',
++        'text-halign': 'center',
++      }
++    },
++    {
++      selector: 'edge',
++      style: {
++        'line-color': '#534AB7',
++        'target-arrow-color': '#7F77DD',
++        'target-arrow-shape': 'triangle',
++        'curve-style': 'bezier',
++        'width': 2,
++      }
++    },
++    {
++      selector: 'edge[type="cell_flow"]',
++      style: {
++        'line-color': '#8F87DD',
++        'target-arrow-color': '#AFA7EE',
++        'width': 3,
++      }
++    },
++  ],
++  userZoomingEnabled: true,
++  userPanningEnabled: true,
++});
++setTimeout(function() { cy.fit(40); }, 80);
++</script>
++</body>
++</html>
++"""
++
++
++def _generate_workflow(output_dir_str):
++    """Generate workflow_diagram.workflow.html from notebook + cell registry.
++
++    Returns the Path to the generated file, or None on failure.
++    """
++    output_dir = Path(output_dir_str)
++    registry_path = output_dir / '.sage_cells.json'
++
++    cell_registry = {}
++    if registry_path.exists():
++        try:
++            cell_registry = json.loads(registry_path.read_text())
++        except Exception:
++            pass
++
++    notebook_path = _wf_find_notebook(output_dir)
++    notebook_cells = _wf_read_notebook_cells(notebook_path)
++
++    # Keep cells that either produced tracked files OR made tool calls.
++    # A cell with only `python -c "..."` or only tool calls still did real work
++    # and deserves to be in the diagram.
++    cells_with_files = []
++    for cell in notebook_cells:
++        files = cell_registry.get(cell.get('id', ''), [])
++        has_tool_activity = bool(_re_mod.search(
++            r'<b>(execute|write_file|http_request|fetch_url|read_file)</b>',
++            cell.get('outputs_html', ''),
++        ))
++        if files or has_tool_activity:
++            cells_with_files.append((cell, files))
++
++    # Fallback: use registry order if no notebook
++    if not cells_with_files and cell_registry:
++        for i, (rcid, files) in enumerate(cell_registry.items()):
++            cells_with_files.append((
++                {'id': rcid, 'prompt': f'Cell #{i+1}', 'outputs_html': ''},
++                files,
++            ))
++
++    if not cells_with_files:
++        return None
++
++    # Build per-cell data
++    cell_data = []
++    for i, (cell, files) in enumerate(cells_with_files):
++        skills, commands = _wf_parse_outputs(cell['outputs_html'])
++        runners = _wf_detect_runners(commands)
++        inline_code = _wf_extract_inline_code(cell['outputs_html'])
++        info = _wf_analyze_scripts(files, inline_code_blocks=inline_code)
++
++        # If no sub-steps from scripts or inline code, fall back to tool calls
++        sub_steps = info['sub_steps']
++        if not sub_steps:
++            sub_steps = _wf_tool_call_substeps(cell['outputs_html'])
++
++        output_files = sorted({Path(f).name for f in files if not str(f).endswith('.py')})
++
++        cell_data.append({
++            'index': i + 1,
++            'prompt': cell['prompt'],
++            'skills': skills,
++            'runners': runners,
++            'imports': info['imports'],
++            'sub_steps': sub_steps,
++            'docstring': info['docstring'],
++            'output_files': output_files,
++        })
++
++    # Build cytoscape elements
++    elements = []
++    for cell in cell_data:
++        ci = cell['index']
++        cid = f"cell_{ci}"
++        prompt_display = _wf_wrap_text(cell['prompt'], 36, 3)
++        title = f"Cell {ci}: {prompt_display}"
++        meta = []
++        if cell['skills']:
++            meta.append(f"skill: {', '.join(cell['skills'])}")
++        if cell['runners']:
++            meta.append(f"runner: {', '.join(cell['runners'])}")
++        if cell['imports']:
++            meta.append(f"uses: {', '.join(cell['imports'][:4])}")
++        label = title
++        if meta:
++            label += '\n\n' + '\n'.join(meta)
++        elements.append({'data': {'id': cid, 'label': label, 'type': 'cell_container'}})
++
++        sub_steps = cell['sub_steps'][:]
++        if not sub_steps and cell['docstring']:
++            sub_steps = [cell['docstring'][:60]]
++        if not sub_steps:
++            sub_steps = ['Execute script'] if cell['output_files'] else ['(no files)']
++
++        prev = None
++        for j, step in enumerate(sub_steps):
++            sid = f"{cid}_s{j+1}"
++            elements.append({'data': {'id': sid, 'label': step, 'parent': cid, 'type': 'substep'}})
++            if prev:
++                elements.append({'data': {'source': prev, 'target': sid}})
++            prev = sid
++
++        for k, fname in enumerate(cell['output_files'][:6]):
++            fid = f"{cid}_f{k+1}"
++            elements.append({'data': {'id': fid, 'label': fname, 'parent': cid, 'type': 'output_file'}})
++            if prev:
++                elements.append({'data': {'source': prev, 'target': fid}})
++
++    for i in range(len(cell_data) - 1):
++        elements.append({
++            'data': {
++                'source': f"cell_{cell_data[i]['index']}",
++                'target': f"cell_{cell_data[i+1]['index']}",
++                'type': 'cell_flow',
++            }
++        })
++
++    html = _WF_HTML_TEMPLATE.replace('__ELEMENTS__', json.dumps(elements, indent=2))
++    out_path = output_dir / 'workflow_diagram.workflow.html'
++    out_path.write_text(html, encoding='utf-8')
++    return out_path
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -644,6 +1231,7 @@ def _render_markdown_with_files(text: str) -> bool:
+         geojsons = [p for p in resolved if p.suffix == '.geojson']
+         wms_files = [p for p in resolved if p.name.endswith('.wms.json')]
+         pngs = [p for p in resolved if p.suffix == '.png']
++        workflow_files = [p for p in resolved if p.name.endswith('.workflow.html')]
+ 
+         if geojsons or wms_files:
+             found_any = True
+@@ -652,6 +1240,10 @@ def _render_markdown_with_files(text: str) -> bool:
+                 show_header=not alt,
+                 caption=alt,
+             )
++        elif workflow_files:
++            found_any = True
++            for wf in workflow_files:
++                _display_workflow_html(wf, caption=alt if alt else None)
+         elif pngs:
+             found_any = True
+             for png in pngs:
+@@ -1104,6 +1696,27 @@ try:
+ 
+     del reset  # keep IPython namespace clean
+ 
++    @register_line_magic
++    def workflow(line):
++        """Generate an interactive workflow diagram for this notebook.
++
++        Usage:
++            %workflow
++        """
++        from IPython.display import display, Markdown
++
++        try:
++            result_path = _generate_workflow(SAGE_OUTPUT_DIR)
++        except Exception as e:
++            display(Markdown(f"**Workflow diagram error:**\n```\n{e}\n```"))
++            return
++        if result_path and result_path.exists():
++            _display_workflow_html(result_path)
++        else:
++            display(Markdown("No workflow diagram generated — no cells with tracked output files found."))
++
++    del workflow  # keep IPython namespace clean
++
+ except Exception as exc:
+     warnings.warn(
+         f"Sage magic commands could not be registered: {exc}", stacklevel=1
