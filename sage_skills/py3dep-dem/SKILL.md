@@ -20,12 +20,29 @@ import xarray as xr
 
 ## CRITICAL — Never write your own elevation sampling code
 
-Always use `elevation_profile()` defined below. It accepts a GeoDataFrame or a
-GeoJSON file path, and optionally a saved DEM TIF path. It handles all cases correctly.
+**WARNING**: You must use the code provided by this skill. Your code never be correct.
 
-Never write your own loop with rasterio — `~transform * (x, y)` swaps row/col and
-produces spikes. `src.index()` called outside the `with` block silently returns wrong
-results. `list(line.coords)` concatenation ignores segment direction. All produce bad profiles.
+
+**Even if you already have a saved GeoJSON and a saved DEM TIF**, always call
+`elevation_profile(river_source, output_path, river_name, dem_source)`.
+Pass the file paths directly — it accepts strings. Do not write your own loop.
+
+The following patterns are ALL wrong and produce incorrect elevation profiles:
+
+```python
+# WRONG — ~transform * (x, y) returns (col, row), not (row, col)
+row, col = ~dem_transform * (x, y)
+elev = dem_data[row, col]          # row and col are swapped → wrong values
+
+# WRONG — src.index() returns (row, col) but gets used as (col, row)
+col, row = src.index(x, y)
+elev = dem_data[row, col]
+
+# WRONG — concatenating coords from multiple LineStrings ignores segment direction
+river_line = LineString([pt for line in lines for pt in line.coords])
+```
+
+`elevation_profile()` avoids all of these. Call it.
 
 ## When to Use
 
@@ -35,6 +52,7 @@ results. `list(line.coords)` concatenation ignores segment direction. All produc
 - When you need an elevation profile along a river, use Example 4
 - When you need to compute a REM, use Example 5
 - When you need the full pipeline (DEM + river overlay + elevation profile + REM), use Example 6
+- When you need a bbox for get_dem() without hardcoding coordinates, use get_dem_bbox(river_line)
 
 ---
 
@@ -86,16 +104,15 @@ def sample_elevation(river_line, main_channel, dem):
     """
     Sample elevation along the river centerline and return river_elev in UTM.
 
-    DO NOT reimplement this function. The common alternative — opening the saved
-    GeoTIFF with rasterio and using `~transform * (x, y)` — returns (col, row)
-    not (row, col), causing large random elevation spikes in the profile.
-    Always call this function.
+    DO NOT reimplement this function. Do NOT use smooth_linestring — it cuts
+    corners in canyon sections, placing sample points on canyon walls and
+    producing large elevation spikes. Do NOT use rasterio with ~transform *
+    (x, y) — that returns (col, row) not (row, col). Always call this function.
 
     Parameters
     ----------
-    river_line   : LineString   output of get_main_channel() from nhd-rivers skill,
-                                in EPSG:4326
-    main_channel : GeoDataFrame output of get_main_channel() from nhd-rivers skill
+    river_line   : LineString   in EPSG:4326
+    main_channel : GeoDataFrame in EPSG:4326 (used for its .crs attribute)
     dem          : xarray.DataArray  from get_dem(), in UTM CRS
 
     Returns
@@ -109,41 +126,41 @@ def sample_elevation(river_line, main_channel, dem):
     import rasterio
     import shapely
     import pygeoutils
+    from shapely.geometry import LineString
 
-    # Resample to 10 m spacing.
-    # river_line.length is in degrees — multiply by 111_000 to convert to metres.
-    # Do NOT use river_line.length / 10 directly — that gives ~1000x too few points.
-    npts = int(np.ceil(river_line.length * 111_000 / 10))
-    river_line_smooth = pygeoutils.smooth_linestring(river_line, 0.1, npts)
+    # Resample to 50 m spacing along the ORIGINAL unsmoothed line.
+    # smooth_linestring cuts corners in canyon sections → spikes. Never use it.
+    npts = max(2, int(np.ceil(river_line.length * 111_000 / 50)) + 1)
+    t_vals = np.linspace(0, 1, npts)
+    river_line_resampled = LineString([
+        river_line.interpolate(t, normalized=True).coords[0] for t in t_vals
+    ])
 
     # Sample elevation from USGS seamless 10 m DEM VRT
     url = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/USGS_Seamless_DEM_13.vrt"
     with rasterio.open(url) as src:
-        # Transform river coords from EPSG:4326 to raster CRS before sampling
         xy_raster = shapely.get_coordinates(
-            pygeoutils.geo_transform(river_line_smooth, main_channel.crs, src.crs)
+            pygeoutils.geo_transform(river_line_resampled, main_channel.crs, src.crs)
         )
-        # src.sample yields one (1,) array per point — extract scalar value
         z = np.array([val[0] for val in src.sample(xy_raster)])
 
-    # Build river_elev in UTM (same CRS as dem) — NOT in EPSG:4326 degrees.
-    # Reproject river_line_smooth to dem.rio.crs so x/y are in UTM metres.
-    river_line_utm = pygeoutils.geo_transform(river_line_smooth, main_channel.crs, dem.rio.crs)
+    # Build river_elev in UTM (same CRS as dem)
+    river_line_utm = pygeoutils.geo_transform(river_line_resampled, main_channel.crs, dem.rio.crs)
     xy_utm = shapely.get_coordinates(river_line_utm)
 
-    assert len(xy_utm) == len(z), (
-        f"Coordinate/elevation mismatch: {len(xy_utm)} coords vs {len(z)} elevations"
-    )
+    # 5-point median filter removes single-pixel sampling artifacts
+    # (off-channel NHD vertices) without distorting the profile shape
+    from scipy.signal import medfilt
+    z = medfilt(z.astype(float), kernel_size=5)
 
     river_elev = np.c_[xy_utm, z]
 
-    # Along-channel distances in metres, reset to start at 0
-    pts = shapely.points(river_line_smooth.coords)
-    distances = shapely.line_locate_point(river_line_smooth, pts)
-    distances = distances - distances[0]
+    # Along-channel distances in metres from UTM segment lengths
+    diffs = np.diff(xy_utm, axis=0)
+    distances = np.concatenate([[0], np.cumsum(np.sqrt((diffs ** 2).sum(axis=1)))])
 
     print(f"sample_elevation: {len(river_elev)} points, "
-          f"elevation {z.min():.0f}–{z.max():.0f} m, "
+          f"elevation {np.nanmin(z):.0f}–{np.nanmax(z):.0f} m, "
           f"length {distances[-1]/1000:.1f} km")
     return river_elev, distances
 
@@ -179,10 +196,28 @@ def plot_river_on_dem(dem, main_channel, river_name, output_path):
     print(f"plot_river_on_dem: saved to {output_path}/river_channel.png")
 
 
+def get_dem_bbox(river_line, size_deg=0.1):
+    """
+    Return a size_deg × size_deg bounding box centered on the start of the river.
+    Use this instead of a hardcoded bbox — works for any river.
+
+    Parameters
+    ----------
+    river_line : LineString  in EPSG:4326
+    size_deg   : float  side length in degrees (default 0.1 ≈ 11 km)
+
+    Returns
+    -------
+    bbox : tuple  (west, south, east, north) in EPSG:4326
+    """
+    start_x, start_y = river_line.coords[0]
+    half = size_deg / 2
+    return (start_x - half, start_y - half, start_x + half, start_y + half)
+
+
 def compute_rem(dem, river_elev, output_path):
     """
-    Compute a Relative Elevation Model (REM) using IDW interpolation and
-    visualize it with datashader (hillshade base + inferno REM overlay).
+    Compute a Relative Elevation Model (REM) using IDW interpolation.
 
     Parameters
     ----------
@@ -211,12 +246,6 @@ def compute_rem(dem, river_elev, output_path):
         check=True
     )
 
-    # xarray-spatial installs as 'xarray-spatial' but imports as 'xrspatial'
-    import xrspatial as xs
-    import datashader.transfer_functions as tf
-    from datashader.colors import Greys9, inferno
-    from datashader import utils as ds_utils
-
     assert river_elev.ndim == 2 and river_elev.shape[1] == 3, \
         "river_elev must be shape (N, 3): [utm_x, utm_y, elevation_m]"
 
@@ -239,17 +268,7 @@ def compute_rem(dem, river_elev, output_path):
     elevation = xr.DataArray(elevation, dims=("y", "x"), coords={"x": dem.x, "y": dem.y})
 
     rem = (dem - elevation).clip(min=0)
-
-    # Datashader visualization: greyscale DEM + hillshade + inferno REM
-    illuminated = xs.hillshade(dem, angle_altitude=10, azimuth=90)
-    tf.Image.border = 0
-    img = tf.stack(
-        tf.shade(dem,         cmap=Greys9,            how="linear"),
-        tf.shade(illuminated, cmap=["black", "white"], how="linear", alpha=180),
-        tf.shade(rem,         cmap=inferno[::-1],      span=[0, 7],  how="log", alpha=200),
-    )
-    ds_utils.export_image(img[::-1], Path(output_path, "rem").as_posix())
-    print(f"compute_rem: saved to {Path(output_path, 'rem.png')}")
+    print(f"compute_rem: REM range {float(rem.min()):.1f}–{float(rem.max()):.1f} m")
     return rem
 
 
@@ -275,7 +294,6 @@ def elevation_profile(river_source, output_path, river_name="River", dem_source=
     distances  : ndarray  shape (N,) — along-channel distances in metres
     """
     import numpy as np
-    import matplotlib.pyplot as plt
     import geopandas as gpd
     import rioxarray
     from shapely import ops
@@ -312,22 +330,8 @@ def elevation_profile(river_source, output_path, river_name="River", dem_source=
         west, south, east, north = river_gdf.total_bounds
         dem = get_dem((west, south, east, north), res=res)
 
-    # Sample elevation and plot
+    # Sample elevation and return — plot is done in the calling code
     river_elev, distances = sample_elevation(river_line, river_gdf, dem)
-
-    fig, ax = plt.subplots(figsize=(14, 8), dpi=150)
-    ax.plot(distances / 1000, river_elev[:, 2], linewidth=1.5, color='steelblue')
-    ax.set_xlabel('Distance along river (km)')
-    ax.set_ylabel('Elevation (m)')
-    ax.set_title(f'{river_name} — Longitudinal Elevation Profile')
-    z_min, z_max = np.nanmin(river_elev[:, 2]), np.nanmax(river_elev[:, 2])
-    ax.set_ylim(z_min - (z_max - z_min) * 0.05, z_max + (z_max - z_min) * 0.05)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f"{output_path}/elevation_profile.png", dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"elevation_profile: saved to {output_path}/elevation_profile.png")
-
     return river_elev, distances
 ```
 
@@ -383,6 +387,8 @@ plot_river_on_dem(dem, main_channel, 'carson river', output_path)
 
 ## Example 4 — Elevation profile (copy this script verbatim, fill in the four variables)
 
+**WARNING**: Must use the function elevation_profile defined in this skill. Never generate new code. It is proved that any generated code is never correct.
+
 ```python
 import subprocess, sys
 subprocess.run([sys.executable, "-m", "pip", "install", "-q", "py3dep", "rioxarray", "pygeoutils"], check=True)
@@ -406,21 +412,26 @@ def sample_elevation(river_line, main_channel, dem):
     import rasterio
     import shapely
     import pygeoutils
-    npts = int(np.ceil(river_line.length * 111_000 / 10))
-    river_line_smooth = pygeoutils.smooth_linestring(river_line, 0.1, npts)
+    from shapely.geometry import LineString
+    npts = max(2, int(np.ceil(river_line.length * 111_000 / 50)) + 1)
+    t_vals = np.linspace(0, 1, npts)
+    river_line_resampled = LineString([
+        river_line.interpolate(t, normalized=True).coords[0] for t in t_vals
+    ])
     url = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF/USGS_Seamless_DEM_13.vrt"
     with rasterio.open(url) as src:
         xy_raster = shapely.get_coordinates(
-            pygeoutils.geo_transform(river_line_smooth, main_channel.crs, src.crs)
+            pygeoutils.geo_transform(river_line_resampled, main_channel.crs, src.crs)
         )
         z = np.array([val[0] for val in src.sample(xy_raster)])
-    river_line_utm = pygeoutils.geo_transform(river_line_smooth, main_channel.crs, dem.rio.crs)
+    river_line_utm = pygeoutils.geo_transform(river_line_resampled, main_channel.crs, dem.rio.crs)
     xy_utm = shapely.get_coordinates(river_line_utm)
+    from scipy.signal import medfilt
+    z = medfilt(z.astype(float), kernel_size=5)
     river_elev = np.c_[xy_utm, z]
-    pts = shapely.points(river_line_smooth.coords)
-    distances = shapely.line_locate_point(river_line_smooth, pts)
-    distances = distances - distances[0]
-    print(f"sample_elevation: {len(river_elev)} points, elevation {z.min():.0f}–{z.max():.0f} m, length {distances[-1]/1000:.1f} km")
+    diffs = np.diff(xy_utm, axis=0)
+    distances = np.concatenate([[0], np.cumsum(np.sqrt((diffs ** 2).sum(axis=1)))])
+    print(f"sample_elevation: {len(river_elev)} points, elevation {np.nanmin(z):.0f}–{np.nanmax(z):.0f} m, length {distances[-1]/1000:.1f} km")
     return river_elev, distances
 
 
@@ -447,37 +458,69 @@ def elevation_profile(river_source, output_path, river_name="River", dem_source=
         west, south, east, north = river_gdf.total_bounds
         dem = py3dep.get_dem((west, south, east, north), res)
     river_elev, distances = sample_elevation(river_line, river_gdf, dem)
-    fig, ax = plt.subplots(figsize=(14, 8), dpi=150)
-    ax.plot(distances / 1000, river_elev[:, 2], linewidth=1.5, color='steelblue')
-    ax.set_xlabel('Distance along river (km)')
-    ax.set_ylabel('Elevation (m)')
-    ax.set_title(f'{river_name} — Longitudinal Elevation Profile')
-    z_min, z_max = np.nanmin(river_elev[:, 2]), np.nanmax(river_elev[:, 2])
-    ax.set_ylim(z_min - (z_max - z_min) * 0.05, z_max + (z_max - z_min) * 0.05)
-    ax.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(f"{output_path}/elevation_profile.png", dpi=150, bbox_inches='tight')
-    plt.close()
-    print(f"elevation_profile: saved to {output_path}/elevation_profile.png")
     return river_elev, distances
 
 
 river_elev, distances = elevation_profile(river_source, output_path, river_name, dem_source)
+
+import matplotlib.pyplot as plt
+fig, ax = plt.subplots(figsize=(14, 8), dpi=150)
+ax.plot(distances / 1000, river_elev[:, 2], linewidth=1.5, color='steelblue')
+ax.set_xlabel('Distance along river (km)')
+ax.set_ylabel('Elevation (m)')
+ax.set_title(f'{river_name} — Longitudinal Elevation Profile')
+z_min, z_max = np.nanmin(river_elev[:, 2]), np.nanmax(river_elev[:, 2])
+ax.set_ylim(z_min - (z_max - z_min) * 0.05, z_max + (z_max - z_min) * 0.05)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(f"{output_path}/elevation_profile.png", dpi=150, bbox_inches='tight')
+plt.close()
+print(f"Saved to {output_path}/elevation_profile.png")
 ```
 
 ---
 
 ## Example 5 — Compute REM
 
+**WARNING**: You must use the code provided this file. Your code is never be correct.
+
+Do NOT use `distance_transform_edt`, `griddata`, `scipy.interpolate`, or `matplotlib.imshow` for REM —
+they produce ugly, incorrect results. Do NOT use `~dem_transform * (x, y)` — it swaps row/col.
+The only correct visualization is datashader with hillshade + inferno as shown below.
+
 ```python
-dem = get_dem(bbox, res=10, output_path=output_path)
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                "py3dep", "rioxarray", "pygeoutils", "pynhd",
+                "scipy", "opt_einsum", "xarray-spatial", "datashader"], check=True)
 
 # nhd-rivers skill
-flw                      = fetch_flowlines(bbox)
+flw                      = fetch_flowlines(bbox)   # bbox used only for flowline fetch
 river_line, main_channel = get_main_channel(flw, 'carson river')
+
+# Get a manageable 0.1° × 0.1° bbox from the river start — do NOT use a large bbox
+bbox_dem = get_dem_bbox(river_line, size_deg=0.1)
+dem = get_dem(bbox_dem, res=10, output_path=output_path)
 
 river_elev, distances = sample_elevation(river_line, main_channel, dem)
 rem = compute_rem(dem, river_elev, output_path)
+
+# Visualize REM — copy this block verbatim
+import xrspatial as xs
+import datashader.transfer_functions as tf
+from datashader.colors import Greys9, inferno
+from datashader import utils as ds_utils
+from pathlib import Path
+
+illuminated = xs.hillshade(dem, angle_altitude=10, azimuth=90)
+tf.Image.border = 0
+img = tf.stack(
+    tf.shade(dem,         cmap=Greys9,            how="linear"),
+    tf.shade(illuminated, cmap=["black", "white"], how="linear", alpha=180),
+    tf.shade(rem,         cmap=inferno[::-1],      span=[0, 7],  how="log", alpha=200),
+)
+ds_utils.export_image(img[::-1], Path(output_path, "rem").as_posix())
+print(f"Saved to {output_path}/rem.png")
 ```
 
 ---
@@ -485,27 +528,65 @@ rem = compute_rem(dem, river_elev, output_path)
 ## Example 6 — Full pipeline: DEM + river overlay + elevation profile + REM
 
 ```python
-output_path = "/home/jovyan/work/rem_output"   # set explicitly
-bbox        = (-119.59, 39.24, -119.47, 39.30)
+import subprocess, sys
+subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                "py3dep", "rioxarray", "pygeoutils", "pynhd",
+                "scipy", "opt_einsum", "xarray-spatial", "datashader"], check=True)
 
-# DEM
-dem = get_dem(bbox, res=10, output_path=output_path)
+import matplotlib.pyplot as plt
+import xrspatial as xs
+import datashader.transfer_functions as tf
+from datashader.colors import Greys9, inferno
+from datashader import utils as ds_utils
+from pathlib import Path
 
-# River geometry — nhd-rivers skill
+# nhd-rivers skill — fetch river geometry first
 flw                      = fetch_flowlines(bbox)
 river_line, main_channel = get_main_channel(flw, 'carson river')
 
-# Elevation — py3dep-dem skill
-river_elev, distances    = sample_elevation(river_line, main_channel, dem)
+# Derive a manageable bbox from the river start — do NOT hardcode a large bbox
+bbox_dem = get_dem_bbox(river_line, size_deg=0.1)
+dem = get_dem(bbox_dem, res=10, output_path=output_path)
+
+# River overlay on DEM
 plot_river_on_dem(dem, main_channel, 'carson river', output_path)
-rem                      = compute_rem(dem, river_elev, output_path)
+
+# Elevation profile
+river_elev, distances = sample_elevation(river_line, main_channel, dem)
+fig, ax = plt.subplots(figsize=(14, 8), dpi=150)
+ax.plot(distances / 1000, river_elev[:, 2], linewidth=1.5, color='steelblue')
+ax.set_xlabel('Distance along river (km)')
+ax.set_ylabel('Elevation (m)')
+ax.set_title('Carson River — Longitudinal Elevation Profile')
+z_min, z_max = np.nanmin(river_elev[:, 2]), np.nanmax(river_elev[:, 2])
+ax.set_ylim(z_min - (z_max - z_min) * 0.05, z_max + (z_max - z_min) * 0.05)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.savefig(f"{output_path}/elevation_profile.png", dpi=150, bbox_inches='tight')
+plt.close()
+
+# REM computation
+rem = compute_rem(dem, river_elev, output_path)
+
+# REM visualization
+illuminated = xs.hillshade(dem, angle_altitude=10, azimuth=90)
+tf.Image.border = 0
+img = tf.stack(
+    tf.shade(dem,         cmap=Greys9,            how="linear"),
+    tf.shade(illuminated, cmap=["black", "white"], how="linear", alpha=180),
+    tf.shade(rem,         cmap=inferno[::-1],      span=[0, 7],  how="log", alpha=200),
+)
+ds_utils.export_image(img[::-1], Path(output_path, "rem").as_posix())
+print(f"Saved to {output_path}/rem.png")
 ```
 
 ---
 
 ## Notes
 
-- `elevation_profile()` is the only correct way to compute an elevation profile. Pass a file path or GeoDataFrame; pass a saved DEM TIF path or omit to download automatically.
+- `elevation_profile()` returns `(river_elev, distances)` only — plot the result yourself using the code in Example 4.
+- `compute_rem()` returns the REM DataArray only — visualize it yourself using the datashader block in Example 5/6.
+- `get_dem_bbox(river_line)` gives a safe 0.1° × 0.1° bbox from the river start. Always use it instead of a hardcoded bbox for `get_dem()` — a large bbox will crash JupyterHub.
 - `get_dem()` returns UTM, not EPSG:4326. Always use `.to_crs(dem.rio.crs)` before plotting any vector layer on top — or use `plot_river_on_dem()` which handles this automatically.
 - `compute_rem()` uses KDTree IDW + datashader. Do not substitute `scipy.ndimage`, `matplotlib`, `viridis`, or any other method — the result will be a generic elevation map, not a floodplain visualization.
 - `xarray-spatial` installs as `xarray-spatial` but **imports as `xrspatial`** — not `xarray_spatial`.

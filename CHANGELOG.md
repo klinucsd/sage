@@ -4,6 +4,25 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## v1.0.161 — 2026-04-19
+- Fix: scroll-away/back map corruption (continued from v1.0.159/160). DevTools investigation showed the map is rendered directly in the notebook DOM (not inside an iframe, as was the case historically) and the container keeps its real dimensions the entire time — JupyterLab's cell virtualization corrupts Leaflet's internal tile state without resizing the container, so ResizeObserver never fires. Replaced the size-transition trigger with an IntersectionObserver that re-fits the map every time it scrolls back into the viewport. Works because IntersectionObserver now operates against the parent page scroll instead of a Folium iframe. Trade-off: the user's pan/zoom is reset on scroll-away-and-back; acceptable for narrative notebooks where the fit-to-data view is the expected one.
+
+## v1.0.160 — 2026-04-19
+- Fix: Folium scroll-away-and-back map bug (continued from v1.0.159). The earlier fix kept `fitBounds()` from running after the first tick to preserve pan/zoom, but scrolling past the cell and back corrupts Leaflet's view state — `invalidateSize()` alone cannot recover and the map falls back to the global top-left tile. New logic: `_tick()` skips entirely when the container is 0x0 (so Leaflet never caches a bad size), and calls `fitBounds()` on every 0-to-real transition (including re-emergence after JupyterLab virtualization), not just the first one.
+
+## v1.0.159 — 2026-04-19
+- Fix: Folium map tile bug when scrolling a map out of view and back. The ResizeObserver was disconnected after 20 s, so if JupyterLab collapsed the container to 0x0 on scroll-away and restored it on scroll-back past that window, nothing re-triggered `invalidateSize()` and tiles stayed stuck in the top-left corner. Observer is now permanent; `fitBounds()` runs only on the first real-dimensions tick so the user's pan/zoom state survives later scrolls.
+- Fix: py3dep-dem SKILL.md — stronger inline warnings in Example 4 (elevation profile) and Example 5 (REM); tightened function docstrings with explicit "do NOT reimplement" language; `elevation_profile()` returns `(river_elev, distances)` only, matching the refactored functions.
+
+## v1.0.158 — 2026-04-17
+- Fix: py3dep-dem skill redesign — visualization code moved out of functions into examples so repeated cells don't regenerate the same PNGs; `elevation_profile()` and `compute_rem()` now return data only
+- Feature: `get_dem_bbox(river_line)` — derives a safe 0.1°×0.1° bbox from the river start instead of requiring hardcoded coordinates; works for any river
+- Fix: REM enforcement — WARNING statement added inline to Example 5 naming the specific wrong patterns (`distance_transform_edt`, `griddata`, `matplotlib.imshow`, `~dem_transform`) and scoped to all code in the skill, not just computation
+- Fix: elevation profile enforcement — WARNING scoped to "your code is never be correct" (all code, not just REM) to prevent agent from substituting its own visualization
+
+## v1.0.157 — 2026-04-17
+- Fix: elevation profile spikes in py3dep-dem skill — root cause was `pygeoutils.smooth_linestring` B-spline smoothing cutting corners in canyon sections and placing sample points on canyon walls. Replaced with unsmoothed 50 m interpolation along the original NHD line. Added 5-point median filter to remove residual single-pixel sampling artifacts. CRITICAL warning updated to name the exact forbidden rasterio patterns (`~dem_transform * (x, y)`, `src.index()`) and explicitly cover the "I already have saved files" case.
+
 ## v1.0.149 — 2026-04-16
 - Feature: show tool output after each tool call. Results appear in a collapsible green block (🔍) beneath the blue tool call block, showing the first line as preview and full output on expand.
 

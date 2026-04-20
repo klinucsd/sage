@@ -673,39 +673,45 @@ def _display_combined_map(
         # own init).
         m.get_root().script.add_child(folium.Element(f"""
 (function() {{
-    // Reopen-time problems we're fixing:
-    //   (1) container is 0x0 when Leaflet initializes → only a single tile
-    //       in the top-left corner until invalidateSize() is re-run against
-    //       a container with real dimensions
-    //   (2) folium's init-time fitBounds() ran against that 0x0 container
-    //       → Leaflet picked a global zoom; it stays wrong even after tiles
-    //       render unless fitBounds() is called again
-    // Strategy: brute-force. invalidateSize() + fitBounds() are idempotent,
-    // so we call both on a schedule (plus on resize / load events). When the
-    // container is still 0x0 the calls are no-ops; once it has real size the
-    // next call fixes the map. No one-shot lock — previous bugs were caused
-    // by locking out after a premature "success" that didn't actually fix
-    // tile rendering. Eventually we stop to avoid interfering with user
-    // panning/zooming.
-    function _tick() {{
+    // Scroll-away-and-back corruption:
+    //   JupyterLab's cell virtualization scrolls the map offscreen and back
+    //   without changing its container's dimensions. Leaflet's internal tile
+    //   state gets corrupted (map reverts to a single top-left tile and zoom
+    //   controls stop responding) but invalidateSize() alone cannot recover
+    //   — a fitBounds() is required.
+    //   ResizeObserver doesn't fire because the container size never changes,
+    //   so we use IntersectionObserver to detect viewport re-entry. Maps used
+    //   to render inside a Folium iframe, where IntersectionObserver fires
+    //   immediately regardless of parent scroll (v1.0.66 history); now the
+    //   map is rendered directly into the notebook DOM, so it works.
+    function _fit() {{
         if (typeof {map_var} === 'undefined') return;
         try {{
+            var _el = document.getElementById('{map_var}');
+            if (!_el || _el.offsetWidth === 0 || _el.offsetHeight === 0) return;
             {map_var}.invalidateSize();
             {fit_js}
         }} catch (e) {{ /* ignore */ }}
     }}
     [50, 150, 400, 800, 1500, 3000, 6000, 10000, 15000].forEach(function(ms) {{
-        setTimeout(_tick, ms);
+        setTimeout(_fit, ms);
     }});
     if (typeof window !== 'undefined' && window.addEventListener) {{
-        window.addEventListener('load', _tick);
-        window.addEventListener('resize', _tick);
+        window.addEventListener('load', _fit);
+        window.addEventListener('resize', _fit);
     }}
     var _el0 = document.getElementById('{map_var}');
+    if (_el0 && window.IntersectionObserver) {{
+        // Re-fit every time the map scrolls back into the viewport. Trade-off:
+        // user's pan/zoom is reset on scroll-away-and-back. Acceptable for
+        // narrative notebooks where the fit-to-data view is what the reader
+        // expects; recovery from the corruption is the priority.
+        new IntersectionObserver(function(entries) {{
+            entries.forEach(function(e) {{ if (e.isIntersecting) _fit(); }});
+        }}, {{ threshold: 0.01 }}).observe(_el0);
+    }}
     if (_el0 && window.ResizeObserver) {{
-        var _ro = new ResizeObserver(_tick);
-        _ro.observe(_el0);
-        setTimeout(function() {{ _ro.disconnect(); }}, 20000);
+        new ResizeObserver(_fit).observe(_el0);
     }}
 }})();
 """))
