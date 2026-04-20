@@ -3,3 +3,10 @@
 __pycache__/
 *.pyc
 .env
+
+# Local-only experiments and work-in-progress
+*.plotly_experiment
+saved_experiments/
+cache/
+Sage_Academic_Paper.tex
+Sage_Paper_v2.tex
