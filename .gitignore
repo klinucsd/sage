@@ -6,7 +6,6 @@ __pycache__/
 
 # Local-only experiments and work-in-progress
 *.plotly_experiment
+*.tex
 saved_experiments/
 cache/
-Sage_Academic_Paper.tex
-Sage_Paper_v2.tex
