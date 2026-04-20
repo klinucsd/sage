@@ -4,6 +4,11 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.1 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Feature: `KernelShellBackend` — subclass of `LocalShellBackend` that routes `python` and `python -c` commands to the live IPython kernel via `get_ipython().run_cell()`, instead of running them in a subprocess. Non-Python commands (`pip`, `conda`, `curl`, shell pipelines with `|`/`>`/`&&`) still pass through to the parent subprocess implementation unchanged.
+- Unlocks interactive skills: ipywidgets, leafmap/ipyleaflet, Plotly `fig.show()`, matplotlib inline, `tqdm` progress bars, and live kernel state sharing with the agent — none of which are possible from a subprocess.
+- Captures stdout/stderr as text for the agent (via `IPython.utils.capture.capture_output(display=False)`) while still letting rich displays render to the cell.
+
 ## v1.0.161 — 2026-04-19
 - Fix: scroll-away/back map corruption (continued from v1.0.159/160). DevTools investigation showed the map is rendered directly in the notebook DOM (not inside an iframe, as was the case historically) and the container keeps its real dimensions the entire time — JupyterLab's cell virtualization corrupts Leaflet's internal tile state without resizing the container, so ResizeObserver never fires. Replaced the size-transition trigger with an IntersectionObserver that re-fits the map every time it scrolls back into the viewport. Works because IntersectionObserver now operates against the parent page scroll instead of a Folium iframe. Trade-off: the user's pan/zoom is reset on scroll-away-and-back; acceptable for narrative notebooks where the fit-to-data view is the expected one.
 

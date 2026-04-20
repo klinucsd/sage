@@ -55,6 +55,7 @@ RUN pip install --no-cache-dir "deepagents-cli[openai]" nest_asyncio folium geop
 COPY sage_skills /tmp/build/skills
 COPY apply_sage_patch.py /tmp/build/
 COPY sage_magic.py /tmp/build/
+COPY sage_kernel_backend.py /tmp/build/
 COPY jupyter_server_config.py /tmp/build/
 COPY jupyter_config.py /tmp/build/
 
@@ -94,6 +95,10 @@ tomli_w.dump({ \
     } \
 }, open(p, 'wb')); \
 print('Written', p)"
+
+# Install KernelShellBackend as an importable module in site-packages
+RUN cp /tmp/build/sage_kernel_backend.py \
+    "$(python -c 'import site; print(site.getsitepackages()[0])')/sage_kernel_backend.py"
 
 # Register Sage magic commands for all Jupyter kernels
 RUN mkdir -p /home/jovyan/.ipython/profile_default/startup && \

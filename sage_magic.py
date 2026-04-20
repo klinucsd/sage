@@ -999,6 +999,10 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
     from deepagents import create_deep_agent
     from deepagents.backends.local_shell import LocalShellBackend
     from deepagents_cli.config import create_model
+    try:
+        from sage_kernel_backend import KernelShellBackend
+    except ImportError:
+        KernelShellBackend = None
     from deepagents_cli.model_config import ModelConfigError
     from langchain_core.messages import AIMessage, ToolMessage
 
@@ -1015,10 +1019,11 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
     skills_paths = sorted([str(d) for d in skills_dir.iterdir() if d.is_dir()]) if skills_dir.exists() else []
 
     # No checkpointer — cross-cell memory is carried via SAGE_MESSAGES.
+    backend_cls = KernelShellBackend if KernelShellBackend is not None else LocalShellBackend
     agent = create_deep_agent(
         model,
         skills=skills_paths,
-        backend=LocalShellBackend(virtual_mode=False),
+        backend=backend_cls(virtual_mode=False),
         checkpointer=None,
     )
 
