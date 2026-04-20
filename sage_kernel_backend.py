@@ -4,8 +4,9 @@ Subclasses LocalShellBackend. For Python invocations (`python foo.py`,
 `python -c "..."`), extracts the source and routes to
 `get_ipython().run_cell(code)` so that `display()`, ipywidgets, and
 plotly/matplotlib render inline in the cell. Non-Python shell commands
-(pip, conda, curl, gdalwarp, etc.) pass through to the parent
-subprocess implementation unchanged.
+(pip, conda, curl, gdalwarp, etc.) and commands containing shell
+operators (`|`, `>`, `&&`, etc.) pass through to the parent subprocess
+implementation unchanged.
 
 Enables a fundamentally richer class of skills: interactive widgets,
 live plots, progress bars, and shared kernel state — none of which are
@@ -15,7 +16,6 @@ possible from a subprocess.
 from __future__ import annotations
 
 import os
-import re
 import shlex
 from pathlib import Path
 
@@ -23,30 +23,36 @@ from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
 
-_SHELL_METACHARS = re.compile(r"[|<>&;`]|\$\(|\$\{")
+_SHELL_OPERATORS = {"|", "||", "&", "&&", ";", ";;", ">", ">>", "<", "<<", "<<<"}
 
 
-def _has_shell_metachars(command: str) -> bool:
-    """Return True if the command contains pipes, redirects, chaining, or substitution."""
-    return bool(_SHELL_METACHARS.search(command))
+def _tokenize(command: str) -> list[str] | None:
+    """Tokenize a shell command, separating unquoted shell operators as their own tokens."""
+    try:
+        lex = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lex.whitespace_split = True
+        return list(lex)
+    except ValueError:
+        return None
 
 
 def _parse_python_invocation(command: str) -> tuple[str, list[str]] | None:
     """Try to parse a command as a simple Python invocation.
 
-    Returns (source_code, argv) if the command is one of:
-        python[3] [-u] script.py [args...]
-        python[3] [-u] -c "source"
-        python[3] [-u] -m module  -> NOT intercepted (returns None)
+    Returns (source_code, argv) where source_code is either the raw
+    Python source (from `-c`) or the marker `__FILE__:<path>` signaling
+    that the caller should read the script file.
 
-    Returns None if the command is not a simple Python call.
+    Returns None if:
+        - The command has shell operators (`|`, `>`, `&&`, etc.) outside quotes
+        - The command is not `python[3]` (with optional flags)
+        - The command uses `-m` (module invocation — not intercepted)
     """
-    try:
-        tokens = shlex.split(command)
-    except ValueError:
+    tokens = _tokenize(command)
+    if not tokens:
         return None
 
-    if not tokens:
+    if any(tok in _SHELL_OPERATORS for tok in tokens):
         return None
 
     exe = os.path.basename(tokens[0])
@@ -100,9 +106,6 @@ class KernelShellBackend(LocalShellBackend):
         if not command or not isinstance(command, str):
             return super().execute(command)
 
-        if _has_shell_metachars(command):
-            return super().execute(command)
-
         parsed = _parse_python_invocation(command)
         if parsed is None:
             return super().execute(command)
@@ -128,6 +131,17 @@ class KernelShellBackend(LocalShellBackend):
             file_path_for_kernel = "<string>"
 
         return self._run_in_kernel(code, argv, file_path_for_kernel)
+
+    async def aexecute(self, command: str) -> ExecuteResponse:
+        """Run on the current (main) thread so run_cell stays on the kernel's thread.
+
+        The default protocol dispatches via asyncio.to_thread, which would call
+        run_cell from a worker thread — unsafe for IPython's display hooks and
+        user_ns access. Sage runs the agent from the main kernel thread inside
+        an asyncio loop, so calling execute() directly here keeps run_cell on
+        the main thread.
+        """
+        return self.execute(command)
 
     def _run_in_kernel(
         self, code: str, argv: list[str], file_path: str

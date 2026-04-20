@@ -4,6 +4,11 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.2 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Fix: parser — use `shlex.shlex(posix=True, punctuation_chars=True)` so `;` / `|` / `&` inside quoted `-c` strings don't trigger the shell-pipeline fallback. Previously `python -c "a=1; b=2"` was passed to the subprocess because the semicolon inside the quoted code matched the shell-metachar regex.
+- Fix: async path — override `aexecute` to call `execute` directly on the main thread instead of inheriting the default `asyncio.to_thread(self.execute, ...)` dispatch. `run_cell` from a worker thread corrupts IPython state. Sage runs the agent from the main kernel thread in an asyncio loop, so in-loop execution is correct.
+- Feature: one-time `[sage] backend: <ClassName>` stderr print on first `%%ask` per kernel, so the active backend is visible for debugging.
+
 ## kernel-0.1.1 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Feature: `KernelShellBackend` — subclass of `LocalShellBackend` that routes `python` and `python -c` commands to the live IPython kernel via `get_ipython().run_cell()`, instead of running them in a subprocess. Non-Python commands (`pip`, `conda`, `curl`, shell pipelines with `|`/`>`/`&&`) still pass through to the parent subprocess implementation unchanged.
 - Unlocks interactive skills: ipywidgets, leafmap/ipyleaflet, Plotly `fig.show()`, matplotlib inline, `tqdm` progress bars, and live kernel state sharing with the agent — none of which are possible from a subprocess.
