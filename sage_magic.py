@@ -1020,10 +1020,8 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
 
     # No checkpointer — cross-cell memory is carried via SAGE_MESSAGES.
     backend_cls = KernelShellBackend if KernelShellBackend is not None else LocalShellBackend
-    if not globals().get("_SAGE_BACKEND_ANNOUNCED"):
-        import sys as _sys
-        print(f"[sage] backend: {backend_cls.__name__}", file=_sys.stderr)
-        globals()["_SAGE_BACKEND_ANNOUNCED"] = True
+    import sys as _sys
+    print(f"[sage] backend: {backend_cls.__name__}", file=_sys.stderr)
     agent = create_deep_agent(
         model,
         skills=skills_paths,

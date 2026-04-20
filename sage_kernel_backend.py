@@ -149,9 +149,13 @@ class KernelShellBackend(LocalShellBackend):
         """Execute `code` in the current IPython kernel with argv, __file__, and cwd set.
 
         Captures stdout/stderr as text for the agent while allowing rich displays
-        (widgets, plots) to render to the notebook cell.
+        (widgets, plots) to render to the notebook cell. Tracebacks from exceptions
+        are captured as text and hidden from the cell — the agent gets the full
+        traceback but the user's notebook output stays clean through recoverable
+        failures.
         """
         import sys
+        import traceback as _tb
 
         from IPython.utils.capture import capture_output
 
@@ -170,10 +174,40 @@ class KernelShellBackend(LocalShellBackend):
         except OSError:
             pass
 
+        captured_tb: list[str] = []
+        original_showtraceback = ip.showtraceback
+        original_showsyntaxerror = getattr(ip, "showsyntaxerror", None)
+
+        def _silent_showtraceback(exc_tuple=None, *args, **kwargs):
+            if exc_tuple is not None:
+                etype, value, tb_info = exc_tuple
+            else:
+                etype, value, tb_info = sys.exc_info()
+            if etype is not None:
+                captured_tb.append("".join(_tb.format_exception(etype, value, tb_info)))
+
+        def _silent_showsyntaxerror(*args, **kwargs):
+            etype, value, tb_info = sys.exc_info()
+            if etype is not None:
+                captured_tb.append("".join(_tb.format_exception_only(etype, value)))
+
+        ip.showtraceback = _silent_showtraceback
+        if original_showsyntaxerror is not None:
+            ip.showsyntaxerror = _silent_showsyntaxerror
+
+        wrapped_code = (
+            code
+            + "\ntry:\n    import matplotlib.pyplot as _sage_plt; _sage_plt.close('all')\n"
+            + "except Exception: pass\n"
+        )
+
         try:
             with capture_output(stdout=True, stderr=True, display=False) as cap:
-                result = ip.run_cell(code, store_history=False, silent=False)
+                result = ip.run_cell(wrapped_code, store_history=False, silent=False)
         finally:
+            ip.showtraceback = original_showtraceback
+            if original_showsyntaxerror is not None:
+                ip.showsyntaxerror = original_showsyntaxerror
             sys.argv = prev_argv
             if prev_file_existed:
                 user_ns["__file__"] = prev_file
@@ -191,16 +225,19 @@ class KernelShellBackend(LocalShellBackend):
             stderr_lines = cap.stderr.strip().split("\n")
             output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
 
+        for tb_text in captured_tb:
+            output_parts.append(f"[stderr] {tb_text.rstrip()}")
+
         exit_code = 0
         if result.error_before_exec is not None:
             exit_code = 1
-            output_parts.append(f"[stderr] SyntaxError: {result.error_before_exec}")
+            if not captured_tb:
+                output_parts.append(f"[stderr] SyntaxError: {result.error_before_exec}")
         elif result.error_in_exec is not None:
             exit_code = 1
-            exc = result.error_in_exec
-            output_parts.append(
-                f"[stderr] {type(exc).__name__}: {exc}"
-            )
+            if not captured_tb:
+                exc = result.error_in_exec
+                output_parts.append(f"[stderr] {type(exc).__name__}: {exc}")
 
         output = "\n".join(output_parts) if output_parts else "<no output>"
 

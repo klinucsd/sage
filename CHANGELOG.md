@@ -4,6 +4,11 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.3 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Fix: silently capture tracebacks. Under KernelShellBackend, exceptions raised in the agent's scripts were printed to the cell via IPython's `showtraceback` (bypassing `capture_output(display=False)`), so every recoverable error the agent fixed still bled into the user's output. Override `ip.showtraceback` and `ip.showsyntaxerror` during `run_cell` — capture the full traceback as text for the agent, suppress display to the cell.
+- Fix: matplotlib figure double-display. Kernel-mode execution triggers matplotlib inline's `post_run_cell` hook, which auto-displays open figures — the same chart would render once inline and again when the agent's narrative referenced the saved PNG. Append `plt.close('all')` to every wrapped code string so open figures are closed before the hook runs. Safe for ipywidgets and plotly (different display paths).
+- UX: `[sage] backend: <ClassName>` banner now prints on every `%%ask`, not once per kernel. Unambiguous verification.
+
 ## kernel-0.1.2 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Fix: parser — use `shlex.shlex(posix=True, punctuation_chars=True)` so `;` / `|` / `&` inside quoted `-c` strings don't trigger the shell-pipeline fallback. Previously `python -c "a=1; b=2"` was passed to the subprocess because the semicolon inside the quoted code matched the shell-metachar regex.
 - Fix: async path — override `aexecute` to call `execute` directly on the main thread instead of inheriting the default `asyncio.to_thread(self.execute, ...)` dispatch. `run_cell` from a worker thread corrupts IPython state. Sage runs the agent from the main kernel thread in an asyncio loop, so in-loop execution is correct.
