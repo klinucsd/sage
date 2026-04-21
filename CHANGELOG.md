@@ -4,6 +4,11 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.10 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Fix: kernel-0.1.9 diagnostic showed captured `display_data` had only `text/plain` — `application/vnd.jupyter.widget-view+json` was missing, so the frontend had no widget model id to render. Something in IPython's display→publish pipeline strips widget-view in our async context.
+- Bypass the pipeline: also monkey-patch `IPython.display.display` (and `IPython.core.display_functions.display`) to capture widget objects directly. After exec, build widget-view mime bundles manually from each widget's `model_id` and `_view_name`. This avoids the mime-filtering step entirely.
+- Non-widget objects passed to display() still get best-effort mimebundles via their `_repr_mimebundle_()` method.
+
 ## kernel-0.1.9 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Fix: kernel-0.1.8 diagnostic log showed `num outputs: 0` — `with cell_out:` was a silent no-op in our async context, so nothing was captured. Widget reprs and print output bypassed the Output widget entirely and went to stdout/frontend directly.
 - Replace `with cell_out:` with manual capture: swap `sys.stdout`, `sys.stderr`, and `ip.display_pub.publish` with our own capture buffers during `exec()`, then explicitly push captured items into `cell_out.outputs` via `append_stdout` / `append_display_data`. This is guaranteed to work regardless of ipywidgets' internal context-manager logic.
