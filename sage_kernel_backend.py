@@ -162,8 +162,6 @@ class KernelShellBackend(LocalShellBackend):
         import sys
         import traceback as _tb
 
-        from IPython.display import display as _ipy_display
-
         ip = self._ipython
         user_ns = ip.user_ns
 
@@ -192,8 +190,12 @@ class KernelShellBackend(LocalShellBackend):
             import ipywidgets as _iw
 
             cell_out = _iw.Output()
-            _ipy_display(cell_out)          # anchor to current cell output
-            user_ns["_sage_cell_out"] = cell_out  # keep alive
+            # Do NOT call display(cell_out) here — we are inside
+            # loop.run_until_complete() and the zmq comm machinery is partially
+            # blocked. Instead, register it for display after the agent loop
+            # returns, where the cell-execution context is live again.
+            pending = user_ns.setdefault("_sage_pending_displays", [])
+            pending.append(cell_out)
 
             compiled = None
             try:

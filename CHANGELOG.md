@@ -4,6 +4,9 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.7 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Fix: display() called from inside loop.run_until_complete() can't send zmq comm messages — the event loop is blocked and the comm machinery is in a partially suspended state. All display attempts from inside tool calls print repr to stdout instead of rendering. Fix: _run_in_kernel() collects Output widgets into user_ns['_sage_pending_displays'] without calling display(). After run_until_complete() returns in the %%ask magic, Sage flushes the list by calling display() for each widget — now in the normal synchronous cell-execution context where zmq works. Widgets are rendered at the bottom of the cell after the agent's text response.
+
 ## kernel-0.1.6 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Fix: widgets still not rendering in kernel-0.1.5. exec() without a display container still causes display() to fall back to printing repr. Root fix: create an ipywidgets.Output() in _run_in_kernel() and call display(output_widget) from there — this runs inside the live %%ask execution context so the widget is anchored to the correct cell output area. Then run exec() inside `with output_widget:`, which captures all display() and print() calls into the widget. Text output is extracted from output_widget.outputs afterward so the agent still sees print() feedback. Exceptions are caught and returned as [stderr] lines without appearing in the cell.
 

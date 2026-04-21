@@ -1387,6 +1387,16 @@ try:
             ))
             return
         _loop.set_exception_handler(_orig_exc_handler)
+
+        # Flush any ipywidgets.Output containers collected by KernelShellBackend.
+        # display() is called here — after run_until_complete — so we are back
+        # in the normal synchronous cell-execution context where zmq comm works.
+        _pending = get_ipython().user_ns.pop("_sage_pending_displays", [])
+        if _pending:
+            from IPython.display import display as _disp
+            for _w in _pending:
+                _disp(_w)
+
         _elapsed = round(_time.time() - _t_start, 1)
 
         # Append run entry to .sage_run.jsonl (hidden file, cleared by %reset)
