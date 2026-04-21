@@ -212,6 +212,21 @@ class KernelShellBackend(LocalShellBackend):
                         exit_code = 1
                         output_parts.append(f"[stderr] {_tb.format_exc().rstrip()}")
 
+            # --- DEBUG: dump structure of cell_out.outputs ---
+            try:
+                with open("/tmp/sage_debug.log", "a") as _dbg:
+                    _dbg.write(f"\n=== _run_in_kernel {file_path} ===\n")
+                    _dbg.write(f"num outputs: {len(cell_out.outputs)}\n")
+                    for _i, _item in enumerate(cell_out.outputs):
+                        _dbg.write(f"  [{_i}] type={_item.get('output_type')} keys={list(_item.keys())}\n")
+                        if _item.get("output_type") == "display_data":
+                            _dbg.write(f"       data mime keys: {list(_item.get('data', {}).keys())}\n")
+                        elif _item.get("output_type") == "stream":
+                            _text = _item.get("text", "")
+                            _dbg.write(f"       name={_item.get('name')} text[:200]={_text[:200]!r}\n")
+            except Exception:
+                pass
+
             # Extract text the agent needs (print output, pip warnings, etc.)
             for item in cell_out.outputs:
                 otype = item.get("output_type", "")

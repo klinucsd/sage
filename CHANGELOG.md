@@ -4,6 +4,9 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.8 — 2026-04-20 (experimental branch: kernel-shell-backend, DIAGNOSTIC)
+- Diagnostic only: write the structure of `cell_out.outputs` to `/tmp/sage_debug.log` so we can see whether captured widgets appear as `display_data` (correct, should render) or as `stream` text (bug — falling back to repr). No functional change.
+
 ## kernel-0.1.7 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Fix: display() called from inside loop.run_until_complete() can't send zmq comm messages — the event loop is blocked and the comm machinery is in a partially suspended state. All display attempts from inside tool calls print repr to stdout instead of rendering. Fix: _run_in_kernel() collects Output widgets into user_ns['_sage_pending_displays'] without calling display(). After run_until_complete() returns in the %%ask magic, Sage flushes the list by calling display() for each widget — now in the normal synchronous cell-execution context where zmq works. Widgets are rendered at the bottom of the cell after the agent's text response.
 
