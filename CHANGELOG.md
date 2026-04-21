@@ -4,6 +4,9 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.5 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Fix: widgets still not rendering in kernel-0.1.4. `ip.run_cell()` creates a new IPython execution context, so `display()` / comm messages (widget creation, display_data) are sent with a mismatched parent_header and don't route to the %%ask cell's output area. Replaced `run_cell()` with plain `exec(compile(code), ip.user_ns)`. This runs inside the existing %%ask cell execution context — display_pub and comm routing are live and correct — so ipywidgets, leafmap, and plotly render. Exceptions caught with try/except + traceback.format_exc().
+
 ## kernel-0.1.4 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Fix: ipywidgets not rendering. `capture_output(stdout=True)` replaces `sys.stdout` with a StringIO — IPython's display system detects this is no longer an ipykernel OutStream and falls back to printing widget repr text to sys.stdout instead of sending a display_data comm to the frontend. Replaced `capture_output` with a `_Tee` wrapper that forwards all writes to the real kernel OutStream (so print output appears in the cell AND widgets render normally via display_pub) while also buffering for the agent. stderr is captured-only (not forwarded) to keep the cell clean.
 

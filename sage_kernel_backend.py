@@ -215,25 +215,6 @@ class KernelShellBackend(LocalShellBackend):
         sys.stderr = stderr_buf
 
         captured_tb: list[str] = []
-        original_showtraceback = ip.showtraceback
-        original_showsyntaxerror = getattr(ip, "showsyntaxerror", None)
-
-        def _silent_showtraceback(exc_tuple=None, *args, **kwargs):
-            if exc_tuple is not None:
-                etype, value, tb_info = exc_tuple
-            else:
-                etype, value, tb_info = sys.exc_info()
-            if etype is not None:
-                captured_tb.append("".join(_tb.format_exception(etype, value, tb_info)))
-
-        def _silent_showsyntaxerror(*args, **kwargs):
-            etype, value, tb_info = sys.exc_info()
-            if etype is not None:
-                captured_tb.append("".join(_tb.format_exception_only(etype, value)))
-
-        ip.showtraceback = _silent_showtraceback
-        if original_showsyntaxerror is not None:
-            ip.showsyntaxerror = _silent_showsyntaxerror
 
         wrapped_code = (
             code
@@ -241,23 +222,37 @@ class KernelShellBackend(LocalShellBackend):
             + "except Exception: pass\n"
         )
 
+        error_before_exec: Exception | None = None
+        error_in_exec: Exception | None = None
+
         try:
-            result = ip.run_cell(wrapped_code, store_history=False, silent=False)
-        finally:
-            ip.showtraceback = original_showtraceback
-            if original_showsyntaxerror is not None:
-                ip.showsyntaxerror = original_showsyntaxerror
+            compiled = compile(wrapped_code, file_path, 'exec')
+        except SyntaxError as e:
+            error_before_exec = e
+            captured_tb.append(_tb.format_exc())
+            compiled = None
+
+        if compiled is not None:
+            try:
+                exec(compiled, user_ns)  # noqa: S102
+            except Exception as e:
+                error_in_exec = e
+                captured_tb.append(_tb.format_exc())
+            finally:
+                sys.stdout = prev_stdout
+                sys.stderr = prev_stderr
+        else:
             sys.stdout = prev_stdout
             sys.stderr = prev_stderr
-            sys.argv = prev_argv
-            if prev_file_existed:
-                user_ns["__file__"] = prev_file
-            else:
-                user_ns.pop("__file__", None)
-            try:
-                os.chdir(prev_cwd)
-            except OSError:
-                pass
+        sys.argv = prev_argv
+        if prev_file_existed:
+            user_ns["__file__"] = prev_file
+        else:
+            user_ns.pop("__file__", None)
+        try:
+            os.chdir(prev_cwd)
+        except OSError:
+            pass
 
         output_parts: list[str] = []
         captured_out = stdout_tee.getvalue()
@@ -272,14 +267,10 @@ class KernelShellBackend(LocalShellBackend):
             output_parts.append(f"[stderr] {tb_text.rstrip()}")
 
         exit_code = 0
-        if result.error_before_exec is not None:
+        if error_before_exec is not None or error_in_exec is not None:
             exit_code = 1
             if not captured_tb:
-                output_parts.append(f"[stderr] SyntaxError: {result.error_before_exec}")
-        elif result.error_in_exec is not None:
-            exit_code = 1
-            if not captured_tb:
-                exc = result.error_in_exec
+                exc = error_before_exec or error_in_exec
                 output_parts.append(f"[stderr] {type(exc).__name__}: {exc}")
 
         output = "\n".join(output_parts) if output_parts else "<no output>"
