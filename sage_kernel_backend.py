@@ -186,6 +186,13 @@ class KernelShellBackend(LocalShellBackend):
         output_parts: list[str] = []
         exit_code = 0
 
+        # Entry log — always written, so "no log file" ≠ "path not reached"
+        try:
+            with open("/tmp/sage_debug.log", "a") as _dbg:
+                _dbg.write(f"\n--- _run_in_kernel entered: {file_path} (version kernel-0.1.11) ---\n")
+        except Exception:
+            pass
+
         try:
             import io as _io
             import ipywidgets as _iw
@@ -324,7 +331,13 @@ class KernelShellBackend(LocalShellBackend):
             if _stderr_txt:
                 output_parts.append(f"[stderr] {_stderr_txt.rstrip()}")
 
-        except ImportError:
+        except ImportError as _imp_err:
+            # Log the import failure so we can diagnose
+            try:
+                with open("/tmp/sage_debug.log", "a") as _dbg:
+                    _dbg.write(f"FELL THROUGH to ImportError branch: {_imp_err}\n")
+            except Exception:
+                pass
             # ipywidgets not available — plain exec fallback (no widget rendering)
             try:
                 compiled = compile(wrapped_code, file_path, "exec")

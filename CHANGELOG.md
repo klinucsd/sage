@@ -4,6 +4,10 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.11 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Diagnostic: add entry-point log (before any imports) in `_run_in_kernel` so "no log file" can be distinguished from "path not reached". Also log the specific ImportError if the widget-capture path falls through.
+- Skill: tighten usgs-lidar SKILL.md to explicitly forbid the "copy the code into a cell yourself" escape-hatch that the agent kept falling into. Add rule: install missing packages and re-run, don't give up.
+
 ## kernel-0.1.10 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Fix: kernel-0.1.9 diagnostic showed captured `display_data` had only `text/plain` — `application/vnd.jupyter.widget-view+json` was missing, so the frontend had no widget model id to render. Something in IPython's display→publish pipeline strips widget-view in our async context.
 - Bypass the pipeline: also monkey-patch `IPython.display.display` (and `IPython.core.display_functions.display`) to capture widget objects directly. After exec, build widget-view mime bundles manually from each widget's `model_id` and `_view_name`. This avoids the mime-filtering step entirely.

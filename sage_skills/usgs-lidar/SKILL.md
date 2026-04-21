@@ -31,6 +31,8 @@ This takes ~2–3 minutes the first time. Subsequent cells in the same session a
 - Save every script to a `.py` file with `write_file`, then run it with `python /path/to/script.py`. Never use heredoc syntax (`python << 'EOF'`). Never chain commands with `&&`.
 - Never call `m.save()` or write an HTML file. The `display(m, out, dropdown)` call at the end of Step 1 is the ONLY correct way to show the map — if you replace it with `m.save()` the interactive widget will not appear.
 - Copy each step's code exactly as written. Do not reorganise, summarise, or substitute any part of it.
+- If running the script produces no visible widget output, DO NOT conclude "the widget requires a notebook cell" and tell the user to copy-paste the code. You are already running inside a notebook. Sage's kernel backend renders `display()` calls from executed scripts at the end of the cell. Your job is to run the script; Sage handles rendering.
+- If the script fails with an import error, install the missing package and re-run the script. Do not give up by telling the user to run the code themselves.
 
 ---
 
