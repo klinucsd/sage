@@ -146,61 +146,31 @@ class KernelShellBackend(LocalShellBackend):
     def _run_in_kernel(
         self, code: str, argv: list[str], file_path: str
     ) -> ExecuteResponse:
-        """Execute `code` in the current IPython kernel with argv, __file__, and cwd set.
+        """Execute `code` in the current IPython kernel.
 
-        stdout is tee'd: forwarded to the real kernel OutStream (so print() output
-        appears in the cell) and also captured as text for the agent.
-
-        stderr is captured only (not forwarded) so pip/conda warnings and
-        agent-recoverable tracebacks don't pollute the cell.
-
-        Rich display outputs (display(), widgets, plotly) go through IPython's
-        display_pub (zmq) — completely separate from sys.stdout — and render
-        as interactive widgets in the cell.
+        Uses an ipywidgets.Output() as the display container:
+          - display(output_widget) is called from THIS method, which runs inside
+            the live %%ask cell execution context → the widget is anchored to
+            the correct cell output area.
+          - `with output_widget:` captures all display() and print() calls from
+            exec() into that widget, so ipywidgets, leafmap, and plotly render.
+          - stdout text is extracted from output_widget.outputs afterward so
+            the agent still sees print() feedback.
+          - Exceptions are caught and returned as [stderr] lines; they are NOT
+            shown in the cell so recoverable errors stay hidden from the user.
         """
-        import io
         import sys
         import traceback as _tb
 
+        from IPython.display import display as _ipy_display
+
         ip = self._ipython
         user_ns = ip.user_ns
-
-        # --- Tee: forward to real stdout + capture to buffer ---
-        class _Tee:
-            def __init__(self, real):
-                self._real = real
-                self._buf = io.StringIO()
-            def write(self, s):
-                self._real.write(s)
-                self._buf.write(s)
-                return len(s)
-            def flush(self):
-                self._real.flush()
-            def getvalue(self):
-                return self._buf.getvalue()
-            def __getattr__(self, name):
-                return getattr(self._real, name)
-
-        class _SilentBuf:
-            """Capture stderr without forwarding — keeps cell output clean."""
-            def __init__(self):
-                self._buf = io.StringIO()
-            def write(self, s):
-                self._buf.write(s)
-                return len(s)
-            def flush(self):
-                pass
-            def getvalue(self):
-                return self._buf.getvalue()
-            def __getattr__(self, name):
-                return getattr(sys.__stderr__, name)
 
         prev_argv = sys.argv
         prev_file = user_ns.get("__file__", None)
         prev_file_existed = "__file__" in user_ns
         prev_cwd = os.getcwd()
-        prev_stdout = sys.stdout
-        prev_stderr = sys.stderr
 
         sys.argv = argv if argv else [file_path]
         user_ns["__file__"] = file_path
@@ -209,71 +179,71 @@ class KernelShellBackend(LocalShellBackend):
         except OSError:
             pass
 
-        stdout_tee = _Tee(prev_stdout)
-        stderr_buf = _SilentBuf()
-        sys.stdout = stdout_tee
-        sys.stderr = stderr_buf
-
-        captured_tb: list[str] = []
-
         wrapped_code = (
             code
             + "\ntry:\n    import matplotlib.pyplot as _sage_plt; _sage_plt.close('all')\n"
             + "except Exception: pass\n"
         )
 
-        error_before_exec: Exception | None = None
-        error_in_exec: Exception | None = None
-
-        try:
-            compiled = compile(wrapped_code, file_path, 'exec')
-        except SyntaxError as e:
-            error_before_exec = e
-            captured_tb.append(_tb.format_exc())
-            compiled = None
-
-        if compiled is not None:
-            try:
-                exec(compiled, user_ns)  # noqa: S102
-            except Exception as e:
-                error_in_exec = e
-                captured_tb.append(_tb.format_exc())
-            finally:
-                sys.stdout = prev_stdout
-                sys.stderr = prev_stderr
-        else:
-            sys.stdout = prev_stdout
-            sys.stderr = prev_stderr
-        sys.argv = prev_argv
-        if prev_file_existed:
-            user_ns["__file__"] = prev_file
-        else:
-            user_ns.pop("__file__", None)
-        try:
-            os.chdir(prev_cwd)
-        except OSError:
-            pass
-
         output_parts: list[str] = []
-        captured_out = stdout_tee.getvalue()
-        if captured_out:
-            output_parts.append(captured_out)
-        captured_err = stderr_buf.getvalue()
-        if captured_err:
-            stderr_lines = captured_err.strip().split("\n")
-            output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
-
-        for tb_text in captured_tb:
-            output_parts.append(f"[stderr] {tb_text.rstrip()}")
-
         exit_code = 0
-        if error_before_exec is not None or error_in_exec is not None:
-            exit_code = 1
-            if not captured_tb:
-                exc = error_before_exec or error_in_exec
-                output_parts.append(f"[stderr] {type(exc).__name__}: {exc}")
 
-        output = "\n".join(output_parts) if output_parts else "<no output>"
+        try:
+            import ipywidgets as _iw
+
+            cell_out = _iw.Output()
+            _ipy_display(cell_out)          # anchor to current cell output
+            user_ns["_sage_cell_out"] = cell_out  # keep alive
+
+            compiled = None
+            try:
+                compiled = compile(wrapped_code, file_path, "exec")
+            except SyntaxError as e:
+                exit_code = 1
+                output_parts.append(f"[stderr] SyntaxError: {e}")
+
+            if compiled is not None:
+                with cell_out:
+                    try:
+                        exec(compiled, user_ns)  # noqa: S102
+                    except Exception as e:
+                        exit_code = 1
+                        output_parts.append(f"[stderr] {_tb.format_exc().rstrip()}")
+
+            # Extract text the agent needs (print output, pip warnings, etc.)
+            for item in cell_out.outputs:
+                otype = item.get("output_type", "")
+                if otype == "stream":
+                    output_parts.append(item.get("text", ""))
+                elif otype == "error":
+                    output_parts.append(
+                        f"[stderr] {item.get('ename','')}: {item.get('evalue','')}"
+                    )
+
+        except ImportError:
+            # ipywidgets not available — plain exec fallback (no widget rendering)
+            try:
+                compiled = compile(wrapped_code, file_path, "exec")
+                exec(compiled, user_ns)  # noqa: S102
+            except SyntaxError as e:
+                exit_code = 1
+                output_parts.append(f"[stderr] SyntaxError: {e}")
+            except Exception as e:
+                exit_code = 1
+                output_parts.append(f"[stderr] {_tb.format_exc().rstrip()}")
+
+        finally:
+            sys.argv = prev_argv
+            if prev_file_existed:
+                user_ns["__file__"] = prev_file
+            else:
+                user_ns.pop("__file__", None)
+            try:
+                os.chdir(prev_cwd)
+            except OSError:
+                pass
+
+        output = "\n".join(p for p in output_parts if p) if output_parts else "<no output>"
 
         truncated = False
         if len(output) > self._max_output_bytes:
