@@ -4,6 +4,11 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.9 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Fix: kernel-0.1.8 diagnostic log showed `num outputs: 0` — `with cell_out:` was a silent no-op in our async context, so nothing was captured. Widget reprs and print output bypassed the Output widget entirely and went to stdout/frontend directly.
+- Replace `with cell_out:` with manual capture: swap `sys.stdout`, `sys.stderr`, and `ip.display_pub.publish` with our own capture buffers during `exec()`, then explicitly push captured items into `cell_out.outputs` via `append_stdout` / `append_display_data`. This is guaranteed to work regardless of ipywidgets' internal context-manager logic.
+- Agent now only sees stdout/stderr text, never widget repr fallback strings.
+
 ## kernel-0.1.8 — 2026-04-20 (experimental branch: kernel-shell-backend, DIAGNOSTIC)
 - Diagnostic only: write the structure of `cell_out.outputs` to `/tmp/sage_debug.log` so we can see whether captured widgets appear as `display_data` (correct, should render) or as `stream` text (bug — falling back to repr). No functional change.
 

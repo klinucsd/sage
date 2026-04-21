@@ -187,13 +187,10 @@ class KernelShellBackend(LocalShellBackend):
         exit_code = 0
 
         try:
+            import io as _io
             import ipywidgets as _iw
 
             cell_out = _iw.Output()
-            # Do NOT call display(cell_out) here — we are inside
-            # loop.run_until_complete() and the zmq comm machinery is partially
-            # blocked. Instead, register it for display after the agent loop
-            # returns, where the cell-execution context is live again.
             pending = user_ns.setdefault("_sage_pending_displays", [])
             pending.append(cell_out)
 
@@ -204,38 +201,67 @@ class KernelShellBackend(LocalShellBackend):
                 exit_code = 1
                 output_parts.append(f"[stderr] SyntaxError: {e}")
 
+            # Manual capture: `with cell_out:` is a no-op in our async context,
+            # so intercept sys.stdout/stderr and ip.display_pub.publish directly,
+            # then explicitly append captured items to cell_out.outputs.
+            _stdout_buf = _io.StringIO()
+            _stderr_buf = _io.StringIO()
+            _captured_displays: list[tuple[dict, dict]] = []
+
+            _orig_stdout = sys.stdout
+            _orig_stderr = sys.stderr
+            _orig_publish = ip.display_pub.publish
+
+            def _capture_publish(data, metadata=None, **kwargs):
+                _captured_displays.append((dict(data) if data else {}, dict(metadata or {})))
+
             if compiled is not None:
-                with cell_out:
-                    try:
-                        exec(compiled, user_ns)  # noqa: S102
-                    except Exception as e:
-                        exit_code = 1
-                        output_parts.append(f"[stderr] {_tb.format_exc().rstrip()}")
+                sys.stdout = _stdout_buf
+                sys.stderr = _stderr_buf
+                ip.display_pub.publish = _capture_publish
+                try:
+                    exec(compiled, user_ns)  # noqa: S102
+                except Exception:
+                    exit_code = 1
+                    output_parts.append(f"[stderr] {_tb.format_exc().rstrip()}")
+                finally:
+                    sys.stdout = _orig_stdout
+                    sys.stderr = _orig_stderr
+                    ip.display_pub.publish = _orig_publish
+
+            # Push captured items into the Output widget for later rendering
+            _stdout_txt = _stdout_buf.getvalue()
+            _stderr_txt = _stderr_buf.getvalue()
+            if _stdout_txt:
+                cell_out.append_stdout(_stdout_txt)
+            if _stderr_txt:
+                cell_out.append_stderr(_stderr_txt)
+            for _data, _meta in _captured_displays:
+                try:
+                    cell_out.append_display_data(_data)
+                except Exception:
+                    cell_out.outputs = cell_out.outputs + (
+                        {"output_type": "display_data", "data": _data, "metadata": _meta},
+                    )
 
             # --- DEBUG: dump structure of cell_out.outputs ---
             try:
                 with open("/tmp/sage_debug.log", "a") as _dbg:
                     _dbg.write(f"\n=== _run_in_kernel {file_path} ===\n")
-                    _dbg.write(f"num outputs: {len(cell_out.outputs)}\n")
+                    _dbg.write(f"captured: stdout={len(_stdout_txt)}B stderr={len(_stderr_txt)}B displays={len(_captured_displays)}\n")
+                    _dbg.write(f"cell_out.outputs count: {len(cell_out.outputs)}\n")
                     for _i, _item in enumerate(cell_out.outputs):
                         _dbg.write(f"  [{_i}] type={_item.get('output_type')} keys={list(_item.keys())}\n")
                         if _item.get("output_type") == "display_data":
                             _dbg.write(f"       data mime keys: {list(_item.get('data', {}).keys())}\n")
-                        elif _item.get("output_type") == "stream":
-                            _text = _item.get("text", "")
-                            _dbg.write(f"       name={_item.get('name')} text[:200]={_text[:200]!r}\n")
             except Exception:
                 pass
 
-            # Extract text the agent needs (print output, pip warnings, etc.)
-            for item in cell_out.outputs:
-                otype = item.get("output_type", "")
-                if otype == "stream":
-                    output_parts.append(item.get("text", ""))
-                elif otype == "error":
-                    output_parts.append(
-                        f"[stderr] {item.get('ename','')}: {item.get('evalue','')}"
-                    )
+            # Agent sees only the text stdout/stderr, never widget reprs
+            if _stdout_txt:
+                output_parts.append(_stdout_txt)
+            if _stderr_txt:
+                output_parts.append(f"[stderr] {_stderr_txt.rstrip()}")
 
         except ImportError:
             # ipywidgets not available — plain exec fallback (no widget rendering)
