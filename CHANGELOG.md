@@ -4,6 +4,9 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.14 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Critical fix: pre-install `ipywidgets`, `ipyleaflet`, `leafmap`, and `plotly` in the Docker image. In earlier kernel-0.1.x runs, the agent had to pip install these on the fly — and because `/opt/conda` is read-only for jovyan, they went to `~/.local`, which means the JupyterLab frontend extension (`@jupyter-widgets/jupyterlab-manager`) was never registered at Lab startup. Confirmed by running `widgets.IntSlider()` in a fresh cell — it rendered as text `IntSlider(...)` instead of a draggable slider. With these packages baked into the image, the frontend extension loads normally at Lab startup and all our backend capture/display work actually becomes visible.
+
 ## kernel-0.1.13 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Fix: kernel-0.1.12 correctly captured widgets with widget-view mime keys (log confirmed it), but the cell still showed `Output(outputs=(...))` as text repr. Root cause: the wrapper `Output` widget we used to hold captured items was created inside the async context where ipykernel's comm machinery is suspended — its comm_open never reached the frontend, so the frontend had no model for the wrapper and fell back to text repr. The inner widgets (Map/Dropdown/inner Output) were fine; only the wrapper was dead.
 - Drop the wrapper entirely. Capture widget objects via display() interception as before, but queue the widget objects themselves (not a wrapper) into `_sage_pending_displays`. The post-loop flush step in sage_magic.py calls `display(widget)` for each, which sends a normal display comm for already-registered inner widgets.

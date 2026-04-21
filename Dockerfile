@@ -47,7 +47,8 @@ RUN apt-get update && apt-get install -y \
 # Step 1: Install DeepAgents CLI
 # -----------------------------------------------------------------------------
 # [openai] extra provides langchain-openai (ChatOpenAI) for NRP's GLM endpoint
-RUN pip install --no-cache-dir "deepagents-cli[openai]" nest_asyncio folium geopandas matplotlib rasterio
+RUN pip install --no-cache-dir "deepagents-cli[openai]" nest_asyncio folium geopandas matplotlib rasterio \
+    ipywidgets ipyleaflet leafmap plotly
 
 # -----------------------------------------------------------------------------
 # Step 2: Copy Assets
