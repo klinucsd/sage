@@ -4,6 +4,10 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.13 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Fix: kernel-0.1.12 correctly captured widgets with widget-view mime keys (log confirmed it), but the cell still showed `Output(outputs=(...))` as text repr. Root cause: the wrapper `Output` widget we used to hold captured items was created inside the async context where ipykernel's comm machinery is suspended — its comm_open never reached the frontend, so the frontend had no model for the wrapper and fell back to text repr. The inner widgets (Map/Dropdown/inner Output) were fine; only the wrapper was dead.
+- Drop the wrapper entirely. Capture widget objects via display() interception as before, but queue the widget objects themselves (not a wrapper) into `_sage_pending_displays`. The post-loop flush step in sage_magic.py calls `display(widget)` for each, which sends a normal display comm for already-registered inner widgets.
+
 ## kernel-0.1.12 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Fix: `cell_out.append_display_data()` expects an IPython DisplayObject (Markdown/HTML/Image), NOT a raw mime-bundle dict. When I passed a dict, it silently discarded every mime key except text/plain — which is exactly what the 0.1.10/0.1.11 logs showed (`mime keys: ['text/plain']` even though we built bundles with widget-view).
 - Bypass the method entirely: build raw `{"output_type": "display_data", "data": ..., "metadata": ...}` dicts and assign them directly to `cell_out.outputs += (...)`. Widget-view mime keys are now preserved.

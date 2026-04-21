@@ -189,22 +189,17 @@ class KernelShellBackend(LocalShellBackend):
         # Entry log — always written, so "no log file" ≠ "path not reached"
         try:
             with open("/tmp/sage_debug.log", "a") as _dbg:
-                _dbg.write(f"\n--- _run_in_kernel entered: {file_path} (version kernel-0.1.11) ---\n")
+                _dbg.write(f"\n--- _run_in_kernel entered: {file_path} (version kernel-0.1.13) ---\n")
         except Exception:
             pass
 
         try:
             import io as _io
-            import ipywidgets as _iw
             import IPython.display as _ipd_module
             try:
                 import IPython.core.display_functions as _ipcdf_module
             except ImportError:
                 _ipcdf_module = None
-
-            cell_out = _iw.Output()
-            pending = user_ns.setdefault("_sage_pending_displays", [])
-            pending.append(cell_out)
 
             compiled = None
             try:
@@ -213,20 +208,16 @@ class KernelShellBackend(LocalShellBackend):
                 exit_code = 1
                 output_parts.append(f"[stderr] SyntaxError: {e}")
 
-            # Manual capture: intercept at multiple levels so whatever path
-            # the script uses (display(), publish_display_data(), raw publish)
-            # ends up in our buffers. For widget objects captured via display(),
-            # we build widget-view mime bundles directly from each widget's
-            # model_id — bypassing the mime pipeline that strips widget-view
-            # in our async context.
+            # Manual capture: intercept display() to collect widget objects
+            # (their comm_opens were already sent to the frontend when created).
+            # At flush time we display each widget directly — no wrapper Output
+            # whose own comm might not be registered with the frontend.
             _stdout_buf = _io.StringIO()
             _stderr_buf = _io.StringIO()
-            _captured_objs: list = []           # widgets / other objects passed to display()
-            _captured_publishes: list[tuple[dict, dict]] = []  # raw publish calls
+            _captured_objs: list = []
 
             _orig_stdout = sys.stdout
             _orig_stderr = sys.stderr
-            _orig_publish = ip.display_pub.publish
             _orig_display_1 = _ipd_module.display
             _orig_display_2 = getattr(_ipcdf_module, "display", None) if _ipcdf_module else None
 
@@ -234,15 +225,9 @@ class KernelShellBackend(LocalShellBackend):
                 for _o in objs:
                     _captured_objs.append(_o)
 
-            def _capture_publish(data, metadata=None, **kwargs):
-                _captured_publishes.append(
-                    (dict(data) if data else {}, dict(metadata or {}))
-                )
-
             if compiled is not None:
                 sys.stdout = _stdout_buf
                 sys.stderr = _stderr_buf
-                ip.display_pub.publish = _capture_publish
                 _ipd_module.display = _capture_display
                 if _ipcdf_module is not None and _orig_display_2 is not None:
                     _ipcdf_module.display = _capture_display
@@ -254,83 +239,36 @@ class KernelShellBackend(LocalShellBackend):
                 finally:
                     sys.stdout = _orig_stdout
                     sys.stderr = _orig_stderr
-                    ip.display_pub.publish = _orig_publish
                     _ipd_module.display = _orig_display_1
                     if _ipcdf_module is not None and _orig_display_2 is not None:
                         _ipcdf_module.display = _orig_display_2
 
-            # Push captured text into the Output widget
             _stdout_txt = _stdout_buf.getvalue()
             _stderr_txt = _stderr_buf.getvalue()
-            if _stdout_txt:
-                cell_out.append_stdout(_stdout_txt)
-            if _stderr_txt:
-                cell_out.append_stderr(_stderr_txt)
 
-            # Build proper mime bundles for widget objects captured via display()
-            # IMPORTANT: append to cell_out.outputs directly — Output.append_display_data()
-            # expects an IPython DisplayObject (Markdown/HTML/Image), not a raw dict, and
-            # will silently discard the widget-view mime type if given one.
-            _new_outputs: list[dict] = []
-            for _obj in _captured_objs:
-                _model_id = getattr(_obj, "_model_id", None) or getattr(_obj, "model_id", None)
-                _view_name = getattr(_obj, "_view_name", None)
-                if _model_id and _view_name:
-                    _data = {
-                        "text/plain": repr(_obj),
-                        "application/vnd.jupyter.widget-view+json": {
-                            "version_major": 2,
-                            "version_minor": 0,
-                            "model_id": _model_id,
-                        },
-                    }
-                else:
-                    _data = None
-                    _repr_fn = getattr(_obj, "_repr_mimebundle_", None)
-                    if _repr_fn is not None:
-                        try:
-                            _data = _repr_fn()
-                            if isinstance(_data, tuple):
-                                _data = _data[0]
-                        except Exception:
-                            _data = None
-                    if not _data:
-                        _data = {"text/plain": repr(_obj)}
-                _new_outputs.append(
-                    {"output_type": "display_data", "data": _data, "metadata": {}}
-                )
-
-            # Raw publish calls (not via display()) — pass through directly
-            for _data, _meta in _captured_publishes:
-                _new_outputs.append(
-                    {"output_type": "display_data", "data": _data, "metadata": _meta}
-                )
-
-            if _new_outputs:
-                cell_out.outputs = cell_out.outputs + tuple(_new_outputs)
+            # Queue each captured widget object for display in the main cell
+            # context. Do NOT wrap in an Output widget — the wrapper's own
+            # model can't be registered from inside the async context.
+            pending = user_ns.setdefault("_sage_pending_displays", [])
+            pending.extend(_captured_objs)
 
             # --- DEBUG log ---
             try:
                 with open("/tmp/sage_debug.log", "a") as _dbg:
-                    _dbg.write(f"\n=== _run_in_kernel {file_path} ===\n")
+                    _dbg.write(f"\n=== _run_in_kernel {file_path} (kernel-0.1.13) ===\n")
                     _dbg.write(
                         f"captured: stdout={len(_stdout_txt)}B stderr={len(_stderr_txt)}B "
-                        f"display-objs={len(_captured_objs)} raw-publishes={len(_captured_publishes)}\n"
+                        f"display-objs={len(_captured_objs)}\n"
                     )
                     for _i, _o in enumerate(_captured_objs):
                         _mid = getattr(_o, "_model_id", None) or getattr(_o, "model_id", None)
                         _vn = getattr(_o, "_view_name", None)
                         _dbg.write(f"  obj[{_i}]: {type(_o).__name__} model_id={_mid!r} view_name={_vn!r}\n")
-                    _dbg.write(f"cell_out.outputs count: {len(cell_out.outputs)}\n")
-                    for _i, _item in enumerate(cell_out.outputs):
-                        _dbg.write(f"  [{_i}] type={_item.get('output_type')}")
-                        if _item.get("output_type") == "display_data":
-                            _dbg.write(f" mime keys: {list(_item.get('data', {}).keys())}")
-                        _dbg.write("\n")
+                    _dbg.write(f"pending_displays total: {len(pending)}\n")
             except Exception:
                 pass
 
-            # Agent sees only stdout/stderr text, never widget reprs
+            # Agent sees only stdout/stderr text
             if _stdout_txt:
                 output_parts.append(_stdout_txt)
             if _stderr_txt:
