@@ -148,24 +148,59 @@ class KernelShellBackend(LocalShellBackend):
     ) -> ExecuteResponse:
         """Execute `code` in the current IPython kernel with argv, __file__, and cwd set.
 
-        Captures stdout/stderr as text for the agent while allowing rich displays
-        (widgets, plots) to render to the notebook cell. Tracebacks from exceptions
-        are captured as text and hidden from the cell — the agent gets the full
-        traceback but the user's notebook output stays clean through recoverable
-        failures.
+        stdout is tee'd: forwarded to the real kernel OutStream (so print() output
+        appears in the cell) and also captured as text for the agent.
+
+        stderr is captured only (not forwarded) so pip/conda warnings and
+        agent-recoverable tracebacks don't pollute the cell.
+
+        Rich display outputs (display(), widgets, plotly) go through IPython's
+        display_pub (zmq) — completely separate from sys.stdout — and render
+        as interactive widgets in the cell.
         """
+        import io
         import sys
         import traceback as _tb
 
-        from IPython.utils.capture import capture_output
-
         ip = self._ipython
         user_ns = ip.user_ns
+
+        # --- Tee: forward to real stdout + capture to buffer ---
+        class _Tee:
+            def __init__(self, real):
+                self._real = real
+                self._buf = io.StringIO()
+            def write(self, s):
+                self._real.write(s)
+                self._buf.write(s)
+                return len(s)
+            def flush(self):
+                self._real.flush()
+            def getvalue(self):
+                return self._buf.getvalue()
+            def __getattr__(self, name):
+                return getattr(self._real, name)
+
+        class _SilentBuf:
+            """Capture stderr without forwarding — keeps cell output clean."""
+            def __init__(self):
+                self._buf = io.StringIO()
+            def write(self, s):
+                self._buf.write(s)
+                return len(s)
+            def flush(self):
+                pass
+            def getvalue(self):
+                return self._buf.getvalue()
+            def __getattr__(self, name):
+                return getattr(sys.__stderr__, name)
 
         prev_argv = sys.argv
         prev_file = user_ns.get("__file__", None)
         prev_file_existed = "__file__" in user_ns
         prev_cwd = os.getcwd()
+        prev_stdout = sys.stdout
+        prev_stderr = sys.stderr
 
         sys.argv = argv if argv else [file_path]
         user_ns["__file__"] = file_path
@@ -173,6 +208,11 @@ class KernelShellBackend(LocalShellBackend):
             os.chdir(str(self.cwd))
         except OSError:
             pass
+
+        stdout_tee = _Tee(prev_stdout)
+        stderr_buf = _SilentBuf()
+        sys.stdout = stdout_tee
+        sys.stderr = stderr_buf
 
         captured_tb: list[str] = []
         original_showtraceback = ip.showtraceback
@@ -202,12 +242,13 @@ class KernelShellBackend(LocalShellBackend):
         )
 
         try:
-            with capture_output(stdout=True, stderr=True, display=False) as cap:
-                result = ip.run_cell(wrapped_code, store_history=False, silent=False)
+            result = ip.run_cell(wrapped_code, store_history=False, silent=False)
         finally:
             ip.showtraceback = original_showtraceback
             if original_showsyntaxerror is not None:
                 ip.showsyntaxerror = original_showsyntaxerror
+            sys.stdout = prev_stdout
+            sys.stderr = prev_stderr
             sys.argv = prev_argv
             if prev_file_existed:
                 user_ns["__file__"] = prev_file
@@ -219,10 +260,12 @@ class KernelShellBackend(LocalShellBackend):
                 pass
 
         output_parts: list[str] = []
-        if cap.stdout:
-            output_parts.append(cap.stdout)
-        if cap.stderr:
-            stderr_lines = cap.stderr.strip().split("\n")
+        captured_out = stdout_tee.getvalue()
+        if captured_out:
+            output_parts.append(captured_out)
+        captured_err = stderr_buf.getvalue()
+        if captured_err:
+            stderr_lines = captured_err.strip().split("\n")
             output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
 
         for tb_text in captured_tb:

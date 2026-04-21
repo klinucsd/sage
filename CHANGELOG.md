@@ -4,6 +4,9 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.4 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Fix: ipywidgets not rendering. `capture_output(stdout=True)` replaces `sys.stdout` with a StringIO — IPython's display system detects this is no longer an ipykernel OutStream and falls back to printing widget repr text to sys.stdout instead of sending a display_data comm to the frontend. Replaced `capture_output` with a `_Tee` wrapper that forwards all writes to the real kernel OutStream (so print output appears in the cell AND widgets render normally via display_pub) while also buffering for the agent. stderr is captured-only (not forwarded) to keep the cell clean.
+
 ## kernel-0.1.3 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Fix: silently capture tracebacks. Under KernelShellBackend, exceptions raised in the agent's scripts were printed to the cell via IPython's `showtraceback` (bypassing `capture_output(display=False)`), so every recoverable error the agent fixed still bled into the user's output. Override `ip.showtraceback` and `ip.showsyntaxerror` during `run_cell` — capture the full traceback as text for the agent, suppress display to the cell.
 - Fix: matplotlib figure double-display. Kernel-mode execution triggers matplotlib inline's `post_run_cell` hook, which auto-displays open figures — the same chart would render once inline and again when the agent's narrative referenced the saved PNG. Append `plt.close('all')` to every wrapped code string so open figures are closed before the hook runs. Safe for ipywidgets and plotly (different display paths).

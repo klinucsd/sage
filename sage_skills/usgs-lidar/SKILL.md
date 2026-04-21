@@ -26,10 +26,19 @@ This takes ~2–3 minutes the first time. Subsequent cells in the same session a
 
 ---
 
+## Execution rules — read before writing any code
+
+- Save every script to a `.py` file with `write_file`, then run it with `python /path/to/script.py`. Never use heredoc syntax (`python << 'EOF'`). Never chain commands with `&&`.
+- Never call `m.save()` or write an HTML file. The `display(m, out, dropdown)` call at the end of Step 1 is the ONLY correct way to show the map — if you replace it with `m.save()` the interactive widget will not appear.
+- Copy each step's code exactly as written. Do not reorganise, summarise, or substitute any part of it.
+
+---
+
 ## Step 1 — Coverage Map with Bounding Box Selection
 
-Use this example verbatim. It displays the USGS 3DEP coverage map, lets the user draw a
-rectangle, and populates a dropdown with datasets that intersect the selected area.
+Save the code below to a `.py` file and run it with `python`. It displays the USGS 3DEP
+coverage map as a live interactive widget, lets the user draw a rectangle, and populates
+a dropdown with datasets that intersect the selected area.
 It stores two kernel variables that later steps depend on:
 - `USER_BBOX` — `(minx, miny, maxx, maxy)` in EPSG:4326
 - `USER_EPT_URL` — EPT endpoint URL for the selected dataset
