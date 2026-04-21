@@ -268,41 +268,46 @@ class KernelShellBackend(LocalShellBackend):
                 cell_out.append_stderr(_stderr_txt)
 
             # Build proper mime bundles for widget objects captured via display()
+            # IMPORTANT: append to cell_out.outputs directly — Output.append_display_data()
+            # expects an IPython DisplayObject (Markdown/HTML/Image), not a raw dict, and
+            # will silently discard the widget-view mime type if given one.
+            _new_outputs: list[dict] = []
             for _obj in _captured_objs:
                 _model_id = getattr(_obj, "_model_id", None) or getattr(_obj, "model_id", None)
                 _view_name = getattr(_obj, "_view_name", None)
                 if _model_id and _view_name:
-                    cell_out.append_display_data({
+                    _data = {
                         "text/plain": repr(_obj),
                         "application/vnd.jupyter.widget-view+json": {
                             "version_major": 2,
                             "version_minor": 0,
                             "model_id": _model_id,
                         },
-                    })
+                    }
                 else:
-                    # Non-widget object — use best-effort mimebundle
-                    _bundle = None
+                    _data = None
                     _repr_fn = getattr(_obj, "_repr_mimebundle_", None)
                     if _repr_fn is not None:
                         try:
-                            _bundle = _repr_fn()
-                            if isinstance(_bundle, tuple):
-                                _bundle = _bundle[0]
+                            _data = _repr_fn()
+                            if isinstance(_data, tuple):
+                                _data = _data[0]
                         except Exception:
-                            _bundle = None
-                    if not _bundle:
-                        _bundle = {"text/plain": repr(_obj)}
-                    cell_out.append_display_data(_bundle)
+                            _data = None
+                    if not _data:
+                        _data = {"text/plain": repr(_obj)}
+                _new_outputs.append(
+                    {"output_type": "display_data", "data": _data, "metadata": {}}
+                )
 
-            # Raw publish calls (not via display()) get passed through directly
+            # Raw publish calls (not via display()) — pass through directly
             for _data, _meta in _captured_publishes:
-                try:
-                    cell_out.append_display_data(_data)
-                except Exception:
-                    cell_out.outputs = cell_out.outputs + (
-                        {"output_type": "display_data", "data": _data, "metadata": _meta},
-                    )
+                _new_outputs.append(
+                    {"output_type": "display_data", "data": _data, "metadata": _meta}
+                )
+
+            if _new_outputs:
+                cell_out.outputs = cell_out.outputs + tuple(_new_outputs)
 
             # --- DEBUG log ---
             try:

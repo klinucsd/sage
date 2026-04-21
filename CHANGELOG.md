@@ -4,6 +4,10 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.12 — 2026-04-20 (experimental branch: kernel-shell-backend)
+- Fix: `cell_out.append_display_data()` expects an IPython DisplayObject (Markdown/HTML/Image), NOT a raw mime-bundle dict. When I passed a dict, it silently discarded every mime key except text/plain — which is exactly what the 0.1.10/0.1.11 logs showed (`mime keys: ['text/plain']` even though we built bundles with widget-view).
+- Bypass the method entirely: build raw `{"output_type": "display_data", "data": ..., "metadata": ...}` dicts and assign them directly to `cell_out.outputs += (...)`. Widget-view mime keys are now preserved.
+
 ## kernel-0.1.11 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Diagnostic: add entry-point log (before any imports) in `_run_in_kernel` so "no log file" can be distinguished from "path not reached". Also log the specific ImportError if the widget-capture path falls through.
 - Skill: tighten usgs-lidar SKILL.md to explicitly forbid the "copy the code into a cell yourself" escape-hatch that the agent kept falling into. Add rule: install missing packages and re-run, don't give up.
