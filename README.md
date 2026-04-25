@@ -84,6 +84,7 @@ See Sage in action across multiple scientific domains:
 | [fusion_study.ipynb](examples/fusion_study.ipynb) | DIII-D tokamak analysis: plasma shape characterization, current and energy evolution, multi-shot elongation statistics | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/fusion_study.ipynb) |
 | [sdge_fire.ipynb](examples/sdge_fire.ipynb) | Wildfire situational awareness: GOES satellite fire detections, live fuel moisture mapping, per-detection risk classification, day-by-day activity trend | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/sdge_fire.ipynb) |
 | [kanawha_river.ipynb](examples/kanawha_river.ipynb) | Terrain and floodplain analysis: NHD main channel, 3DEP DEM overlay, longitudinal elevation profile, river reaches, Relative Elevation Model (REM) for a clipped reach | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/kanawha_river.ipynb) |
+| [exoplanet_transits.ipynb](examples/exoplanet_transits.ipynb) | Astronomy: NASA Exoplanet Archive catalog → interactive planet picker (`sage-dropdown`) → TESS/Kepler light curve from MAST → phase-folded transit → summary card with depth, duration, and Rp/Rs | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/exoplanet_transits.ipynb) |
 
 ---
 
