@@ -85,6 +85,7 @@ See Sage in action across multiple scientific domains:
 | [sdge_fire.ipynb](examples/sdge_fire.ipynb) | Wildfire situational awareness: GOES satellite fire detections, live fuel moisture mapping, per-detection risk classification, day-by-day activity trend | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/sdge_fire.ipynb) |
 | [kanawha_river.ipynb](examples/kanawha_river.ipynb) | Terrain and floodplain analysis: NHD main channel, 3DEP DEM overlay, longitudinal elevation profile, river reaches, Relative Elevation Model (REM) for a clipped reach | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/kanawha_river.ipynb) |
 | [exoplanet_transits.ipynb](examples/exoplanet_transits.ipynb) | Astronomy: NASA Exoplanet Archive catalog → interactive planet picker (`sage-dropdown`) → TESS/Kepler light curve from MAST → phase-folded transit → summary card with depth, duration, and Rp/Rs | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/exoplanet_transits.ipynb) |
+| [lidar_pointcloud.ipynb](examples/lidar_pointcloud.ipynb) | USGS 3DEP airborne LiDAR: interactive coverage map with reactive bbox → dataset dropdown linkage (`sage-bbox-map` + `sage-dropdown`) → Entwine Point Tile download → 3D preview → 1-meter DEM with `gdaldem` hillshade | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/lidar_pointcloud.ipynb) |
 
 ---
 
