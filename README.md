@@ -86,6 +86,7 @@ See Sage in action across multiple scientific domains:
 | [kanawha_river.ipynb](examples/kanawha_river.ipynb) | Terrain and floodplain analysis: NHD main channel, 3DEP DEM overlay, longitudinal elevation profile, river reaches, Relative Elevation Model (REM) for a clipped reach | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/kanawha_river.ipynb) |
 | [exoplanet_transits.ipynb](examples/exoplanet_transits.ipynb) | Astronomy: NASA Exoplanet Archive catalog → interactive planet picker (`sage-dropdown`) → TESS/Kepler light curve from MAST → phase-folded transit → summary card with depth, duration, and Rp/Rs | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/exoplanet_transits.ipynb) |
 | [lidar_pointcloud.ipynb](examples/lidar_pointcloud.ipynb) | USGS 3DEP airborne LiDAR: interactive coverage map with reactive bbox → dataset dropdown linkage (`sage-bbox-map` + `sage-dropdown`) → Entwine Point Tile download → 3D preview → 1-meter DEM with `gdaldem` hillshade | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/lidar_pointcloud.ipynb) |
+| [vegetation_activities.ipynb](examples/vegetation_activities.ipynb) | California vegetation treatment tracking: Interagency Tracking System (ITS V2.0) ArcGIS Feature Service → prescribed fire and mechanical fuels reduction activities → year-over-year comparison by county | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/vegetation_activities.ipynb) |
 
 ---
 
@@ -216,6 +217,7 @@ These skills are included as working examples used by the [demo notebooks](#demo
 | `kanawha-cikr-impact` | FEMA / USACE | Critical infrastructure flood impacts |
 | `sdge-goes-fire` | SDG&E WIFIRE GeoServer | GOES satellite fire detections for Southern California |
 | `sdge-surface-fuels` | SDG&E WIFIRE GeoServer | Surface fuel model and live fuel moisture maps; fire risk classification |
+| `ca-vegetation-treatments` | SDSC ITS V2.0 ArcGIS Feature Service | California vegetation treatment activities (prescribed fire, mechanical fuels reduction, grazing, timber harvest) as GeoDataFrames |
 
 ### Adding a custom skill
 
