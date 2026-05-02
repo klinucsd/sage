@@ -4,6 +4,99 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## kernel-0.1.30 — 2026-04-23 (experimental branch: kernel-shell-backend)
+Expanded the reopen-cleanup script in usgs-lidar Step 1 to hide the remaining eyesores:
+- **"Error displaying widget: model not found"** — iterate every `.jp-OutputArea-output` and hide any whose textContent matches the error and is under 200 chars.
+- **Red broken-link icons** — they live in cell outputs OUTSIDE the `.leaflet-container`, so the old selector missed them. New selector is `cell.querySelectorAll("img")` without the map-scoped filter, plus a fallback that hides any output containing only a tiny SVG with no text.
+- Retry cadence tightened to 200/600/1500/3000 ms to catch both immediate and late-rendering fallbacks.
+
+## kernel-0.1.29 — 2026-04-23 (experimental branch: kernel-shell-backend)
+- **Timestamp-based reopen detection**: the "map renders → hide notice" heuristic from 0.1.28 misfired when the map partially rendered on reopen (the `.leaflet-container` was present but the surrounding widgets were dead — the notice then hid even though callbacks were broken). Now the HTML bakes in the cell's execution timestamp as `data-runtime="<ms_since_epoch>"`, and the embedded script compares with `Date.now()`. `elapsed < 30s` → fresh run → hide notice. `elapsed > 30s` → reopen → notice stays. 30s absorbs kernel↔browser clock skew on JupyterHub deployments.
+- Broken-icon cleanup now runs on three timed retries (400ms, 1.2s, 2.5s) independent of the notice visibility — handles late-loading images.
+
+## kernel-0.1.28 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- **Conditional reopen notice + broken-icon cleanup**: the "re-run this cell" warning is now visible only when something is actually wrong. The static HTML notice contains an embedded `<script>` that polls for `.leaflet-container` in the same cell output for up to 3 seconds and then:
+  - Hides every control/draw-toolbar `<img>` that failed to load (`naturalWidth === 0`), which on reopen is usually the Leaflet.draw sprite icons showing as broken-image × boxes.
+  - If no broken images were found, hides the notice entirely.
+  - If broken images WERE found, leaves the notice visible so the user knows to re-run.
+- Result:
+  - Fresh run → everything works, no broken images, notice hidden.
+  - Reopen with valid saveState but broken sprites → broken icons hidden, notice stays visible.
+  - Reopen with corrupted saveState → map absent, notice stays visible.
+- Each cell gets a unique notice ID via `uuid.uuid4()` so multiple Step-1 cells in one notebook don't fight each other.
+
+## kernel-0.1.27 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- **Sharpen usgs-lidar vs py3dep-dem descriptions**: both mentioned "3DEP" so the agent was sometimes picking py3dep-dem (DEM rasters) when the user wanted usgs-lidar (interactive LiDAR coverage map), generating unrelated py3dep availability-check scripts. Each description now explicitly states what it IS and what it is NOT, cross-referencing the other skill. usgs-lidar leads with "Interactive USGS 3DEP LiDAR point cloud coverage map with draw-rectangle bounding-box selection"; py3dep-dem leads with "USGS 3DEP digital elevation model (DEM) rasters and derived terrain products".
+
+## kernel-0.1.26 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- **Persistent reopen notice** for the usgs-lidar Step 1 cell: displayed via `IPython.display.HTML` (stored as a `text/html` mime bundle in the cell output, not as a widget) so it survives notebook close/reopen regardless of `saveState`. Tells the user to re-run the cell if the map isn't responding — addresses the "widgets look alive but callbacks are dead" reopen problem observed on 0.1.25. The message appears above the map on every run, so it's discoverable before the user is confused.
+
+## kernel-0.1.25 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- **Scrollable popup**: wrapped the multi-dataset HTML in a scrollable container (`max-width:260px`, `max-height:220px`, `overflow-y:auto`) and set `max_width=300` on the Popup so content no longer overflows the popup chrome when several datasets overlap.
+- **Drop CSS injection for edit/remove hiding**: replaced `.leaflet-draw-edit-edit`/`.leaflet-draw-edit-remove` CSS hacks with the native ipyleaflet traits `m.draw_control.edit = False` and `m.draw_control.remove = False`. Cleaner, and removes one HTML widget from the display list — possibly reducing broken-asset artifacts on notebook reopen.
+- **SKILL.md reopen note**: added a note that reopened notebooks render maps read-only (callbacks aren't re-wired since the kernel is fresh); user must re-execute Step 1 to regain interactivity. This is a fundamental `saveState` limitation — widget VIEWS are restored from notebook metadata, but Python `on_click`/`on_draw`/`observe` handlers live only in the kernel's memory.
+
+## kernel-0.1.24 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- **Popup at click point (not polygon centroid)**: switched from `geo_layer.on_click` (gives feature but no coordinates) to `m.on_interaction`, which fires with `kwargs["coordinates"] = [lat, lng]` so the popup arrow points exactly where the user clicked.
+- **All overlapping datasets in one popup**: on each click, iterate `gdf` with `gdf.contains(Point(lng, lat))` to find every coverage polygon under the cursor; render each dataset as a block separated by `<hr>` lines. Matches the stacked-dataset appearance of the USGS 3DEP web app screenshot.
+
+## kernel-0.1.23 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- **Fix "Widget is not attached" error after first popup click**: The old reuse-one-Popup-across-clicks pattern triggered a JupyterLuminoWidget dispose error once the user closed the popup via ×, and subsequent clicks then silently failed. New approach: create a fresh `ipyleaflet.Popup` widget per click and remove the previous one first.
+- **Enable "Save Widget State Automatically" system-wide**: Added `jupyterlab_overrides.json` with `@jupyter-widgets/jupyterlab-manager:plugin.saveState = true`, copied into `$(prefix)/share/jupyter/lab/settings/overrides.json` by the Dockerfile. Widgets are now serialized into notebook metadata on save, so maps/dropdowns/buttons render on reopen (read-only; re-run the cell to regain interactivity).
+
+## kernel-0.1.22 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- **Polygon click popup**: `geo_layer.on_click` was updating the status_html panel below the map, but users naturally expect a Leaflet-style popup *on the map* (as in the USGS 3DEP web app). Replaced with an `ipyleaflet.Popup` layer whose location is set to the clicked feature's centroid and whose content is `<b>Name</b><br>Points: N,NNN<br><a href="...">EPT Data</a>`. The popup re-opens on every click (remove + re-add pattern) so users aren't stuck after closing via ×.
+- **Hover feedback**: `hover_style={"weight": 3, "fillOpacity": 0.6}` on the coverage layer so users can see which polygon they're about to click.
+- **Popup closes on new bbox / clear**: `_process_bbox` and `_reset_state` both call `_close_popup()` so the popup doesn't clutter the bbox analysis view.
+
+## kernel-0.1.21 — 2026-04-22 (experimental branch: kernel-shell-backend)
+Re-work the coverage-map widget after 0.1.20 still showed two bboxes and lost the layer control.
+- **Bbox lives in a named GeoJSON layer (not DrawControl)** — `ipyleaflet` exposes no reliable Python API to remove a single shape from DrawControl's FeatureGroup (`target.clear()` is all-or-nothing, `target.data = [...]` doesn't sync back to the frontend). So on each `"created"` we remove the previous GeoJSON bbox layer, `target.clear()` the DrawControl, then re-add the new bbox as a named `GeoJSON(name="Bounding box")` layer. Clean single-bbox guarantee.
+- **CSS injection hides Leaflet.draw's edit/remove tools** — since the bbox is no longer in DrawControl's FeatureGroup, those tools can't operate on it and would look disabled. CSS selectors `.leaflet-draw-edit-edit`, `.leaflet-draw-edit-remove`, and the empty 2nd section are set to `display:none!important`.
+- **Clear button restyled** — gray default styling, `times` icon, 150px wide. Replaces the trash tool; shown only while a bbox exists.
+- **Layer control restored** — `m.add_layer_control()` back in, with post-hoc loop that renames any unnamed map layers to `"Draw layer"` so the ipyleaflet-internal FeatureGroup entry no longer appears as an empty-label row.
+
+## kernel-0.1.20 — 2026-04-22 (experimental branch: kernel-shell-backend)
+Three fixes to the usgs-lidar coverage-map widget based on UX feedback on 0.1.19:
+- **Single-bbox enforcement**: In 0.1.19 `target.data = [geo_json]` didn't actually remove the old shape from the frontend FeatureGroup — `target.clear()` is the only reliable Python-side wipe, but it removes the new shape too. Now when a second shape is drawn, `target.clear()` removes both and the status panel shows "Only one bounding box allowed. The previous one has been cleared — please draw a single rectangle." The user redraws cleanly.
+- **Info refresh on delete**: `_reset_state()` is now called unconditionally on `"deleted"` (previously gated on `len(target.data) == 0`, which was racy and sometimes skipped the reset). Removing the bbox via the native trash tool now immediately clears the dataset info and dropdown.
+- **Empty-label layer**: Removed `m.add_layer_control()` — ipyleaflet's DrawControl exposes its internal FeatureGroup as an unnamed map layer that showed up in the layers widget with an empty label. Since we only have one real toggleable layer (USGS 3DEP coverage), the layer control isn't worth the confusion.
+
+## kernel-0.1.19 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- Remove the ugly "Clear selection" button and restore the native DrawControl edit/trash tools. The bbox now lives inside DrawControl's FeatureGroup (not a separate `ipyl.GeoJSON` layer), so the built-in edit/delete controls light up and work as users expect.
+- Style the rectangle via `m.draw_control.rectangle = {"shapeOptions": {...}}` so it keeps the red look of the web app while being natively owned by the draw control.
+- Handle `"edited"` draw actions: when the user drags a bbox edge/corner, re-run the spatial analysis on the new geometry automatically.
+- Single-bbox enforcement now uses `target.data = [geo_json]` when more than one shape is present after a "created" event — no separate GeoJSON layer needed.
+- Status panel updated with the hint: "Use the edit or trash tool to modify or remove it."
+
+## kernel-0.1.18 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- Fix bbox edit/delete: DrawControl's built-in edit/delete tools cannot interact with our GeoJSON-layer bbox (they only see shapes in DrawControl's FeatureGroup). Replace them with an explicit "Clear selection" button that removes the bbox GeoJSON layer and resets state. Drawing a new rectangle auto-replaces the old one as before.
+- Clean up info display: merge `info_html` + `status_html` into a single `status_html` panel. Polygon-click info (shown when no bbox drawn) and bbox results both write to the same widget, avoiding the previous stacked/duplicate display. `on_feature_click` is now a no-op when a bbox is active.
+- Format bbox result as a clean three-line card: `Dataset / Points in dataset / Points in bbox` — no trailing instructions.
+- Multi-dataset case: also shows the info card for the auto-selected first entry; info card updates when dropdown changes.
+- Move `_matches` and `_bbox_layer` declarations to top of script (alongside USER_BBOX/USER_EPT_URL) so they're clearly in module scope.
+
+## kernel-0.1.17 — 2026-04-22 (experimental branch: kernel-shell-backend)
+- Dockerfile: pre-install pdal/python-pdal via conda and pyforestscan/laspy via pip. The previous on-the-fly conda install from the skill script was succeeding, but then `pip install pyforestscan` would try to pip-build pdal from source (no system PDAL library found) and fail with a CMake error. Pre-installing in the image removes the on-the-fly install entirely.
+- usgs-lidar SKILL.md: 6 UX improvements to Step 1:
+  1. Map height reduced to 400px (`m.layout.height = "400px"`) for laptop screens.
+  2. Only one bbox at a time: on each new draw, `target.clear()` removes all DrawControl shapes and the previous bbox GeoJSON layer is removed; new bbox added as a fresh red-outline GeoJSON layer.
+  3. Single-dataset auto-select: when only one dataset fits, hide the dropdown and show inline "Dataset: X — run the next cell" message.
+  4. Bbox delete updates state: `action == "deleted"` clears `USER_BBOX`, `USER_EPT_URL`, dropdown, and status message.
+  5. No-match shows message not empty dropdown: when no datasets fit the point limit, hide dropdown and show an italic status message.
+  6. Remove install block from Step 1 (all packages now pre-installed in image).
+
+## kernel-0.1.16 — 2026-04-21 (experimental branch: kernel-shell-backend)
+- Fix usgs-lidar Step 1 point-count filter: was comparing `count` (total points in entire dataset, e.g. 31 billion for MT statewide) against MAX_POINTS, which always excluded everything. Now computes `count × (intersection_area / dataset_polygon_area)` — the estimated points within the drawn bbox — before filtering. Restores `pyproj` import and `MAX_POINTS = 20_000_000` that were removed in kernel-0.1.15.
+
+## kernel-0.1.15 — 2026-04-21 (experimental branch: kernel-shell-backend)
+- usgs-lidar SKILL.md Step 1: restyle coverage map to match the USGS 3DEP web app.
+  - Switch data source from `of4d.sdsc.edu/json/usgs_resources.json` to `usgs.entwine.io/boundaries/resources.geojson` (provides `name`, `count`, `url` per feature).
+  - Apply 27-color palette (same palette as the web app) with one random color per dataset polygon via `ipyleaflet.GeoJSON(style_callback=...)`.
+  - Replace USGS.USTopo basemap with OpenStreetMap (the default, as in the web app).
+  - Add click popup via `geo_layer.on_click()` showing dataset name, point count, and EPT link.
+  - Update dropdown population: since `density` is not in the new GeoJSON, list all intersecting datasets by name (no point-count estimate filter).
+
 ## kernel-0.1.14 — 2026-04-20 (experimental branch: kernel-shell-backend)
 - Critical fix: pre-install `ipywidgets`, `ipyleaflet`, `leafmap`, and `plotly` in the Docker image. In earlier kernel-0.1.x runs, the agent had to pip install these on the fly — and because `/opt/conda` is read-only for jovyan, they went to `~/.local`, which means the JupyterLab frontend extension (`@jupyter-widgets/jupyterlab-manager`) was never registered at Lab startup. Confirmed by running `widgets.IntSlider()` in a fresh cell — it rendered as text `IntSlider(...)` instead of a draggable slider. With these packages baked into the image, the frontend extension loads normally at Lab startup and all our backend capture/display work actually becomes visible.
 

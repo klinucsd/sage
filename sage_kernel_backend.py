@@ -26,6 +26,59 @@ from deepagents.backends.protocol import ExecuteResponse
 _SHELL_OPERATORS = {"|", "||", "&", "&&", ";", ";;", ">", ">>", "<", "<<", "<<<"}
 
 
+# ---------------------------------------------------------------------------
+# Stable display() dispatcher
+#
+# Skill modules typically do `from IPython.display import display` at import
+# time. That binds the importing module's `display` name to whatever object
+# `IPython.display.display` was at *that moment* — and keeps that binding
+# even if `IPython.display.display` is later reassigned.
+#
+# A closure-per-run hijack therefore breaks on the second run of a cell:
+# the skill module was first imported during run #1, captured run #1's
+# closure, and never re-binds. Run #2's fresh closure is unreachable from
+# the cached skill module, so widgets created via that module's `display`
+# vanish silently.
+#
+# Fix: patch IPython.display.display ONCE with a stable forwarder. The
+# forwarder consults module-level state (`_ACTIVE_CAPTURE`) to decide
+# between capturing into the current run's list and passing through.
+# ---------------------------------------------------------------------------
+
+_ACTIVE_CAPTURE: list | None = None
+_ORIG_DISPLAY = None
+
+
+def _sage_capture_dispatcher(*objs, **kwargs):
+    if _ACTIVE_CAPTURE is None:
+        if _ORIG_DISPLAY is not None:
+            return _ORIG_DISPLAY(*objs, **kwargs)
+        return None
+    for _o in objs:
+        _ACTIVE_CAPTURE.append((_o, kwargs))
+
+
+def _install_display_dispatcher() -> None:
+    """Replace IPython.display.display with the capture dispatcher (idempotent)."""
+    global _ORIG_DISPLAY
+    if _ORIG_DISPLAY is not None:
+        return
+    try:
+        import IPython.display as _ipd_module
+    except ImportError:
+        return
+    _ORIG_DISPLAY = _ipd_module.display
+    _ipd_module.display = _sage_capture_dispatcher
+    try:
+        import IPython.core.display_functions as _ipcdf_module
+        _ipcdf_module.display = _sage_capture_dispatcher
+    except ImportError:
+        pass
+
+
+_install_display_dispatcher()
+
+
 def _tokenize(command: str) -> list[str] | None:
     """Tokenize a shell command, separating unquoted shell operators as their own tokens."""
     try:
@@ -189,17 +242,12 @@ class KernelShellBackend(LocalShellBackend):
         # Entry log — always written, so "no log file" ≠ "path not reached"
         try:
             with open("/tmp/sage_debug.log", "a") as _dbg:
-                _dbg.write(f"\n--- _run_in_kernel entered: {file_path} (version kernel-0.1.13) ---\n")
+                _dbg.write(f"\n--- _run_in_kernel entered: {file_path} ---\n")
         except Exception:
             pass
 
         try:
             import io as _io
-            import IPython.display as _ipd_module
-            try:
-                import IPython.core.display_functions as _ipcdf_module
-            except ImportError:
-                _ipcdf_module = None
 
             compiled = None
             try:
@@ -208,29 +256,25 @@ class KernelShellBackend(LocalShellBackend):
                 exit_code = 1
                 output_parts.append(f"[stderr] SyntaxError: {e}")
 
-            # Manual capture: intercept display() to collect widget objects
-            # (their comm_opens were already sent to the frontend when created).
-            # At flush time we display each widget directly — no wrapper Output
-            # whose own comm might not be registered with the frontend.
+            # Capture display() calls via the module-level dispatcher. The
+            # dispatcher (installed once at module import) routes calls into
+            # whichever list `_ACTIVE_CAPTURE` points at. We swap the pointer
+            # for the duration of this exec; nested runs (if any) restore the
+            # outer capture list on exit.
             _stdout_buf = _io.StringIO()
             _stderr_buf = _io.StringIO()
             _captured_objs: list = []
 
             _orig_stdout = sys.stdout
             _orig_stderr = sys.stderr
-            _orig_display_1 = _ipd_module.display
-            _orig_display_2 = getattr(_ipcdf_module, "display", None) if _ipcdf_module else None
 
-            def _capture_display(*objs, **kwargs):
-                for _o in objs:
-                    _captured_objs.append(_o)
+            global _ACTIVE_CAPTURE
+            _prev_capture = _ACTIVE_CAPTURE
 
             if compiled is not None:
                 sys.stdout = _stdout_buf
                 sys.stderr = _stderr_buf
-                _ipd_module.display = _capture_display
-                if _ipcdf_module is not None and _orig_display_2 is not None:
-                    _ipcdf_module.display = _capture_display
+                _ACTIVE_CAPTURE = _captured_objs
                 try:
                     exec(compiled, user_ns)  # noqa: S102
                 except Exception:
@@ -239,9 +283,7 @@ class KernelShellBackend(LocalShellBackend):
                 finally:
                     sys.stdout = _orig_stdout
                     sys.stderr = _orig_stderr
-                    _ipd_module.display = _orig_display_1
-                    if _ipcdf_module is not None and _orig_display_2 is not None:
-                        _ipcdf_module.display = _orig_display_2
+                    _ACTIVE_CAPTURE = _prev_capture
 
             _stdout_txt = _stdout_buf.getvalue()
             _stderr_txt = _stderr_buf.getvalue()
@@ -255,15 +297,22 @@ class KernelShellBackend(LocalShellBackend):
             # --- DEBUG log ---
             try:
                 with open("/tmp/sage_debug.log", "a") as _dbg:
-                    _dbg.write(f"\n=== _run_in_kernel {file_path} (kernel-0.1.13) ===\n")
+                    _dbg.write(f"\n=== _run_in_kernel {file_path} ===\n")
                     _dbg.write(
                         f"captured: stdout={len(_stdout_txt)}B stderr={len(_stderr_txt)}B "
-                        f"display-objs={len(_captured_objs)}\n"
+                        f"display-objs={len(_captured_objs)} exit_code={exit_code}\n"
                     )
-                    for _i, _o in enumerate(_captured_objs):
+                    for _i, _entry in enumerate(_captured_objs):
+                        # Each entry is (obj, kwargs) tuple
+                        if isinstance(_entry, tuple) and len(_entry) == 2:
+                            _o, _kw = _entry
+                        else:
+                            _o, _kw = _entry, {}
                         _mid = getattr(_o, "_model_id", None) or getattr(_o, "model_id", None)
                         _vn = getattr(_o, "_view_name", None)
-                        _dbg.write(f"  obj[{_i}]: {type(_o).__name__} model_id={_mid!r} view_name={_vn!r}\n")
+                        _dbg.write(f"  obj[{_i}]: {type(_o).__name__} "
+                                   f"model_id={_mid!r} view_name={_vn!r} "
+                                   f"kwargs={list(_kw.keys())}\n")
                     _dbg.write(f"pending_displays total: {len(pending)}\n")
             except Exception:
                 pass

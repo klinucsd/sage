@@ -50,6 +50,11 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --no-cache-dir "deepagents-cli[openai]" nest_asyncio folium geopandas matplotlib rasterio \
     ipywidgets ipyleaflet leafmap plotly
 
+# Install PDAL via conda before pyforestscan — pip cannot build pdal from source without
+# the system PDAL library, and pyforestscan pulls it in as a dependency.
+RUN conda install -y -c conda-forge pdal python-pdal && conda clean -afy && \
+    pip install --no-cache-dir pyforestscan laspy
+
 # -----------------------------------------------------------------------------
 # Step 2: Copy Assets
 # -----------------------------------------------------------------------------
@@ -59,6 +64,7 @@ COPY sage_magic.py /tmp/build/
 COPY sage_kernel_backend.py /tmp/build/
 COPY jupyter_server_config.py /tmp/build/
 COPY jupyter_config.py /tmp/build/
+COPY jupyterlab_overrides.json /tmp/build/
 
 # -----------------------------------------------------------------------------
 # Step 3: Apply Sage Patches to config.py
@@ -114,6 +120,12 @@ RUN mkdir -p /home/jovyan/.jupyter && \
     cp /tmp/build/jupyter_server_config.py /home/jovyan/.jupyter/jupyter_server_config.py && \
     cp /tmp/build/jupyter_config.py /home/jovyan/.jupyter/jupyter_config.py
 
+# Enable "Save Widget State Automatically" system-wide so maps and widgets survive
+# notebook close/reopen (read-only — full interactivity still requires re-running the cell).
+RUN LAB_SETTINGS_DIR="$(python -c 'import sys; print(sys.prefix)')/share/jupyter/lab/settings" && \
+    mkdir -p "$LAB_SETTINGS_DIR" && \
+    cp /tmp/build/jupyterlab_overrides.json "$LAB_SETTINGS_DIR/overrides.json"
+
 # Source persistent .env in .bashrc so terminal users get NRP_API_KEY
 # regardless of which task folder they work in.
 RUN printf '\n# Sage: load NRP_API_KEY from persistent storage if available\n' \
@@ -124,9 +136,11 @@ RUN printf '\n# Sage: load NRP_API_KEY from persistent storage if available\n' \
         >> /home/jovyan/.bashrc && \
     echo 'unset DOTENV' >> /home/jovyan/.bashrc
 
-RUN chown -R jovyan:users /home/jovyan/.deepagents \
+RUN mkdir -p /home/jovyan/.cache/pip && \
+    chown -R jovyan:users /home/jovyan/.deepagents \
                           /home/jovyan/.ipython \
-                          /home/jovyan/.jupyter && \
+                          /home/jovyan/.jupyter \
+                          /home/jovyan/.cache && \
     rm -rf /tmp/build
 
 # -----------------------------------------------------------------------------

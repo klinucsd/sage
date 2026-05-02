@@ -72,6 +72,9 @@ try:
     ip = get_ipython()  # noqa: F821
     ip.user_ns["SAGE_OUTPUT_DIR"] = SAGE_OUTPUT_DIR
     ip.user_ns["SAGE_THREAD_ID"] = SAGE_THREAD_ID
+    # _SAGE_RESET_KEEP is populated at the END of this startup script (see
+    # bottom of file) — at that point every top-level def/import this script
+    # adds to user_ns is already there, so the snapshot is complete.
 except Exception:
     pass
 
@@ -315,7 +318,7 @@ def _new_files(before: dict, after: dict) -> list:
 
 
 # Internal files that should never be tracked as cell outputs
-_SAGE_INTERNAL_FILES = {".sage_cells.json", ".sage_run.jsonl", ".sage_colors.json"}
+_SAGE_INTERNAL_FILES = {".sage_cells.json", ".sage_run.jsonl", ".sage_colors.json", ".sage_kernel_vars.json"}
 
 
 def _get_cell_id() -> str | None:
@@ -361,6 +364,95 @@ def _save_color_registry(registry: dict) -> None:
     (Path(SAGE_OUTPUT_DIR) / ".sage_colors.json").write_text(
         json.dumps(registry, indent=2)
     )
+
+
+def _load_kernel_vars_registry() -> dict:
+    """Load .sage_kernel_vars.json — maps cell_id → {var_name: {description, type, set_by}}.
+
+    Tracks kernel variables registered by UI skills (sage-dropdown, sage-bbox-map, etc.)
+    so that (1) future cells discover what variables exist and (2) cell reruns can clean
+    up the variables they previously created before re-executing.
+    """
+    p = Path(SAGE_OUTPUT_DIR) / ".sage_kernel_vars.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text())
+        except Exception:
+            pass
+    return {}
+
+
+def _save_kernel_vars_registry(registry: dict) -> None:
+    """Persist .sage_kernel_vars.json."""
+    (Path(SAGE_OUTPUT_DIR) / ".sage_kernel_vars.json").write_text(
+        json.dumps(registry, indent=2)
+    )
+
+
+def _kernel_vars_registry_prompt() -> str:
+    """Build a system-prompt block listing currently-available kernel variables.
+
+    Filters to variables whose name still exists in user_ns (staleness filter).
+    Format mirrors _color_registry_prompt — section header + bulleted list.
+    """
+    registry = _load_kernel_vars_registry()
+    if not registry:
+        return ""
+    try:
+        user_ns = get_ipython().user_ns  # noqa: F821
+    except Exception:
+        return ""
+
+    # Flatten {cell_id: {var_name: meta}} → list of (var_name, meta), skipping stale
+    live = []
+    for cell_id, vars_dict in registry.items():
+        for var_name, meta in vars_dict.items():
+            if var_name in user_ns:
+                live.append((var_name, meta))
+    if not live:
+        return ""
+
+    def _short_value(v):
+        """Compact, safe repr of a kernel variable for prompt display.
+        Without the current value, the agent narrates from guess (e.g., names a
+        random planet from the dropdown). Show primitives in full, abbreviate
+        containers, hide objects too large or non-trivial to format.
+        """
+        try:
+            if v is None or isinstance(v, (bool, int, float)):
+                return repr(v)
+            if isinstance(v, str):
+                return repr(v) if len(v) <= 120 else repr(v[:117] + "...")
+            if isinstance(v, (list, tuple)) and len(v) <= 8:
+                inner = ", ".join(_short_value(x) for x in v)
+                return f"({inner})" if isinstance(v, tuple) else f"[{inner}]"
+            if isinstance(v, (list, tuple)):
+                return f"<{type(v).__name__}, len={len(v)}>"
+            if isinstance(v, dict) and len(v) <= 8:
+                items = ", ".join(f"{k!r}: {_short_value(val)}" for k, val in v.items())
+                return "{" + items + "}"
+            if isinstance(v, dict):
+                return f"<dict, {len(v)} keys>"
+            return f"<{type(v).__name__}>"
+        except Exception:
+            return f"<{type(v).__name__}>"
+
+    lines = ["EXISTING KERNEL VARIABLES (set by previous cells, available now):"]
+    for var_name, meta in live:
+        desc = meta.get("description", "")
+        type_ = meta.get("type", "?")
+        set_by = meta.get("set_by", "?")
+        cur = _short_value(user_ns.get(var_name))
+        lines.append(
+            f"- `{var_name}` ({type_}) = {cur} — {desc} [set by {set_by}]"
+        )
+    lines.append(
+        "Read these via `globals().get(\"VAR_NAME\")` in scripts. The value shown "
+        "above is the CURRENT value — when narrating, refer to that exact value, "
+        "do not invent or guess. Do NOT redefine or hardcode values for variables "
+        "already in this list."
+    )
+    return "\n".join(lines) + "\n\n"
 
 
 def _update_color_registry(new_files: list[str]) -> None:
@@ -1020,8 +1112,6 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
 
     # No checkpointer — cross-cell memory is carried via SAGE_MESSAGES.
     backend_cls = KernelShellBackend if KernelShellBackend is not None else LocalShellBackend
-    import sys as _sys
-    print(f"[sage] backend: {backend_cls.__name__}", file=_sys.stderr)
     agent = create_deep_agent(
         model,
         skills=skills_paths,
@@ -1224,6 +1314,48 @@ try:
             )
             return
 
+        # True rerun: delete this cell's previous output files, kernel variables,
+        # and registry entries — MUST happen BEFORE building the system prompt below,
+        # because _kernel_vars_registry_prompt() reads from user_ns and would otherwise
+        # show the stale variables (and the agent would act as if the user had
+        # already made a selection on this re-run).
+        cell_id = _get_cell_id()
+        if cell_id:
+            _reg = _load_cell_registry()
+            for _f in _reg.get(cell_id, []):
+                try:
+                    Path(_f).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            if cell_id in _reg:
+                del _reg[cell_id]
+                _save_cell_registry(_reg)
+
+            # Same idea for the kernel-variables registry.
+            _kvar_reg = _load_kernel_vars_registry()
+            for _vname in list(_kvar_reg.get(cell_id, {}).keys()):
+                try:
+                    get_ipython().user_ns.pop(_vname, None)  # noqa: F821
+                except Exception:
+                    pass
+            if cell_id in _kvar_reg:
+                del _kvar_reg[cell_id]
+                _save_kernel_vars_registry(_kvar_reg)
+
+            # Delete orphaned files: in output dir but not in any registry entry.
+            # These are generated by cells that were stopped before finishing.
+            _all_registered = {f for files in _reg.values() for f in files}
+            for _orphan in Path(SAGE_OUTPUT_DIR).rglob("*"):
+                if (
+                    _orphan.is_file()
+                    and _orphan.name not in _SAGE_INTERNAL_FILES
+                    and str(_orphan) not in _all_registered
+                ):
+                    try:
+                        _orphan.unlink(missing_ok=True)
+                    except Exception:
+                        pass
+
         # Inject output directory and thinking requirement into prompt
         import sys as _sys
         full_prompt = (
@@ -1232,12 +1364,26 @@ try:
             f"Use {SAGE_OUTPUT_DIR} as your working directory for ALL files — "
             f"including intermediate files, scripts, and final outputs (GeoJSON, CSV, PNG). "
             f"Do not write any files to /tmp directly.\n"
-            f"FILE ACCESS RULE — you may only read or search files in two locations: "
+            f"FILE ACCESS RULE — you may only read or search files in three locations: "
             f"(1) {SAGE_OUTPUT_DIR} — your working directory for this notebook; "
-            f"(2) /opt/sage_scripts — pre-deployed helper scripts. "
+            f"(2) /opt/sage_scripts — pre-deployed helper scripts; "
+            f"(3) /home/jovyan/.deepagents/agent/skills/ — read-only access to skill files (SKILL.md, helper modules). "
             f"Never read, list, search, or browse any other directory on the filesystem "
-            f"(e.g. /home, /data, /tmp, /root, or any path outside these two). "
+            f"(e.g. /home, /data, /tmp, /root, or any path outside these three). "
             f"All input data must come from external APIs or services, not from the local filesystem.\n"
+            f"NEVER MODIFY SKILL FILES — files under /home/jovyan/.deepagents/agent/skills/ are system files. "
+            f"Do not use write_file, edit_file, or any tool that modifies them. If a helper module like "
+            f"sage_dropdown.py or sage_bbox_map.py appears broken (raises an error you can't work around by "
+            f"changing your own script), STOP and report the issue to the user — describe the error and the "
+            f"bug you see in the helper. Do not try to patch the helper yourself.\n"
+            f"INTERACTIVE WIDGET RULE — show_bbox_map() and show_dropdown() render widgets the user interacts "
+            f"with. The user's interaction happens AFTER your script returns. Do NOT, in the same script, "
+            f"read the kernel variable the user must set — you will see None or the stale / default value. "
+            f"For linked widgets where one feeds another (bbox map → filtered dropdown, dropdown → dependent "
+            f"dropdown), render both with sage-dropdown's reactive mode (`items_fn` + `observes`); the "
+            f"dependent widget auto-refreshes when the user interacts with the parent. For other cases, "
+            f"just render the widget — the user's selection lands in the kernel-variables registry and will "
+            f"be visible to subsequent requests automatically.\n"
             f"Never use read_file on binary files such as PNG, GeoTIFF, or other image files — "
             f"they will crash.\n\n"
             f"As you work, narrate your thought process naturally. Before each tool use, "
@@ -1276,6 +1422,7 @@ try:
             f"exist in the output folder — only include them when the current question explicitly "
             f"connects to them.\n"
             + (_color_registry_prompt())
+            + (_kernel_vars_registry_prompt())
             + f"COLOR RULE — to color a GeoJSON map layer by category, save a colormap "
             f"sidecar file with the same base name as the GeoJSON but ending in "
             f"'.colormap.json'. Example: if your data is 'earthquakes.geojson', also save "
@@ -1313,36 +1460,23 @@ try:
             f"![Earthquake]({SAGE_OUTPUT_DIR}/earthquakes.geojson) ... ![GNSS Stations]({SAGE_OUTPUT_DIR}/gnss_stations.geojson)\n"
             f"Always use full absolute paths from {SAGE_OUTPUT_DIR}. "
             f"Do not list files separately at the end — embed them inline in the report.\n\n"
+            f"CRS RULE — whenever you combine, join, overlay, clip, or sample two or more spatial "
+            f"datasets (raster + vector, vector + vector, raster + raster), ALWAYS check and align "
+            f"their coordinate reference systems before the operation. Misaligned CRSs produce maps "
+            f"where features are visibly offset from the basemap (a river shifted off its valley, "
+            f"points floating in the ocean, a raster in the wrong hemisphere). Required steps:\n"
+            f"  1. Print each dataset's CRS before combining: `print(gdf.crs)`, `print(rio_dataset.crs)`.\n"
+            f"  2. If they differ, reproject ONE of them to match the other using "
+            f"`gdf.to_crs(other.crs)` for vectors or `rasterio.warp.reproject(...)` for rasters.\n"
+            f"  3. For any output displayed on a Folium/ipyleaflet map, the final layer must be in "
+            f"EPSG:4326 (lat/lon) — Leaflet requires WGS84. Reproject to 4326 as the last step before writing GeoJSON.\n"
+            f"  4. For sampling raster values at vector points (e.g., flood depth at building footprints), "
+            f"reproject the vector geometry into the raster's CRS before sampling, not the other way around.\n"
+            f"Never assume two datasets share a CRS just because they describe the same geographic area. "
+            f"USGS services often return Web Mercator (EPSG:3857), FEMA NSI returns WGS84 (EPSG:4326), "
+            f"EPT point clouds are commonly EPSG:3857, state-plane data can be any of hundreds of codes.\n\n"
             f"{prompt}"
         )
-
-        # True rerun: delete this cell's previous output files, then also delete
-        # any orphaned files (not registered to any cell) left by interrupted runs.
-        cell_id = _get_cell_id()
-        if cell_id:
-            _reg = _load_cell_registry()
-            for _f in _reg.get(cell_id, []):
-                try:
-                    Path(_f).unlink(missing_ok=True)
-                except Exception:
-                    pass
-            if cell_id in _reg:
-                del _reg[cell_id]
-                _save_cell_registry(_reg)
-
-            # Delete orphaned files: in output dir but not in any registry entry.
-            # These are generated by cells that were stopped before finishing.
-            _all_registered = {f for files in _reg.values() for f in files}
-            for _orphan in Path(SAGE_OUTPUT_DIR).rglob("*"):
-                if (
-                    _orphan.is_file()
-                    and _orphan.name not in _SAGE_INTERNAL_FILES
-                    and str(_orphan) not in _all_registered
-                ):
-                    try:
-                        _orphan.unlink(missing_ok=True)
-                    except Exception:
-                        pass
 
         # Snapshot output folder before run
         before = _snapshot(SAGE_OUTPUT_DIR)
@@ -1392,10 +1526,38 @@ try:
         # display() is called here — after run_until_complete — so we are back
         # in the normal synchronous cell-execution context where zmq comm works.
         _pending = get_ipython().user_ns.pop("_sage_pending_displays", [])
+        try:
+            with open("/tmp/sage_debug.log", "a") as _dbg:
+                _dbg.write(f"\n=== flush _sage_pending_displays ===\n")
+                _dbg.write(f"pending count: {len(_pending)}\n")
+                for _i, _entry in enumerate(_pending):
+                    if isinstance(_entry, tuple) and len(_entry) == 2 and isinstance(_entry[1], dict):
+                        _w, _kw = _entry
+                        _dbg.write(f"  [{_i}] {type(_w).__name__} kwargs={list(_kw.keys())}\n")
+                    else:
+                        _dbg.write(f"  [{_i}] (bare) {type(_entry).__name__}\n")
+        except Exception:
+            pass
         if _pending:
             from IPython.display import display as _disp
-            for _w in _pending:
-                _disp(_w)
+            for _entry in _pending:
+                # Each entry is (object, kwargs) — see _capture_display in
+                # sage_kernel_backend.py. Older versions stored bare objects;
+                # accept both shapes for backward compatibility.
+                try:
+                    if isinstance(_entry, tuple) and len(_entry) == 2 and isinstance(_entry[1], dict):
+                        _w, _kw = _entry
+                        _disp(_w, **_kw)
+                    else:
+                        _disp(_entry)
+                except Exception as _flush_err:
+                    try:
+                        with open("/tmp/sage_debug.log", "a") as _dbg:
+                            import traceback as _tb_dbg
+                            _dbg.write(f"  FLUSH ERROR: {type(_flush_err).__name__}: {_flush_err}\n")
+                            _dbg.write(_tb_dbg.format_exc())
+                    except Exception:
+                        pass
 
         _elapsed = round(_time.time() - _t_start, 1)
 
@@ -1495,10 +1657,17 @@ try:
 
     @register_line_magic
     def reset(line):
-        """Reset Sage: clear output files and conversation history.
+        """Reset Sage: clear output files, conversation history, and kernel state.
 
         Usage:
             %reset
+
+        Resets:
+          - SAGE_OUTPUT_DIR contents (sidecar registries, generated files)
+          - SAGE_MESSAGES (cross-cell conversation history)
+          - User-defined kernel variables and Sage's internal pubsub state
+            (_sage_pending_displays, _sage_var_subscribers) — guarantees the
+            next %%ask cell starts from a clean kernel namespace
         """
         import shutil
         from IPython.display import display, Markdown
@@ -1518,6 +1687,22 @@ try:
         # Clear conversation history and cell registry
         global SAGE_MESSAGES
         SAGE_MESSAGES.clear()
+
+        # Clear user-defined kernel variables — like IPython's %reset -f, but
+        # in-process so we can do it deterministically without a confirmation
+        # prompt. Uses _SAGE_RESET_KEEP, a snapshot of user_ns taken right after
+        # Sage's startup script finished bootstrapping. Anything not in that
+        # snapshot is user-created state (cell variables, helper-imported
+        # modules, dropdown subscribers) and gets deleted.
+        try:
+            ip = get_ipython()  # noqa: F821
+            user_ns = ip.user_ns
+            _keep = user_ns.get("_SAGE_RESET_KEEP", frozenset())
+            for _k in list(user_ns.keys()):
+                if _k not in _keep:
+                    user_ns.pop(_k, None)
+        except Exception:
+            pass
 
         from IPython.display import display, Markdown, HTML
         display(Markdown("**Sage reset.** Output folder cleared, history cleared."))
@@ -1564,3 +1749,18 @@ except Exception as exc:
     warnings.warn(
         f"Sage magic commands could not be registered: {exc}", stacklevel=1
     )
+
+
+# Snapshot the user_ns keys present right after this startup script finishes.
+# IPython runs startup scripts via `exec(code, user_ns)`, so every top-level
+# `def`, `import`, and assignment ends up here. `%reset` preserves exactly
+# this set — anything else is user-created state (cell variables, dropdown
+# subscribers, helper-imported modules) and is safe to wipe.
+try:
+    _ip = get_ipython()  # noqa: F821
+    if _ip is not None:
+        _ip.user_ns["_SAGE_RESET_KEEP"] = (
+            frozenset(_ip.user_ns.keys()) | {"_SAGE_RESET_KEEP"}
+        )
+except Exception:
+    pass
