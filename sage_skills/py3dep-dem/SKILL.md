@@ -1,6 +1,6 @@
 ---
 name: py3dep-dem
-description: "Use this skill for digital elevation model (DEM) requests: check available 3DEP resolutions for an area, download DEM rasters, compute terrain derivatives (slope, aspect, hillshade), sample elevation along a river centerline, overlay a river on a DEM, or compute a Relative Elevation Model (REM) for a river floodplain visualization."
+description: "USGS 3DEP digital elevation model (DEM) rasters and derived terrain products. Use when the user wants a DEM raster (1m/10m/30m), slope, aspect, hillshade, elevation along a river centerline, elevation overlay on a river, or a Relative Elevation Model (REM) for floodplain visualization. This is the DEM / GeoTIFF / raster skill — NOT for LiDAR point clouds, coverage maps, or interactive dataset browsing (use usgs-lidar for those)."
 ---
 
 # py3dep DEM Skill
