@@ -125,6 +125,7 @@ Given a bbox and an EPT endpoint URL, downloads the point cloud via
 ```python
 from pyforestscan.handlers   import read_lidar, create_geotiff, write_las
 from pyforestscan.calculate  import assign_voxels, calculate_pad, calculate_pai, calculate_fhd, calculate_chm
+from pyforestscan.filters    import filter_hag
 from pyforestscan.process    import process_with_tiles
 from pyforestscan.utils      import get_srs_from_ept
 ```
@@ -343,11 +344,109 @@ URL for all of these: `https://elevation.nationalmap.gov/arcgis/services/3DEPEle
 
 ---
 
+## Step 6 — Save point cloud as LAZ file
+
+`write_las(arrays, output_file, srs=None, compress=True)` writes the list
+returned by `read_lidar` to a LAS or LAZ file. `compress=True` (the default)
+produces a compressed `.laz` file. Pass the same SRS string used when
+downloading.
+
+```python
+from pyforestscan.handlers import write_las
+from pyforestscan.utils import get_srs_from_ept
+from pathlib import Path
+
+pointclouds = globals().get("pointclouds")
+ept_url     = globals().get("ept_url")
+output_dir  = Path(globals().get("OUTPUT_DIR", "/tmp"))
+if pointclouds is None or not ept_url:
+    raise ValueError("pointclouds and ept_url must be set — run Step 3 first")
+
+ept_srs = get_srs_from_ept(ept_url)
+laz_path = str(output_dir / "pointcloud.laz")
+write_las(pointclouds, laz_path, srs=ept_srs, compress=True)
+print(f"Saved {laz_path}")
+globals()["laz_path"] = laz_path
+globals()["ept_srs"]  = ept_srs
+```
+
+---
+
+## Step 7 — Read a local LAZ/LAS file
+
+`read_lidar` works for both EPT URLs (Step 3) and local `.las`/`.laz`/`.copc`
+files. When reading a local file, `bounds` does not apply (EPT only).
+
+```python
+from pyforestscan.handlers import read_lidar
+
+laz_path = globals().get("laz_path")
+ept_srs  = globals().get("ept_srs")
+if not laz_path or not ept_srs:
+    raise ValueError("laz_path and ept_srs must be set — run Step 6 first")
+
+# hag=True adds HeightAboveGround field (needed for CHM and canopy metrics)
+arrays = read_lidar(laz_path, ept_srs, hag=True)
+print(f"Read {sum(len(a) for a in arrays):,} points from {laz_path}")
+globals()["arrays"] = arrays
+```
+
+Supported formats: `.las`, `.laz`, `.copc`, `.copc.laz`, or `ept.json`.
+
+---
+
+## Step 8 — Canopy Height Model (CHM)
+
+Computes the CHM from a point cloud that has a `HeightAboveGround` field
+(produced by `read_lidar(..., hag=True)`). Uses `filter_hag` to remove
+below-ground noise, then `assign_voxels` + `calculate_chm`.
+
+`calculate_chm` takes a **single array** (`arrays[0]`), not the list.
+
+```python
+import numpy as np
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from pathlib import Path
+from pyforestscan.filters   import filter_hag
+from pyforestscan.calculate import assign_voxels, calculate_chm
+
+arrays     = globals().get("arrays") or globals().get("pointclouds")
+output_dir = Path(globals().get("OUTPUT_DIR", "/tmp"))
+if arrays is None:
+    raise ValueError("arrays not set — run Step 7 (or Step 3 with hag=True) first")
+
+# filter_hag removes points at or below ground (HeightAboveGround <= 0)
+arrays = filter_hag(arrays)
+points = arrays[0]
+
+voxel_resolution = (1, 1, 1)   # (x_res, y_res, z_res) in data units (usually metres)
+chm, extent = calculate_chm(points, voxel_resolution)
+print(f"CHM shape: {chm.shape}, extent: {extent}")
+print(f"Height range: {np.nanmin(chm):.1f} – {np.nanmax(chm):.1f} m")
+
+chm_png = str(output_dir / "chm.png")
+fig, ax = plt.subplots(figsize=(10, 8))
+im = ax.imshow(chm, extent=extent, cmap="viridis", origin="lower")
+plt.colorbar(im, ax=ax, label="Height (m)")
+ax.set_title("Canopy Height Model")
+plt.savefig(chm_png, dpi=150, bbox_inches="tight")
+plt.close()
+print(f"Saved {chm_png}")
+globals()["chm"] = chm
+globals()["chm_extent"] = extent
+```
+
+`extent` is `[x_min, x_max, y_min, y_max]` in the point cloud's native CRS.
+
+---
+
 ## Notes
 
 - This skill describes data fetching, filtering, downloading, and processing.
   It contains no widgets, maps, or dropdowns. Pair it with whatever UI
   layer your agent provides for area selection and dataset picking.
-- Steps 3–5 use placeholder variable names (`bbox`, `ept_url`, `pointclouds`,
+- Steps 3–8 use placeholder variable names (`bbox`, `ept_url`, `pointclouds`,
   `OUTPUT_DIR`). The agent may use different names — adapt the
   `globals().get(...)` calls accordingly.
