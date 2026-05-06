@@ -98,13 +98,83 @@ show_bbox_map(
 )
 ```
 
+## Composition: data skill + bbox + reactive dropdown
+
+The most common interactive pattern is: a data skill exposes a coverage
+GeoDataFrame and a `filter_by_bbox`-style function; the user draws a bbox;
+a reactive `sage-dropdown` auto-populates with items intersecting the bbox;
+downstream cells use the picked item. **Document the recipe here so any
+data skill can stay UI-free.**
+
+**Required data-skill shape (any portable data skill can satisfy this):**
+- `fetch_coverage()` → returns a GeoDataFrame in EPSG:4326 with one row per
+  selectable item (dataset, station, region, etc.) and a `geometry` column
+- `filter_by_bbox(coverage, bbox, ...)` → returns a list of dicts, one per
+  item intersecting the bbox in EPSG:4326
+
+**Canonical recipe (substitute the data skill's path and module name):**
+
+```python
+import sys
+sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-bbox-map")
+sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-dropdown")
+sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/MY-DATA-SKILL")
+
+from sage_bbox_map import show_bbox_map
+from sage_dropdown import show_dropdown
+from my_data_skill import fetch_coverage, filter_by_bbox
+
+coverage = fetch_coverage()
+globals()["coverage"] = coverage   # so the reactive callback can re-read it
+
+show_bbox_map(
+    bbox_var={"name": "USER_BBOX",
+              "description": "Bounding box drawn by user (EPSG:4326)"},
+    center=(40, -100),
+    zoom=4,
+    overlay_geojson=coverage,       # in-memory GeoDataFrame, NOT a file path
+    overlay_name="Coverage",
+    set_by="my-data-skill via sage-bbox-map",
+)
+
+show_dropdown(
+    items_fn=lambda: filter_by_bbox(coverage, globals().get("USER_BBOX"))
+                     if globals().get("USER_BBOX") else [],
+    observes="USER_BBOX",
+    placeholder="Draw a rectangle on the map to populate this dropdown.",
+    no_items_message="No datasets intersect the selected area. Try a different area.",
+    label_template="{name}  (~{est:,} pts)",  # adapt fields to your data skill's return dict
+    sort_by="name",
+    info_template=(                            # adapt fields to your data skill's return dict
+        "Dataset: {name}\n"
+        "URL: {url}\n"
+        "Est. points in bbox: ~{est:,}"
+    ),
+    kernel_vars={
+        "SELECTED_DATASET_URL": {"field": "url",
+                                 "description": "URL of the selected dataset"},
+        "SELECTED_DATASET":     {"field": "@self",
+                                 "description": "Full record of the selected dataset"},
+    },
+    set_by="my-data-skill via sage-dropdown",
+)
+```
+
+Variable names (`USER_BBOX`, `SELECTED_DATASET_URL`, etc.) are agent-chosen —
+pick names that fit the data domain (`FIRE_BBOX`, `LIDAR_BBOX`, `STORM_BBOX`,
+etc.). Subsequent cells read whichever names you picked via `globals().get()`;
+the kernel-variables registry surfaces them in future requests automatically.
+
+See `sage-dropdown`'s SKILL.md for full reactive-mode semantics
+(`items_fn`, `observes`, `placeholder` vs `no_items_message`).
+
 ## Execution rules
 
 - Save your script to a `.py` file with `write_file`, then run it with `python /path/to/script.py`. Never use heredoc. Never chain commands with `&&`.
 - Do NOT create your own `ipyleaflet.Map` — call `show_bbox_map` and let it render.
 - Do NOT hardcode the bbox variable name. Pick a name that fits the data domain.
 - Do NOT skip `description` in `bbox_var` — it's how downstream cells understand what the bbox represents.
-- For `overlay_geojson`, prefer in-memory dicts or GeoDataFrames over file paths. Writing the overlay to `SAGE_OUTPUT_DIR` triggers Sage's auto-Folium fallback, producing a duplicate static map next to the live ipyleaflet widget.
+- For `overlay_geojson`, pass an in-memory dict or GeoDataFrame, NOT a file path. If you write the coverage to a file the agent may pick it up and reference it in a `![](...)` map tag, producing a duplicate static Folium map next to the live ipyleaflet widget.
 
 ## Important: don't read what the user must set
 

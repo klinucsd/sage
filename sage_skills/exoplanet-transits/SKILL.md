@@ -1,14 +1,13 @@
 ---
 name: exoplanet-transits
-description: "Exoplanet transit data from NASA. Use when the user wants to: fetch transiting exoplanet metadata from the NASA Exoplanet Archive; download TESS or Kepler photometry from NASA MAST; phase-fold a light curve to reveal a transit; analyze transit depth, duration, or radius ratio; produce a transit summary plot. Pure data skill — no UI. If the user wants an interactive picker, the agent should chain this with the sage-dropdown skill."
+description: "Exoplanet transit data from NASA. Use when the user wants to: fetch transiting exoplanet metadata from the NASA Exoplanet Archive; download TESS or Kepler photometry from NASA MAST; phase-fold a light curve to reveal a transit; analyze transit depth, duration, or radius ratio; produce a transit summary plot. Pure data skill — Python functions only, no UI."
 ---
 
 # exoplanet-transits — Data Skill
 
 This skill provides **data only** — fetching from NASA APIs, processing photometry,
 and computing transit parameters. It contains no dropdowns, widgets, or display
-logic. When the user asks for a picker, chain with **sage-dropdown** (a separate
-generic UI skill) and let the agent decide kernel-variable names.
+logic and has no agent-runtime dependencies — usable from any Python environment.
 
 ## Required libraries
 
@@ -94,27 +93,17 @@ planets = sorted(planets, key=lambda p: p["pl_name"])
 print(f"Catalog ready: {len(planets)} entries (sorted by planet name).")
 ```
 
-After this script runs, `planets` is in the kernel namespace. The agent does NOT
-need to display anything; if the user wants a picker, see "Composing with
-sage-dropdown" below.
+After this script runs, `planets` is in the kernel namespace.
 
----
+Steps 2–4 below read these kernel variables for the chosen planet (set them
+however your agent prefers — direct assignment, an interactive picker, etc.):
 
-## Composing with sage-dropdown
-
-When the user asks for an interactive selector ("let me pick", "show me a
-dropdown", "select one"), in the SAME script that produces `planets`, append a
-call to `sage-dropdown`. Read `sage-dropdown`'s SKILL.md for full API details.
-
-**The agent decides the kernel variable names.** Recommended names that the
-downstream steps below expect:
-
-| Variable              | Source field   | Description |
-|-----------------------|----------------|-------------|
-| `TARGET_PLANET`       | `pl_name`      | User-selected planet name |
-| `TARGET_STAR`         | `hostname`     | User-selected host star name |
-| `ORBITAL_PERIOD_DAYS` | `pl_orbper`    | Orbital period in days |
-| `PLANET_DATA`         | `@self`        | Full record dict for the selected planet |
+| Variable              | Source field (from a `planets` row) | Description |
+|-----------------------|-------------------------------------|-------------|
+| `TARGET_PLANET`       | `pl_name`                           | Planet name |
+| `TARGET_STAR`         | `hostname`                          | Host star name |
+| `ORBITAL_PERIOD_DAYS` | `pl_orbper`                         | Orbital period in days |
+| `PLANET_DATA`         | full row dict                       | Full record for the selected planet |
 
 If you pick different names, Steps 2–4 below need to be updated to read those
 names instead.

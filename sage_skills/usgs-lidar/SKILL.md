@@ -1,16 +1,32 @@
 ---
 name: usgs-lidar
-description: "USGS 3DEP LiDAR point cloud data. Use when the user wants to: download LiDAR point clouds from USGS 3DEP / EPT (Entwine Point Tile) services; query the USGS 3DEP coverage catalog; visualize point clouds in 3D; generate digital elevation models (DEMs) from ground-classified LiDAR returns. Pure data skill — no UI. If the user wants an interactive coverage map, area selector, or dataset picker, the agent should chain this with the generic UI skills sage-bbox-map (for bounding-box selection) and sage-dropdown (for dataset selection)."
+description: "USGS 3DEP LiDAR point cloud data. Use when the user wants to: download LiDAR point clouds from USGS 3DEP / EPT (Entwine Point Tile) services; query the USGS 3DEP coverage catalog; visualize point clouds in 3D; generate digital elevation models (DEMs) from ground-classified LiDAR returns. Pure data skill — Python functions only, no UI."
 ---
 
 # usgs-lidar — Data Skill
 
-This is a **data-only skill**. It contains no widgets, maps, or dropdowns.
-The data primitives — fetching the USGS 3DEP coverage catalog and filtering
-it by bounding box — are exposed as Python functions in `usgs_lidar.py`.
-When the user wants an interactive workflow (draw a bbox, pick a dataset),
-the agent composes this skill with the generic UI skills `sage-bbox-map`
-and `sage-dropdown`.
+This is a **data-only skill**. It exposes Python functions for fetching the
+USGS 3DEP coverage catalog, filtering it by bounding box, downloading point
+clouds, and rasterizing them to a DEM. It contains no widgets, maps, or
+dropdowns and has no agent-runtime dependencies — usable from any Python
+environment.
+
+## ⚠️ Critical rule — NEVER plot 3DEP point cloud data on a Folium map
+
+A single 3DEP LiDAR tile contains millions to billions of points. Rendering
+them as point markers on a 2D Folium map will hang the browser, blow up
+notebook size, and produce a meaningless dense blob.
+
+- **Do NOT** save point cloud arrays (`pointclouds`, `X/Y/Z` arrays) as a
+  GeoJSON of points and reference them with a `![...](...)` map tag.
+- **Do NOT** convert decimated points to `Point` geometries for a Folium map.
+- **Do NOT** include a 3DEP point file in a multi-layer map tag.
+
+The only acceptable visualization for the point cloud itself is the Plotly
+3D scatter in Step 4 (`fig.show()`). For 2D context on a Folium map, use
+the **coverage tile footprint** (a polygon) from `fetch_coverage()`, not
+the points. For a 2D raster, generate a DEM from the points and reference
+the GeoTIFF instead.
 
 ## Required Libraries
 
@@ -32,7 +48,7 @@ Two functions:
 
 | Function                                       | Purpose                                                                       |
 |------------------------------------------------|-------------------------------------------------------------------------------|
-| `fetch_coverage(color_features=True)` | Downloads `https://usgs.entwine.io/boundaries/resources.geojson` and returns an in-memory `GeoDataFrame` in EPSG:4326 with `name`, `url`, `count`, `geometry`. Pass the result directly as `overlay_geojson` to `sage_bbox_map.show_bbox_map`. **Do not write it to a file** — Sage's auto-fallback would then render a duplicate static Folium map. |
+| `fetch_coverage(color_features=True)` | Downloads `https://usgs.entwine.io/boundaries/resources.geojson` and returns an in-memory `GeoDataFrame` in EPSG:4326 with `name`, `url`, `count`, `geometry`. Keep it in memory; do not write it to a file. |
 | `filter_by_bbox(coverage, bbox, max_points)`   | Given the GeoDataFrame and a bbox tuple `(minx, miny, maxx, maxy)` in EPSG:4326, returns a list of dicts `[{"name", "url", "count", "est"}]` for intersecting datasets whose estimated bbox-clipped point count is below `max_points` (default 20 million). |
 
 ## Execution rules — read before writing any code
@@ -43,21 +59,14 @@ Two functions:
 - Read kernel variables via `globals().get("VAR_NAME")`. The system prompt's
   `EXISTING KERNEL VARIABLES` block tells you what's already set by previous cells.
 
-### Kernel variables and subprocess traps
+### Reading variables across steps
 
-- Variables produced by previous cells (e.g., `USER_BBOX`, `USER_EPT_URL`,
-  `pointclouds`) live in the **kernel namespace**. They are visible only to
-  commands Sage routes to the kernel:
-  - `python script.py` ✅
-  - `python -c "..."` ✅
-- Commands routed to a subprocess (kernel variables NOT accessible):
-  - `HOME=/home/jovyan python script.py` — any environment-variable prefix
-  - `python script.py | head` — any pipe
-  - `python script.py && echo ok` — any `&&`, `;`, `>`
-- If a kernel-routed script fails, **read the printed error and fix the script**.
-  Do NOT try to "verify whether `USER_BBOX` exists" by launching a diagnostic
-  with an env-prefix — that command runs in a subprocess where kernel variables
-  cannot exist by definition.
+Variables produced by an earlier step (e.g., `coverage`, `pointclouds`,
+`bbox`, `ept_url`) live in the kernel namespace. Read them with
+`globals().get("VAR_NAME")`. Commands chained with pipes, `&&`, or
+environment-variable prefixes run in a subprocess that cannot see kernel
+variables — keep each script self-contained and run with plain
+`python /path/to/script.py`.
 
 ---
 
@@ -78,31 +87,21 @@ coverage = fetch_coverage()
 print(f"Loaded {len(coverage)} USGS 3DEP datasets.")
 ```
 
-After this, `coverage` (GeoDataFrame) is in the kernel. **Do not call
-`coverage.to_file(...)` or otherwise write the catalog to a file** — Sage's
-auto-fallback would then render a duplicate static Folium map next to the
-live ipyleaflet widget. Pass the in-memory GeoDataFrame directly as the
-`overlay_geojson` argument of `show_bbox_map`.
+Keep `coverage` in memory for downstream steps. Do not write it to a file.
 
 ---
 
 ## Step 2 — Filter the catalog by a bounding box
 
-Pure data step. Reads a bbox from kernel namespace (set by `sage-bbox-map`),
-returns a list of intersecting datasets.
+Pure data step. Given a bbox in EPSG:4326 (e.g., from a UI widget or a
+hardcoded value), return a list of intersecting datasets.
 
 ```python
 import sys
 sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/usgs-lidar")
 from usgs_lidar import filter_by_bbox
 
-bbox = globals().get("USER_BBOX")            # set by sage-bbox-map
-coverage = globals().get("coverage")          # set by Step 1
-if bbox is None:
-    raise RuntimeError("USER_BBOX not set — draw a rectangle on the bbox map first")
-if coverage is None:
-    raise RuntimeError("coverage not set — run Step 1 first")
-
+bbox = (-122.5, 37.7, -122.3, 37.9)   # (minx, miny, maxx, maxy) in EPSG:4326
 datasets = filter_by_bbox(coverage, bbox, max_points=20_000_000)
 print(f"{len(datasets)} dataset(s) intersect the bbox with under 20M estimated points.")
 for d in datasets[:5]:
@@ -110,76 +109,16 @@ for d in datasets[:5]:
     print(f"  {d['name']}  ({est})")
 ```
 
-After this, `datasets` (list of dicts) is in the kernel and ready to feed
-into `sage-dropdown`.
-
----
-
-## Composing with sage-bbox-map and sage-dropdown
-
-When the user wants an interactive coverage map plus a dataset picker,
-chain this skill with `sage-bbox-map` (area selection) and `sage-dropdown`
-(dataset selection). The dropdown uses `sage-dropdown`'s reactive mode
-(`items_fn` + `observes`) so it auto-populates the moment the user draws a
-rectangle:
-
-```python
-import sys
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/usgs-lidar")
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-bbox-map")
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-dropdown")
-from usgs_lidar    import fetch_coverage, filter_by_bbox
-from sage_bbox_map import show_bbox_map
-from sage_dropdown import show_dropdown
-
-coverage = fetch_coverage()        # GeoDataFrame, in-memory
-globals()["coverage"] = coverage
-
-show_bbox_map(
-    bbox_var={"name": "USER_BBOX",
-              "description": "Bounding box drawn by user on the USGS 3DEP coverage map (EPSG:4326)"},
-    center=(40, -100),
-    zoom=4,
-    height="450px",
-    header="Draw a rectangle on the USGS 3DEP coverage to select an area",
-    overlay_geojson=coverage,
-    overlay_name="USGS 3DEP Coverage",
-    set_by="usgs-lidar via sage-bbox-map",
-)
-
-show_dropdown(
-    items_fn=lambda: filter_by_bbox(coverage, globals().get("USER_BBOX"), 20_000_000)
-                     if globals().get("USER_BBOX") else [],
-    observes="USER_BBOX",
-    placeholder="Draw a rectangle on the map above to populate this dropdown.",
-    no_items_message="No USGS 3DEP datasets cover the selected area (or all exceed 20 million points). Try a different area.",
-    label_template="{name}  (~{est:,} pts)",
-    sort_by="name",
-    header="Pick a USGS 3DEP dataset that covers the selected area",
-    description="Dataset:",
-    kernel_vars={
-        "USER_EPT_URL":      {"field": "url",
-                              "description": "EPT endpoint URL of the user-selected USGS 3DEP dataset"},
-        "USER_DATASET_NAME": {"field": "name",
-                              "description": "Name of the user-selected USGS 3DEP dataset"},
-    },
-    info_template="Dataset:        {name}\nEPT endpoint:   {url}\nTotal points:   {count:,}\nIn bbox (est.): {est:,}",
-    set_by="usgs-lidar via sage-dropdown",
-)
-```
-
-The variable names (`USER_BBOX`, `USER_EPT_URL`, `USER_DATASET_NAME`) are
-recommendations — pick different names if the data domain suggests them.
-Subsequent steps below read whatever names you picked via
-`globals().get()`; the kernel-variables registry surfaces them in future
-requests automatically.
+`datasets` is a list of dicts with keys `name`, `url`, `count`, `est`.
+Pick one (or let the user pick one via whatever picker your agent provides)
+and pass its `url` and the bbox to Step 3.
 
 ---
 
 ## Step 3 — Download the selected point cloud
 
-Reads `USER_BBOX` and `USER_EPT_URL` from the kernel. Downloads via
-`pyforestscan`. Stores `pointclouds` in the kernel.
+Given a bbox and an EPT endpoint URL, downloads the point cloud via
+`pyforestscan`.
 
 ### pyforestscan imports — use these exact paths, do not guess
 
@@ -196,12 +135,16 @@ EPT JSON directly:
 
 ```python
 import requests
-ept = requests.get(USER_EPT_URL, timeout=30).json()
+ept = requests.get(ept_url, timeout=30).json()
 srs = ept.get("srs", {})
 ept_srs = f"{srs.get('authority','EPSG')}:{srs.get('horizontal','3857')}"
 ```
 
 ### Step 3 script
+
+Inputs: `bbox` (4-tuple in EPSG:4326) and `ept_url` (string from Step 2's
+chosen dataset). Replace the names below with whatever your agent stores
+them under.
 
 ```python
 import numpy as np
@@ -209,19 +152,19 @@ from pyproj import Transformer
 from pyforestscan.handlers import read_lidar
 from pyforestscan.utils import get_srs_from_ept
 
-USER_BBOX    = globals().get("USER_BBOX")
-USER_EPT_URL = globals().get("USER_EPT_URL")
-if not USER_BBOX or not USER_EPT_URL:
-    raise ValueError("USER_BBOX and USER_EPT_URL must be set — run the bbox / dataset picker cells first.")
+bbox    = globals().get("bbox")        # or whatever name your agent picked
+ept_url = globals().get("ept_url")
+if not bbox or not ept_url:
+    raise ValueError("bbox and ept_url must be set before downloading point clouds")
 
-ept_srs = get_srs_from_ept(USER_EPT_URL)
+ept_srs = get_srs_from_ept(ept_url)
 transformer = Transformer.from_crs("EPSG:4326", ept_srs, always_xy=True)
-minx, miny = transformer.transform(USER_BBOX[0], USER_BBOX[1])
-maxx, maxy = transformer.transform(USER_BBOX[2], USER_BBOX[3])
+minx, miny = transformer.transform(bbox[0], bbox[1])
+maxx, maxy = transformer.transform(bbox[2], bbox[3])
 bounds = ([minx, maxx], [miny, maxy])
 
-print(f"Downloading point cloud from {USER_EPT_URL} ...")
-pointclouds = read_lidar(USER_EPT_URL, ept_srs, bounds, hag=True)
+print(f"Downloading point cloud from {ept_url} ...")
+pointclouds = read_lidar(ept_url, ept_srs, bounds, hag=True)
 print(f"Downloaded {len(pointclouds)} point arrays.")
 globals()["pointclouds"] = pointclouds
 ```
@@ -306,15 +249,15 @@ import rasterio
 from rasterio.transform import from_origin
 from pyforestscan.utils import get_srs_from_ept
 
-pointclouds  = globals().get("pointclouds")
-USER_BBOX    = globals().get("USER_BBOX")
-USER_EPT_URL = globals().get("USER_EPT_URL")
+pointclouds = globals().get("pointclouds")
+bbox        = globals().get("bbox")        # 4-tuple in EPSG:4326
+ept_url     = globals().get("ept_url")
 if pointclouds is None:
     raise ValueError("pointclouds not found — run Step 3 first")
-if not USER_BBOX or not USER_EPT_URL:
-    raise ValueError("USER_BBOX / USER_EPT_URL not set")
+if not bbox or not ept_url:
+    raise ValueError("bbox / ept_url not set")
 
-output_dir = Path(globals().get("SAGE_OUTPUT_DIR", "/tmp"))
+output_dir = Path(globals().get("OUTPUT_DIR", "/tmp"))   # agent's output directory
 output_dir.mkdir(parents=True, exist_ok=True)
 
 # Extract ground-classified points (LAS class 2)
@@ -347,7 +290,7 @@ with np.errstate(divide='ignore', invalid='ignore'):
 dem[cnt.reshape((grid_h, grid_w)) == 0] = np.nan
 
 # Write DEM
-ept_srs = get_srs_from_ept(USER_EPT_URL)
+ept_srs = get_srs_from_ept(ept_url)
 dem_tif = str(output_dir / "dem_1m.tif")
 with rasterio.open(
     dem_tif, 'w', driver='GTiff',
@@ -371,7 +314,7 @@ wms_json.write_text(json.dumps({
     "url": "https://elevation.nationalmap.gov/arcgis/services/3DEPElevation/ImageServer/WMSServer",
     "layers": "3DEPElevation:Hillshade Gray",
     "name": "USGS 3DEP Hillshade (Background)",
-    "bbox": [USER_BBOX[1], USER_BBOX[0], USER_BBOX[3], USER_BBOX[2]],
+    "bbox": [bbox[1], bbox[0], bbox[3], bbox[2]],
     "opacity": 0.5,
 }, indent=2))
 
@@ -403,9 +346,8 @@ URL for all of these: `https://elevation.nationalmap.gov/arcgis/services/3DEPEle
 ## Notes
 
 - This skill describes data fetching, filtering, downloading, and processing.
-  It contains no widgets, maps, or dropdowns — those come from `sage-bbox-map`
-  and `sage-dropdown` when the user asks for them.
-- Steps 3–5 read kernel variables `USER_BBOX`, `USER_EPT_URL`, and
-  `pointclouds`. The agent may have used different variable names when
-  composing with `sage-bbox-map` and `sage-dropdown` — check the
-  `EXISTING KERNEL VARIABLES` block in the system prompt and adapt.
+  It contains no widgets, maps, or dropdowns. Pair it with whatever UI
+  layer your agent provides for area selection and dataset picking.
+- Steps 3–5 use placeholder variable names (`bbox`, `ept_url`, `pointclouds`,
+  `OUTPUT_DIR`). The agent may use different names — adapt the
+  `globals().get(...)` calls accordingly.

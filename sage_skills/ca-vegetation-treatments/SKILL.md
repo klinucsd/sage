@@ -456,9 +456,9 @@ The service caps each response at 2000 records, but the underlying dataset has ~
 - **Numeric comparisons** for `activity_quantity`: `"activity_quantity > 100"`
 - **All records**: `"1=1"` (use with a tighter bbox to avoid pulling all 168K records)
 
-### Saving Output for Sage Auto-Display
+### Saving Output for Sage Display
 
-When running inside Sage, save the queried GeoDataFrame as a GeoJSON file in `SAGE_OUTPUT_DIR` so it appears on the combined Folium map automatically. The agent does not need to call any display function explicitly — Sage's renderer scans for new `.geojson` files at the end of the cell.
+When running inside Sage, save the queried GeoDataFrame as a GeoJSON file in `SAGE_OUTPUT_DIR`, then reference it in your markdown report using the standard `![Title](path/to/file.geojson)` map tag (see Sage's MAP RULE in the system prompt for combining layers).
 
 ```python
 import os

@@ -189,7 +189,8 @@ def show_dropdown(
         style={"description_width": "auto"},
         layout=widgets.Layout(
             width="auto", min_width="500px",
-            display=("" if initial_options else "none"),
+            # Hide when empty (reactive/waiting) OR when exactly 1 item (auto-selected)
+            display=("" if len(initial_options) > 1 else "none"),
         ),
     )
     info_out = widgets.Output() if (info_template or placeholder or no_items_message) else None
@@ -210,13 +211,14 @@ def show_dropdown(
             }
         _register_kernel_vars(cell_id, caller_ns, type_specs, set_by)
 
-    def _show_info_for(item, observed_value=None):
+    def _show_info_for(item, observed_value=None, note=None):
         """Render the info pane.
 
         Three empty-state branches when `item is None`:
           - observed_value is None → show placeholder ("set the source first")
           - observed_value is not None → show no_items_message if provided,
             else fall back to placeholder
+        `note` is an optional one-line prefix (e.g. auto-select message).
         """
         if info_out is None:
             return
@@ -231,6 +233,8 @@ def show_dropdown(
                     if msg:
                         print(msg)
                 return
+            if note:
+                print(note)
             if info_template:
                 print(_format_template(info_template, item))
             summary_parts = [
@@ -241,9 +245,9 @@ def show_dropdown(
             if summary_parts:
                 print("\n✓ " + ", ".join(summary_parts))
 
-    def _select(item):
+    def _select(item, note=None):
         _write_kernel_vars(item)
-        _show_info_for(item)
+        _show_info_for(item, note=note)
 
     def _on_change(change):
         if change.get("name") == "value" and change.get("new") is not None:
@@ -254,7 +258,8 @@ def show_dropdown(
     # as already-set and show no_items_message instead of placeholder.
     initial_observed = caller_ns.get(observes) if observes else None
     if initial_items:
-        _select(initial_items[0])
+        _auto_note = "Only 1 dataset found — auto-selected." if len(initial_items) == 1 else None
+        _select(initial_items[0], note=_auto_note)
     else:
         _write_kernel_vars(None)
         _show_info_for(None, observed_value=initial_observed)
@@ -277,8 +282,12 @@ def show_dropdown(
             pass
 
         if new_items:
-            dropdown.layout.display = ""
-            _select(new_items[0])
+            if len(new_items) == 1:
+                dropdown.layout.display = "none"   # single option — auto-select, no interaction needed
+                _select(new_items[0], note="Only 1 dataset found — auto-selected.")
+            else:
+                dropdown.layout.display = ""
+                _select(new_items[0])
         else:
             dropdown.layout.display = "none"
             _write_kernel_vars(None)
@@ -418,3 +427,7 @@ def show_dropdown(
         )
     else:
         display(_vbox, exclude=["text/plain"])
+
+    # Separator between widget output and the agent's narrative that follows
+    display(HTML('<hr style="border:none;border-top:1px solid #e0e0e0;margin:12px 0;">'),
+            exclude=["text/plain"])
