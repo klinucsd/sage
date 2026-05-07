@@ -274,7 +274,9 @@ if not ept_srs:
         laz_files = sorted(output_dir.glob("*.laz"))
         laz_path = str(laz_files[0]) if laz_files else None
     if laz_path:
-        crs = laspy.read(laz_path).header.parse_crs()
+        # Use laspy.open() (header-only) — laspy.read() needs a LAZ backend
+        with laspy.open(laz_path) as reader:
+            crs = reader.header.parse_crs()
         ept_srs = f"EPSG:{crs.to_epsg()}" if crs else None
 if not ept_srs:
     raise ValueError("Cannot determine CRS — set ept_srs or ept_url in the kernel")
@@ -401,8 +403,10 @@ PAD, PAI) to a notebook without re-downloading the point cloud.
 - Do NOT call `pdal info` + parse JSON/regex to extract the SRS string.
 - Do NOT default to a hardcoded CRS like `"EPSG:3857"` if the read fails —
   a wrong CRS produces a wrong-georeferenced output silently.
-- The canonical pattern is `laspy.read(path).header.parse_crs()` (shown
-  below). It returns a `pyproj.CRS` directly from the LAZ file header.
+- The canonical pattern is `laspy.open(path).header.parse_crs()` (shown
+  below). Use `laspy.open()` not `laspy.read()` — `read()` decompresses
+  point data and requires a LAZ backend (`lazrs`/`laszip`) that is NOT
+  installed in the Sage image. `open()` reads only the header.
 
 Before writing a download script, check whether a `.laz` file already exists
 in `SAGE_OUTPUT_DIR`. If one does, read from it with this step.
@@ -428,10 +432,13 @@ if not laz_path:
 
 ept_srs = globals().get("ept_srs")
 if not ept_srs:
-    # Read CRS directly from the LAZ file header via laspy
+    # Read CRS from the LAZ header WITHOUT decompressing point data.
+    # Use laspy.open() (streaming reader) — laspy.read() would decompress
+    # the whole file and requires a LAZ backend (lazrs/laszip), which is
+    # NOT installed in the Sage image. open() reads only the header.
     import laspy
-    las = laspy.read(laz_path)
-    crs = las.header.parse_crs()
+    with laspy.open(laz_path) as reader:
+        crs = reader.header.parse_crs()
     if crs is None:
         raise ValueError(f"Could not read CRS from {laz_path} — set ept_srs manually")
     epsg = crs.to_epsg()
@@ -450,6 +457,10 @@ Supported formats: `.las`, `.laz`, `.copc`, `.copc.laz`, or `ept.json`.
 
 ## Step 8 — Canopy Height Model (CHM)
 
+**"Generate a CHM" means save a georeferenced GeoTIFF (`chm_1m.tif`).** The
+PNG is a preview image; the GeoTIFF is the data product downstream tools
+load. Always write both.
+
 **DO NOT reinvent CHM calculation.** Specifically:
 - Do NOT compute CHM as DSM-minus-DEM by hand. `pyforestscan.calculate_chm`
   already does this correctly using the `HeightAboveGround` field.
@@ -464,19 +475,29 @@ below-ground noise, then `calculate_chm`.
 
 `calculate_chm` takes a **single array** (`arrays[0]`), not the list.
 
+`calculate_chm` returns `(chm, extent)` where `extent` is
+`[x_min, x_max, y_min, y_max]` matching matplotlib's `imshow(..., origin="lower")`
+convention (row 0 = south). For a north-up GeoTIFF, flip the array vertically
+(`np.flipud`) and use `from_origin(x_min, y_max, ...)`.
+
 ```python
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import rasterio
+from rasterio.transform import from_origin
 from pathlib import Path
 from pyforestscan.filters   import filter_hag
-from pyforestscan.calculate import assign_voxels, calculate_chm
+from pyforestscan.calculate import calculate_chm
 
 arrays     = globals().get("arrays") or globals().get("pointclouds")
-output_dir = Path(globals().get("OUTPUT_DIR", "/tmp"))
+output_dir = Path(globals().get("SAGE_OUTPUT_DIR", "/tmp"))
+ept_srs    = globals().get("ept_srs")
 if arrays is None:
     raise ValueError("arrays not set — run Step 7 (or Step 3 with hag=True) first")
+if not ept_srs:
+    raise ValueError("ept_srs not set — Step 7 reads it from the LAZ header into globals()")
 
 # filter_hag removes points at or below ground (HeightAboveGround <= 0)
 arrays = filter_hag(arrays)
@@ -484,9 +505,25 @@ points = arrays[0]
 
 voxel_resolution = (1, 1, 1)   # (x_res, y_res, z_res) in data units (usually metres)
 chm, extent = calculate_chm(points, voxel_resolution)
+x_min, x_max, y_min, y_max = extent
+x_res, y_res = voxel_resolution[0], voxel_resolution[1]
 print(f"CHM shape: {chm.shape}, extent: {extent}")
 print(f"Height range: {np.nanmin(chm):.1f} – {np.nanmax(chm):.1f} m")
 
+# Save CHM as GeoTIFF — flip array so row 0 = north (rasterio convention)
+chm_tif = str(output_dir / "chm_1m.tif")
+chm_north_up = np.flipud(chm).astype(np.float32)
+with rasterio.open(
+    chm_tif, "w", driver="GTiff",
+    height=chm_north_up.shape[0], width=chm_north_up.shape[1], count=1,
+    dtype=np.float32, crs=ept_srs,
+    transform=from_origin(x_min, y_max, x_res, y_res),
+    nodata=np.nan,
+) as dst:
+    dst.write(chm_north_up, 1)
+print(f"Wrote {chm_tif}")
+
+# Save preview PNG (community-standard viridis colormap)
 chm_png = str(output_dir / "chm.png")
 fig, ax = plt.subplots(figsize=(10, 8))
 im = ax.imshow(chm, extent=extent, cmap="viridis", origin="lower")
@@ -494,12 +531,11 @@ plt.colorbar(im, ax=ax, label="Height (m)")
 ax.set_title("Canopy Height Model")
 plt.savefig(chm_png, dpi=150, bbox_inches="tight")
 plt.close()
-print(f"Saved {chm_png}")
+print(f"Wrote {chm_png}")
+
 globals()["chm"] = chm
 globals()["chm_extent"] = extent
 ```
-
-`extent` is `[x_min, x_max, y_min, y_max]` in the point cloud's native CRS.
 
 ---
 
