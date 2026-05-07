@@ -358,7 +358,7 @@ from pathlib import Path
 
 pointclouds = globals().get("pointclouds")
 ept_url     = globals().get("ept_url")
-output_dir  = Path(globals().get("OUTPUT_DIR", "/tmp"))
+output_dir  = Path(globals().get("SAGE_OUTPUT_DIR", "/tmp"))
 if pointclouds is None or not ept_url:
     raise ValueError("pointclouds and ept_url must be set — run Step 3 first")
 
@@ -374,16 +374,44 @@ globals()["ept_srs"]  = ept_srs
 
 ## Step 7 — Read a local LAZ/LAS file
 
+**Use this step instead of Step 3 when a `.laz` file already exists in the
+output directory.** A saved LAZ file lets you skip the EPT download entirely
+on subsequent runs — useful when adding new analysis cells (e.g. CHM,
+PAD, PAI) to a notebook without re-downloading the point cloud.
+
+Before writing a download script, check whether a `.laz` file already exists
+in `SAGE_OUTPUT_DIR`. If one does, read from it with this step.
+
 `read_lidar` works for both EPT URLs (Step 3) and local `.las`/`.laz`/`.copc`
-files. When reading a local file, `bounds` does not apply (EPT only).
+files. When reading a local file, `bounds` does not apply (EPT only). `srs`
+is still required — read it from the EPT endpoint or store it alongside the
+LAZ file (Step 6 saves it as `globals()["ept_srs"]`).
 
 ```python
+from pathlib import Path
 from pyforestscan.handlers import read_lidar
 
+output_dir = Path(globals().get("SAGE_OUTPUT_DIR", "/tmp"))
+
+# Locate the saved LAZ file — prefer an explicitly stored path, else scan dir
 laz_path = globals().get("laz_path")
-ept_srs  = globals().get("ept_srs")
-if not laz_path or not ept_srs:
-    raise ValueError("laz_path and ept_srs must be set — run Step 6 first")
+if not laz_path:
+    laz_files = sorted(output_dir.glob("*.laz"))
+    if not laz_files:
+        raise FileNotFoundError(f"No .laz file found in {output_dir} — run Step 3+6 first")
+    laz_path = str(laz_files[0])
+
+ept_srs = globals().get("ept_srs")
+if not ept_srs:
+    # Read CRS directly from the LAZ file header via laspy
+    import laspy
+    las = laspy.read(laz_path)
+    crs = las.header.parse_crs()
+    if crs is None:
+        raise ValueError(f"Could not read CRS from {laz_path} — set ept_srs manually")
+    epsg = crs.to_epsg()
+    ept_srs = f"EPSG:{epsg}" if epsg else crs.to_wkt()
+    print(f"CRS read from file: {ept_srs}")
 
 # hag=True adds HeightAboveGround field (needed for CHM and canopy metrics)
 arrays = read_lidar(laz_path, ept_srs, hag=True)
