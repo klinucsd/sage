@@ -397,6 +397,13 @@ output directory.** A saved LAZ file lets you skip the EPT download entirely
 on subsequent runs — useful when adding new analysis cells (e.g. CHM,
 PAD, PAI) to a notebook without re-downloading the point cloud.
 
+**DO NOT reinvent CRS reading.** Specifically:
+- Do NOT call `pdal info` + parse JSON/regex to extract the SRS string.
+- Do NOT default to a hardcoded CRS like `"EPSG:3857"` if the read fails —
+  a wrong CRS produces a wrong-georeferenced output silently.
+- The canonical pattern is `laspy.read(path).header.parse_crs()` (shown
+  below). It returns a `pyproj.CRS` directly from the LAZ file header.
+
 Before writing a download script, check whether a `.laz` file already exists
 in `SAGE_OUTPUT_DIR`. If one does, read from it with this step.
 
@@ -443,9 +450,17 @@ Supported formats: `.las`, `.laz`, `.copc`, `.copc.laz`, or `ept.json`.
 
 ## Step 8 — Canopy Height Model (CHM)
 
+**DO NOT reinvent CHM calculation.** Specifically:
+- Do NOT compute CHM as DSM-minus-DEM by hand. `pyforestscan.calculate_chm`
+  already does this correctly using the `HeightAboveGround` field.
+- Do NOT use `cmap="Greens"`, `"YlGn"`, or any green-only colormap. The
+  community standard for CHM visualization is **`viridis`** (matches the
+  `plot_metric` default in `pyforestscan.visualize`). Other accepted
+  scientific colormaps: `magma`, `plasma`, `inferno`. Never plain `Greens`.
+
 Computes the CHM from a point cloud that has a `HeightAboveGround` field
 (produced by `read_lidar(..., hag=True)`). Uses `filter_hag` to remove
-below-ground noise, then `assign_voxels` + `calculate_chm`.
+below-ground noise, then `calculate_chm`.
 
 `calculate_chm` takes a **single array** (`arrays[0]`), not the list.
 
