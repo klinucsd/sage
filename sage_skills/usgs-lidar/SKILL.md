@@ -221,11 +221,15 @@ above handles both.
 
 ## Step 5 — 1-m DEM with hillshade overlay
 
-Reads `pointclouds` (set by Step 3). Filters ground returns (LAS class 2),
-rasterises to a 1-m DEM, writes a georeferenced GeoTIFF, and generates a
-local hillshade via `gdaldem`. Also writes a `hillshade.wms.json` sidecar so
-the USGS 3DEP WMS service appears as a background context layer on the
-combined Folium map.
+Filters ground returns (LAS class 2), rasterises to a 1-m DEM, writes a
+georeferenced GeoTIFF, and generates a hillshade via `gdaldem`. Also writes
+a `hillshade.wms.json` sidecar for the combined Folium map.
+
+**Input source — use whichever is available:**
+- In-memory download: reads `pointclouds` set by Step 3.
+- From a saved LAZ file: run Step 7 first to load the file into `arrays`,
+  then this step reads `arrays`. Do NOT re-implement ground-point extraction
+  or rasterisation from scratch — the code below handles both cases.
 
 ### Y-axis orientation — the classic rasterisation trap
 
@@ -244,22 +248,36 @@ correct hillshade with `-az 315` (NW lighting) has north-facing slopes in shadow
 ### Step 5 script
 
 ```python
-import numpy as np, json, subprocess, os
+import numpy as np, json, subprocess
 from pathlib import Path
 import rasterio
 from rasterio.transform import from_origin
 from pyforestscan.utils import get_srs_from_ept
 
-pointclouds = globals().get("pointclouds")
-bbox        = globals().get("bbox")        # 4-tuple in EPSG:4326
-ept_url     = globals().get("ept_url")
+# Accept in-memory download (pointclouds) OR data loaded from LAZ file (arrays)
+pointclouds = globals().get("pointclouds") or globals().get("arrays")
 if pointclouds is None:
-    raise ValueError("pointclouds not found — run Step 3 first")
-if not bbox or not ept_url:
-    raise ValueError("bbox / ept_url not set")
+    raise ValueError("No point cloud data in kernel — run Step 3 (download) or Step 7 (read LAZ) first")
 
-output_dir = Path(globals().get("OUTPUT_DIR", "/tmp"))   # agent's output directory
+ept_url    = globals().get("ept_url")
+ept_srs    = globals().get("ept_srs")
+bbox       = globals().get("bbox")
+output_dir = Path(globals().get("SAGE_OUTPUT_DIR", "/tmp"))
 output_dir.mkdir(parents=True, exist_ok=True)
+
+if not ept_srs and ept_url:
+    ept_srs = get_srs_from_ept(ept_url)
+if not ept_srs:
+    import laspy
+    laz_path = globals().get("laz_path")
+    if not laz_path:
+        laz_files = sorted(output_dir.glob("*.laz"))
+        laz_path = str(laz_files[0]) if laz_files else None
+    if laz_path:
+        crs = laspy.read(laz_path).header.parse_crs()
+        ept_srs = f"EPSG:{crs.to_epsg()}" if crs else None
+if not ept_srs:
+    raise ValueError("Cannot determine CRS — set ept_srs or ept_url in the kernel")
 
 # Extract ground-classified points (LAS class 2)
 ground = []
@@ -291,7 +309,6 @@ with np.errstate(divide='ignore', invalid='ignore'):
 dem[cnt.reshape((grid_h, grid_w)) == 0] = np.nan
 
 # Write DEM
-ept_srs = get_srs_from_ept(ept_url)
 dem_tif = str(output_dir / "dem_1m.tif")
 with rasterio.open(
     dem_tif, 'w', driver='GTiff',
@@ -309,19 +326,20 @@ subprocess.run(
     check=True, capture_output=True, text=True,
 )
 
-# Register USGS 3DEP WMS as a wide-area context layer
-wms_json = output_dir / "hillshade.wms.json"
-wms_json.write_text(json.dumps({
-    "url": "https://elevation.nationalmap.gov/arcgis/services/3DEPElevation/ImageServer/WMSServer",
-    "layers": "3DEPElevation:Hillshade Gray",
-    "name": "USGS 3DEP Hillshade (Background)",
-    "bbox": [bbox[1], bbox[0], bbox[3], bbox[2]],
-    "opacity": 0.5,
-}, indent=2))
+# Register USGS 3DEP WMS as a wide-area context layer (only when bbox is known)
+if bbox:
+    wms_json = output_dir / "hillshade.wms.json"
+    wms_json.write_text(json.dumps({
+        "url": "https://elevation.nationalmap.gov/arcgis/services/3DEPElevation/ImageServer/WMSServer",
+        "layers": "3DEPElevation:Hillshade Gray",
+        "name": "USGS 3DEP Hillshade (Background)",
+        "bbox": [bbox[1], bbox[0], bbox[3], bbox[2]],
+        "opacity": 0.5,
+    }, indent=2))
+    print(f"Wrote {wms_json}")
 
 print(f"Wrote {dem_tif}")
 print(f"Wrote {hillshade_tif}")
-print(f"Wrote {wms_json}")
 ```
 
 ### USGS 3DEP WMS layers — use these exact layer names
