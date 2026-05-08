@@ -17,7 +17,7 @@ import subprocess, sys, os
 output_dir = os.environ.get('SAGE_OUTPUT_DIR', '/tmp')
 output_file = os.path.join(output_dir, 'fire_detections.geojson')
 result = subprocess.run(
-    [sys.executable, '/opt/sage_scripts/sdge_goes_fire_basic.py', output_file],
+    [sys.executable, '/home/jovyan/.deepagents/agent/skills/sdge-goes-fire/sdge_goes_fire_basic.py', output_file],
     capture_output=True, text=True, env={**os.environ}
 )
 print(result.stdout)

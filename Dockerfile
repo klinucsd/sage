@@ -77,11 +77,6 @@ RUN python /tmp/build/apply_sage_patch.py
 RUN mkdir -p /home/jovyan/.deepagents/agent/skills && \
     cp -r /tmp/build/skills/* /home/jovyan/.deepagents/agent/skills/
 
-# Copy any Python scripts bundled with skills to a shared runtime location.
-# This is generic — Sage knows nothing about what these scripts do.
-RUN mkdir -p /opt/sage_scripts && \
-    find /tmp/build/skills -name "*.py" -exec cp {} /opt/sage_scripts/ \;
-
 # Write NRP provider config to jovyan's config.toml
 RUN python -c "\
 import tomli_w; \
