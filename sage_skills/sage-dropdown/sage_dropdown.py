@@ -53,11 +53,19 @@ from IPython.display import HTML, display
 
 
 def _format_template(tmpl: str, item: dict) -> str:
-    """Apply a Python format-string template to an item dict. Falls back to literal on error."""
+    """Apply a Python format-string template to an item dict. Falls back to literal on error.
+
+    Decodes literal ``\\n`` / ``\\t`` sequences that often appear when an agent
+    over-escapes a multi-line template string (writing ``"a\\nb"`` in JSON
+    means the .py file ends up with two literal characters, backslash + n,
+    rather than a real newline). Without this, the dropdown info pane prints
+    one long line with visible ``\\n`` markers.
+    """
     try:
-        return tmpl.format(**item)
+        out = tmpl.format(**item)
     except (KeyError, ValueError, AttributeError, TypeError, IndexError):
-        return tmpl
+        out = tmpl
+    return out.replace("\\n", "\n").replace("\\t", "\t")
 
 
 def _get_cell_id():

@@ -1,6 +1,6 @@
 ---
 name: usgs-lidar
-description: "USGS 3DEP LiDAR point cloud data. Use when the user wants to: download LiDAR point clouds from USGS 3DEP / EPT (Entwine Point Tile) services; query the USGS 3DEP coverage catalog; visualize point clouds in 3D; generate digital elevation models (DEMs) from ground-classified LiDAR returns. Pure data skill — Python functions only, no UI."
+description: "USGS 3DEP LiDAR point cloud data and forest / canopy metrics. Use when the user wants to: download LiDAR point clouds from USGS 3DEP / EPT (Entwine Point Tile) services; query the USGS 3DEP coverage catalog; visualize point clouds in 3D; save or read .las / .laz / .copc files; generate Digital Elevation Models (DEMs), Digital Surface Models (DSMs), or Canopy Height Models (CHMs); compute canopy metrics like PAD (Plant Area Density), PAI (Plant Area Index), FHD (Foliage Height Diversity), or canopy cover from ground-classified LiDAR returns. Pure data skill — Python functions only, no UI."
 ---
 
 # usgs-lidar — Data Skill
