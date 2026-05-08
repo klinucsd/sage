@@ -1523,6 +1523,17 @@ try:
         # Snapshot output folder before run
         before = _snapshot(SAGE_OUTPUT_DIR)
 
+        # Reset the "widget rendered a map" flag. Widget skills (sage-bbox-map,
+        # potentially others) set this to True when they render their own live
+        # map; the auto-Folium fallback below honors it and skips rendering a
+        # static map of any GeoJSON written by the cell — preventing duplicate
+        # maps when the agent writes intermediate GeoJSON files (e.g. coverage
+        # catalog) alongside an interactive widget.
+        try:
+            ip.user_ns["_sage_widget_map_rendered"] = False  # noqa: F821
+        except Exception:
+            pass
+
         # Run agent with streaming tool display; get back final report + tool counts.
         # Use run_until_complete on the existing loop (patched by nest_asyncio)
         # instead of asyncio.run(), which conflicts with Python 3.13's task cleanup.
@@ -1653,18 +1664,30 @@ try:
         # Render the final report — file references become maps/images inline
         found_any, map_rendered = _render_markdown_with_files(final_text)
 
+        # When a widget skill (e.g. sage-bbox-map) rendered its own live map,
+        # suppress the static-Folium fallback even if intermediate GeoJSON files
+        # were written. The widget owns the cell's map output.
+        try:
+            widget_map_rendered = bool(ip.user_ns.get("_sage_widget_map_rendered", False))  # noqa: F821
+        except Exception:
+            widget_map_rendered = False
+
         if not found_any:
             # Fallback: plain markdown + auto-display new files separately
             if final_text.strip():
                 from IPython.display import display, Markdown
                 display(Markdown(final_text))
-            if new:
+            if new and not widget_map_rendered:
                 _display_new_outputs(new)
+            elif new and widget_map_rendered:
+                # Still show non-map outputs (CSV, PNG) but skip auto-Folium.
+                _display_new_outputs([f for f in new
+                                      if not (f.endswith('.geojson') or f.endswith('.wms.json'))])
         elif new:
             # Inline rendering found file refs. Auto-display new GeoJSON/WMS only
             # if no map was actually rendered (e.g. agent referenced a PNG but its
             # GeoJSON path was wrong or omitted entirely).
-            if not map_rendered:
+            if not map_rendered and not widget_map_rendered:
                 new_maps = [
                     f for f in new
                     if f.endswith('.geojson') or f.endswith('.wms.json')

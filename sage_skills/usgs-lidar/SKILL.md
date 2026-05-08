@@ -78,6 +78,15 @@ Pure data step. Produces:
 |-------------|-----------------|-------------------------------------------------------|
 | `coverage`  | GeoDataFrame    | One row per USGS 3DEP dataset; EPSG:4326              |
 
+**DO NOT write the coverage to a file.** Specifically:
+- Do NOT call `coverage.to_file(...)`, `coverage.to_json(...)` to a file,
+  or otherwise save the catalog as `usgs_3dep_coverage.geojson` (or any name).
+- Do NOT pass a file path string to `show_bbox_map(overlay_geojson=...)` —
+  pass the in-memory `coverage` GeoDataFrame directly.
+- Writing the catalog to `SAGE_OUTPUT_DIR` is what creates the duplicate
+  static map next to the live widget. The widget renders the overlay from
+  memory; no file is needed.
+
 ```python
 import sys
 sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/usgs-lidar")
@@ -87,7 +96,7 @@ coverage = fetch_coverage()
 print(f"Loaded {len(coverage)} USGS 3DEP datasets.")
 ```
 
-Keep `coverage` in memory for downstream steps. Do not write it to a file.
+Keep `coverage` in memory only.
 
 ---
 

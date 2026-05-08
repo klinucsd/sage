@@ -168,6 +168,41 @@ the kernel-variables registry surfaces them in future requests automatically.
 See `sage-dropdown`'s SKILL.md for full reactive-mode semantics
 (`items_fn`, `observes`, `placeholder` vs `no_items_message`).
 
+### info_template — keep it simple, no Python expressions inside `{...}`
+
+Format-string fields can only do standard `.format()` specs (e.g. `{name}`,
+`{count:,}`, `{value:.2f}`). Python conditionals and method calls are NOT
+supported — `{est:, if est else 'Unknown'}` raises a ValueError and the user
+will see broken output.
+
+If a field can be `None` or `0`, do one of:
+
+1. **Pre-format in `items_fn`**: have the function add a string field to each
+   item (e.g. `est_str`) and reference `{est_str}` in the template. This
+   keeps the template clean.
+
+   ```python
+   def _items():
+       bbox = globals().get("USER_BBOX")
+       if not bbox:
+           return []
+       items = filter_by_bbox(coverage, bbox)
+       for d in items:
+           d["est_str"] = f"~{d['est']:,} pts" if d.get("est") else "?"
+       return items
+
+   show_dropdown(
+       items_fn=_items,
+       label_template="{name}  ({est_str})",
+       info_template="Dataset: {name}\nURL: {url}\nEst. in bbox: {est_str}",
+       ...
+   )
+   ```
+
+2. **Rely on standard format specs** when the field is numeric and always
+   present (zero is acceptable in the output): `{est:,} pts` works for
+   `est=0` (renders as `0 pts`) and `est=5306053` (renders as `5,306,053 pts`).
+
 ## Execution rules
 
 - Save your script to a `.py` file with `write_file`, then run it with `python /path/to/script.py`. Never use heredoc. Never chain commands with `&&`.

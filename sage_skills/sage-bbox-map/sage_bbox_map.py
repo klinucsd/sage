@@ -397,3 +397,13 @@ def show_bbox_map(
     else:
         display(m, exclude=["text/plain"])
     display(status_html, clear_btn, exclude=["text/plain"])
+
+    # Tell sage_magic.py's auto-display logic that this cell already rendered a
+    # live map. Suppresses the static-Folium fallback that would otherwise pick
+    # up any GeoJSON the agent wrote to SAGE_OUTPUT_DIR (e.g. coverage catalog)
+    # and produce a duplicate map next to this widget.
+    try:
+        import inspect as _inspect
+        _inspect.currentframe().f_back.f_globals["_sage_widget_map_rendered"] = True
+    except Exception:
+        pass
