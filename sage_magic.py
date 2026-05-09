@@ -583,6 +583,56 @@ def _update_color_registry(new_files: list[str]) -> None:
         _save_color_registry(registry)
 
 
+def _hue_family(hex_color: str) -> str:
+    """Map a hex color (e.g. '#e74c3c') to a hue-family name.
+
+    Returns one of: red, orange, yellow, green, teal, blue, purple, magenta,
+    or 'neutral' for near-grayscale colors (very low saturation or extreme
+    lightness). '?' if the input can't be parsed.
+    """
+    import colorsys
+    try:
+        h = hex_color.lstrip("#")
+        r = int(h[0:2], 16) / 255.0
+        g = int(h[2:4], 16) / 255.0
+        b = int(h[4:6], 16) / 255.0
+    except (ValueError, IndexError):
+        return "?"
+    hue, light, sat = colorsys.rgb_to_hls(r, g, b)
+    if sat < 0.20 or light < 0.15 or light > 0.92:
+        return "neutral"
+    deg = hue * 360.0
+    if deg < 15 or deg >= 345:
+        return "red"
+    if deg < 45:
+        return "orange"
+    if deg < 70:
+        return "yellow"
+    if deg < 160:
+        return "green"
+    if deg < 200:
+        return "teal"
+    if deg < 240:
+        return "blue"
+    if deg < 290:
+        return "purple"
+    return "magenta"
+
+
+# Suggested categorical palettes per hue family — the agent can copy these
+# verbatim when defining a new scheme so distinct layers stay visually distinct.
+_FAMILY_PALETTES = {
+    "red":     ["#fee5d9", "#fcae91", "#fb6a4a", "#de2d26", "#a50f15"],
+    "orange":  ["#feedde", "#fdbe85", "#fd8d3c", "#e6550d", "#a63603"],
+    "yellow":  ["#ffffd4", "#fee391", "#fec44f", "#fe9929", "#cc4c02"],
+    "green":   ["#edf8e9", "#bae4b3", "#74c476", "#31a354", "#006d2c"],
+    "teal":    ["#edf8fb", "#b2e2e2", "#66c2a4", "#2ca25f", "#006d2c"],
+    "blue":    ["#eff3ff", "#bdd7e7", "#6baed6", "#3182bd", "#08519c"],
+    "purple":  ["#f2f0f7", "#cbc9e2", "#9e9ac8", "#756bb1", "#54278f"],
+    "magenta": ["#feebe2", "#fbb4b9", "#f768a1", "#c51b8a", "#7a0177"],
+}
+
+
 def _color_registry_prompt() -> str:
     """Build the EXISTING CLASSIFICATIONS prompt block from the color registry.
 
@@ -609,6 +659,38 @@ def _color_registry_prompt() -> str:
         for color, owner in sorted(color_owners.items())
     )
 
+    # Hue-family awareness: identify which families are already in use, and
+    # recommend distinct families (with concrete suggested palettes) for new
+    # layers. This catches the case where the FORBIDDEN list lets the agent
+    # pick a "different red" (#d62728 vs #e74c3c) that looks identical to
+    # the user — exact-hex blocking isn't enough for visual distinction.
+    families_in_use = sorted({
+        f for f in (_hue_family(c) for c in color_owners)
+        if f not in ("neutral", "?")
+    })
+    suggested_families = [
+        f for f in ("blue", "green", "purple", "orange", "teal", "red", "yellow", "magenta")
+        if f not in families_in_use
+    ][:3]
+    family_section = ""
+    if families_in_use:
+        suggestion_lines = []
+        for fam in suggested_families:
+            palette_str = ", ".join(_FAMILY_PALETTES[fam])
+            suggestion_lines.append(f"  {fam}: {palette_str}")
+        family_section = (
+            "HUE FAMILIES IN USE — these hue families are already assigned to "
+            "existing layers: " + ", ".join(families_in_use) + ". "
+            "When defining a new categorical scheme, choose colors from a DIFFERENT "
+            "hue family so distinct layers are visually distinguishable on a shared map. "
+            "Picking a near-shade of an in-use family (e.g. a different red when red is "
+            "already used) is NOT acceptable — exact-hex difference does not give visual "
+            "distinction. Suggested palettes for unused families (copy verbatim, "
+            "lightest→darkest):\n"
+            + "\n".join(suggestion_lines)
+            + "\n"
+        )
+
     block = (
         "EXISTING CLASSIFICATION SCHEMES — earlier cells (or a previous session) of "
         "this notebook have established these schemes. "
@@ -624,6 +706,7 @@ def _color_registry_prompt() -> str:
         "wrong and confuse the user:\n"
         + forbidden_lines
         + "\n"
+        + family_section
     )
     return block
 
