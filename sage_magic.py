@@ -329,6 +329,107 @@ def _get_cell_id() -> str | None:
         return None
 
 
+def _reconstruct_messages_from_notebook(stop_at_cell_id: str | None = None) -> list:
+    """Read the on-disk .ipynb and extract %ask conversation history.
+
+    Used to restore SAGE_MESSAGES after a kernel restart so the agent has
+    cross-cell memory without forcing the user to re-run every prior cell.
+
+    Walks the notebook top-to-bottom in document order. For each code cell
+    that begins with %ask or %%ask:
+      - The cell source (after the magic line) becomes a "user" message.
+      - All text/markdown display_data outputs are concatenated as the
+        "assistant" message (this captures the agent's final report,
+        including any inline file rendering).
+
+    **Stops** when it reaches the cell whose id is `stop_at_cell_id` (the
+    currently-running cell). Cells after the current one are NOT included —
+    they came *after* this one in the conversation and were built on this
+    cell's prior output, which we're about to overwrite. Including them
+    would feed the agent its own future.
+
+    Returns [] if the notebook can't be read or no prior %ask cells exist.
+    Lag note: the .ipynb on disk reflects the last autosave, so cells
+    executed in the last ~2 minutes without a save may not appear.
+    """
+    session = os.environ.get("JPY_SESSION_NAME", "")
+    if not session:
+        return []
+    nb_path = Path(session)
+    if not nb_path.is_absolute():
+        nb_path = Path.home() / nb_path
+    if not nb_path.exists():
+        return []
+
+    try:
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    messages: list = []
+    for cell in nb.get("cells", []):
+        if cell.get("cell_type") != "code":
+            continue
+        # Stop at the current cell — do NOT include cells after it (they
+        # came later in the conversation and built on this cell's prior output).
+        if stop_at_cell_id and cell.get("id") == stop_at_cell_id:
+            break
+
+        source = cell.get("source", [])
+        if isinstance(source, list):
+            source = "".join(source)
+        source = source.strip()
+        if not source:
+            continue
+
+        first_line, _, rest = source.partition("\n")
+        first_line = first_line.strip()
+        if first_line.startswith("%%ask"):
+            prompt = rest.strip()
+        elif first_line.startswith("%ask "):
+            prompt = first_line[len("%ask "):].strip()
+        else:
+            continue
+        if not prompt:
+            continue
+
+        # Concatenate all text/markdown blobs from display_data / execute_result outputs
+        response_parts = []
+        for out in cell.get("outputs", []):
+            if out.get("output_type") not in ("display_data", "execute_result"):
+                continue
+            data = out.get("data", {})
+            md = data.get("text/markdown")
+            if md is None:
+                continue
+            if isinstance(md, list):
+                md = "".join(md)
+            response_parts.append(md)
+        response = "\n".join(p.strip() for p in response_parts).strip()
+
+        cid = cell.get("id")
+        messages.append({"role": "user", "content": prompt, "cell_id": cid})
+        if response:
+            messages.append({"role": "assistant", "content": response, "cell_id": cid})
+
+    return messages
+
+
+def _truncate_messages_for_rerun(messages: list, cell_id: str | None) -> list:
+    """Remove all SAGE_MESSAGES entries belonging to `cell_id` and everything
+    that came after them. Called before each %ask so a rerun of a cell
+    doesn't leave stale entries (its own old answer + all subsequent cells'
+    history that was built on it) in the conversation. No-op if cell_id is
+    None or not found.
+    """
+    if not cell_id:
+        return messages
+    for i, m in enumerate(messages):
+        if m.get("cell_id") == cell_id:
+            return messages[:i]
+    return messages
+
+
 def _load_cell_registry() -> dict:
     """Load .sage_cells.json — maps cell_id → list of files it created."""
     p = Path(SAGE_OUTPUT_DIR) / ".sage_cells.json"
@@ -1140,7 +1241,12 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
         _skip_msg_id[0] = None
 
     # Pass full conversation history so the agent has cross-cell memory.
-    initial_messages = list(SAGE_MESSAGES) + [{"role": "user", "content": prompt}]
+    # Strip cell_id from saved messages — it's a SAGE-internal tag, not a
+    # field the LLM/LangGraph expects in the message schema.
+    initial_messages = (
+        [{"role": m["role"], "content": m["content"]} for m in SAGE_MESSAGES]
+        + [{"role": "user", "content": prompt}]
+    )
     async for chunk in agent.astream(
         {"messages": initial_messages},
         stream_mode="messages",
@@ -1313,6 +1419,24 @@ try:
                 "  3. os.environ['NRP_API_KEY'] = 'your_key'"
             )
             return
+
+        # Cross-cell conversation history management (must run before the agent):
+        #   1. On a fresh kernel (SAGE_MESSAGES empty), restore from notebook —
+        #      includes only cells *before* the current cell in document order.
+        #   2. On every %ask: if the current cell already has entries in
+        #      SAGE_MESSAGES (rerun), drop them along with everything after.
+        # Both paths use cell_id tags. SAGE_MESSAGES is therefore always a
+        # causally-correct prefix relative to the cell that's about to run.
+        global SAGE_MESSAGES
+        _current_cell_id = _get_cell_id()
+        if not SAGE_MESSAGES:
+            _restored = _reconstruct_messages_from_notebook(
+                stop_at_cell_id=_current_cell_id
+            )
+            if _restored:
+                SAGE_MESSAGES = _restored
+        else:
+            SAGE_MESSAGES = _truncate_messages_for_rerun(SAGE_MESSAGES, _current_cell_id)
 
         # True rerun: delete this cell's previous output files, kernel variables,
         # and registry entries — MUST happen BEFORE building the system prompt below,
@@ -1626,9 +1750,10 @@ try:
         with open(_log_path, "a", encoding="utf-8") as _lf:
             _lf.write(json.dumps(_log_entry) + "\n")
 
-        # Update conversation history for cross-cell memory
-        SAGE_MESSAGES.append({"role": "user", "content": prompt})
-        SAGE_MESSAGES.append({"role": "assistant", "content": final_text})
+        # Update conversation history for cross-cell memory.
+        # Tag each entry with cell_id so future reruns can truncate cleanly.
+        SAGE_MESSAGES.append({"role": "user", "content": prompt, "cell_id": cell_id})
+        SAGE_MESSAGES.append({"role": "assistant", "content": final_text, "cell_id": cell_id})
 
         # Auto-trust the notebook so HTML/JS outputs (maps, tool panels) are
         # not flagged as untrusted when the notebook is reopened.
