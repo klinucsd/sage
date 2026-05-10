@@ -36,6 +36,7 @@ show_bbox_map(
     overlay_geojson=None,     # optional path to a context layer
     overlay_color="#3388ff",
     overlay_name="Overlay",
+    max_area_km2=None,        # optional: reject rectangles exceeding this area
     set_by="sage-bbox-map",
 )
 ```
@@ -95,6 +96,27 @@ show_bbox_map(
     overlay_color="#e34a33",
     overlay_name="GOES Fires",
     set_by="sdge-goes-fire via sage-bbox-map",
+)
+```
+
+## Limiting the drawn bbox area
+
+When the user's prompt includes a constraint like "max 10000 sq km" or
+"only allow small areas", pass `max_area_km2`. Rectangles whose geodesic
+area exceeds the limit are rejected — the kernel variable stays None and
+the map's status message tells the user to draw a smaller box. **Do NOT
+reimplement the bbox map widget from scratch to add this constraint** —
+use this parameter.
+
+```python
+show_bbox_map(
+    bbox_var={"name": "USER_BBOX",
+              "description": "Bounding box drawn by user (max 10,000 km²)"},
+    center=(39.8, -98.6),
+    zoom=4,
+    max_area_km2=10000,                 # reject larger rectangles
+    header="Contiguous USA — Draw a Rectangle (max 10,000 km²)",
+    set_by="usa-bbox-map",
 )
 ```
 

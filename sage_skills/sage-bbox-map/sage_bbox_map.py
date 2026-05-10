@@ -124,6 +124,7 @@ def show_bbox_map(
     overlay_geojson=None,
     overlay_color="#3388ff",
     overlay_name="Overlay",
+    max_area_km2=None,
     set_by="sage-bbox-map",
 ):
     """Render an ipyleaflet map with a draw-rectangle tool that writes bbox to kernel.
@@ -139,6 +140,11 @@ def show_bbox_map(
         overlay_geojson: optional path to a GeoJSON file rendered as a context layer.
         overlay_color: hex color for the overlay layer.
         overlay_name: display name for the overlay layer in the layer control.
+        max_area_km2: optional float. If provided, rectangles whose geodesic area
+            exceeds this value are rejected — the kernel variable stays None,
+            the rejected bbox is removed from the map, and the status message
+            tells the user to draw a smaller rectangle. The area is computed on
+            the WGS84 ellipsoid using `pyproj.Geod`. None (default) = no limit.
         set_by: identifier for registry's set_by metadata.
 
     Returns:
@@ -235,8 +241,12 @@ def show_bbox_map(
     )
     m.add_control(draw_control)
 
+    _limit_hint = (
+        f" Maximum area: <b>{max_area_km2:,.0f} km²</b>."
+        if max_area_km2 is not None else ""
+    )
     status_html = widgets.HTML(
-        f"<i>Draw a rectangle to set <code>{var_name}</code>.</i>"
+        f"<i>Draw a rectangle to set <code>{var_name}</code>.{_limit_hint}</i>"
     )
     clear_btn = widgets.Button(
         description="Clear selection",
@@ -285,6 +295,25 @@ def show_bbox_map(
 
         geom = shape(geo_json["geometry"])
         bbox = geom.bounds  # (minx, miny, maxx, maxy) in EPSG:4326
+
+        # Optional area constraint
+        if max_area_km2 is not None:
+            try:
+                import pyproj
+                geod = pyproj.Geod(ellps="WGS84")
+                area_m2 = abs(geod.geometry_area_perimeter(geom)[0])
+                area_km2 = area_m2 / 1_000_000.0
+            except Exception:
+                area_km2 = None
+            if area_km2 is not None and area_km2 > max_area_km2:
+                status_html.value = (
+                    f"<b style='color:#c0392b;'>Area too large</b> — "
+                    f"selected rectangle is {area_km2:,.0f} km², limit is "
+                    f"{max_area_km2:,.0f} km². Draw a smaller rectangle."
+                )
+                # Don't write the bbox; user must redraw
+                return
+
         caller_ns[var_name] = bbox
         _register_kernel_var(
             cell_id, caller_ns, var_name, "tuple", var_desc, set_by

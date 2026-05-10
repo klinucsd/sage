@@ -221,10 +221,17 @@ class KernelShellBackend(LocalShellBackend):
         prev_argv = sys.argv
         prev_file = user_ns.get("__file__", None)
         prev_file_existed = "__file__" in user_ns
+        prev_name = user_ns.get("__name__", None)
+        prev_name_existed = "__name__" in user_ns
         prev_cwd = os.getcwd()
 
         sys.argv = argv if argv else [file_path]
         user_ns["__file__"] = file_path
+        # Force __name__ = "__main__" so agent-written `if __name__ == "__main__":`
+        # guards work the same way they would under `python script.py`. Without
+        # this, the value depends on whatever IPython left in user_ns, which has
+        # caused agent scripts to silently no-op when the guard mismatched.
+        user_ns["__name__"] = "__main__"
         try:
             os.chdir(str(self.cwd))
         except OSError:
@@ -347,6 +354,10 @@ class KernelShellBackend(LocalShellBackend):
                 user_ns["__file__"] = prev_file
             else:
                 user_ns.pop("__file__", None)
+            if prev_name_existed:
+                user_ns["__name__"] = prev_name
+            else:
+                user_ns.pop("__name__", None)
             try:
                 os.chdir(prev_cwd)
             except OSError:
