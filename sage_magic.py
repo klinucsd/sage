@@ -23,7 +23,7 @@ import asyncio
 import json
 import os
 import warnings
-from datetime import UTC, datetime
+from datetime import UTC as _SAGE_UTC, datetime as _SAGE_DATETIME
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -1824,7 +1824,7 @@ try:
         # Append run entry to .sage_run.jsonl (hidden file, cleared by %reset)
         _log_path = Path(SAGE_OUTPUT_DIR) / ".sage_run.jsonl"
         _log_entry = {
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": _SAGE_DATETIME.now(_SAGE_UTC).isoformat(),
             "prompt": prompt[:200] + ("…" if len(prompt) > 200 else ""),
             "elapsed_sec": _elapsed,
             "tool_calls": tool_counts,
