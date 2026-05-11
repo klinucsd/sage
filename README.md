@@ -87,6 +87,7 @@ See Sage in action across multiple scientific domains:
 | [exoplanet_transits.ipynb](examples/exoplanet_transits.ipynb) | Astronomy: NASA Exoplanet Archive catalog → interactive planet picker (`sage-dropdown`) → TESS/Kepler light curve from MAST → phase-folded transit → summary card with depth, duration, and Rp/Rs | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/exoplanet_transits.ipynb) |
 | [usgs_3dep.ipynb](examples/usgs_3dep.ipynb) | USGS 3DEP airborne LiDAR: interactive coverage map with reactive bbox → dataset dropdown linkage (`sage-bbox-map` + `sage-dropdown`) → Entwine Point Tile download → 3D preview → 1-meter DEM with `gdaldem` hillshade | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/usgs_3dep.ipynb) |
 | [vegetation_activities.ipynb](examples/vegetation_activities.ipynb) | California vegetation treatment tracking: Interagency Tracking System (ITS V2.0) ArcGIS Feature Service → prescribed fire and mechanical fuels reduction activities → year-over-year comparison by county | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/vegetation_activities.ipynb) |
+| [canopy_height.ipynb](examples/canopy_height.ipynb) | Forest canopy height prediction: GEDI L2A lidar ground truth → Sentinel-2 optical → Sentinel-1 SAR → COP30 topography; staged Random Forest comparison showing R² gain from each added data source | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/canopy_height.ipynb) |
 
 ---
 

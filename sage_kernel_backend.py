@@ -55,6 +55,13 @@ def _sage_capture_dispatcher(*objs, **kwargs):
             return _ORIG_DISPLAY(*objs, **kwargs)
         return None
     for _o in objs:
+        # tqdm.notebook progress-bar widgets hold weak refs to short-lived
+        # pbar objects. By flush time those refs are dead and rendering
+        # raises ReferenceError, which IPython prints as an inline traceback.
+        # Drop them at capture time — they're transient by design.
+        _mod = (getattr(type(_o), "__module__", "") or "")
+        if _mod.startswith("tqdm."):
+            continue
         _ACTIVE_CAPTURE.append((_o, kwargs))
 
 
@@ -298,8 +305,11 @@ class KernelShellBackend(LocalShellBackend):
             # Queue each captured widget object for display in the main cell
             # context. Do NOT wrap in an Output widget — the wrapper's own
             # model can't be registered from inside the async context.
+            # Only enqueue on success — failed runs may have produced partial
+            # widgets that would appear as duplicates alongside the retry's output.
             pending = user_ns.setdefault("_sage_pending_displays", [])
-            pending.extend(_captured_objs)
+            if exit_code == 0:
+                pending.extend(_captured_objs)
 
             # --- DEBUG log ---
             try:

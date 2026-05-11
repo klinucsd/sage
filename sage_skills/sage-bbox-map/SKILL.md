@@ -229,6 +229,7 @@ If a field can be `None` or `0`, do one of:
 
 - Save your script to a `.py` file with `write_file`, then run it with `python /path/to/script.py`. Never use heredoc. Never chain commands with `&&`.
 - Do NOT create your own `ipyleaflet.Map` — call `show_bbox_map` and let it render.
+- Do NOT write your own area-validation function or wrapper around `show_bbox_map`. If you need to limit the drawn bbox size, pass `max_area_km2=<value>` to `show_bbox_map`. Copy the example below exactly; do not rename or wrap it.
 - Do NOT hardcode the bbox variable name. Pick a name that fits the data domain.
 - Do NOT skip `description` in `bbox_var` — it's how downstream cells understand what the bbox represents.
 - For `overlay_geojson`, pass an in-memory dict or GeoDataFrame, NOT a file path. If you write the coverage to a file the agent may pick it up and reference it in a `![](...)` map tag, producing a duplicate static Folium map next to the live ipyleaflet widget.

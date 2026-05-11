@@ -296,7 +296,8 @@ def show_bbox_map(
         geom = shape(geo_json["geometry"])
         bbox = geom.bounds  # (minx, miny, maxx, maxy) in EPSG:4326
 
-        # Optional area constraint
+        # Optional area constraint (also used to show area in success message)
+        area_km2 = None
         if max_area_km2 is not None:
             try:
                 import pyproj
@@ -329,9 +330,10 @@ def show_bbox_map(
         m.add_layer(new_layer)
         bbox_layer_ref[0] = new_layer
 
+        _area_str = f" — {area_km2:,.0f} km²" if area_km2 is not None else ""
         status_html.value = (
             f"<b>{var_name}</b> = ({bbox[0]:.4f}, {bbox[1]:.4f}, "
-            f"{bbox[2]:.4f}, {bbox[3]:.4f})"
+            f"{bbox[2]:.4f}, {bbox[3]:.4f}){_area_str}"
         )
         clear_btn.layout.display = ""
 
@@ -375,57 +377,14 @@ def show_bbox_map(
 </script>
 ''')
 
-    # Build a static Folium fallback for nbviewer / GitHub. The dual mime
-    # bundle below sends BOTH the live ipyleaflet widget view AND a static
-    # text/html representation; renderers pick whichever they support.
-    # To roll back: replace this whole block (down to the final display()
-    # calls) with the single original line:
-    #   display(reopen_notice, widgets.HTML(f"<h3>{header}</h3>"), m,
-    #           status_html, clear_btn, exclude=["text/plain"])
-    static_html = ""
-    try:
-        import folium as _folium
-
-        # `data` was already slimmed above before being given to the live
-        # widget, so we reuse it directly here without a second pass.
-        _fmap = _folium.Map(location=list(center), zoom_start=zoom, height=height)
-        if data is not None:
-            _folium.GeoJson(
-                data,
-                name=overlay_name,
-                style_function=lambda f: {
-                    "color": (f.get("properties") or {}).get("_color", overlay_color),
-                    "weight": 1, "opacity": 0.8,
-                    "fillColor": (f.get("properties") or {}).get("_color", overlay_color),
-                    "fillOpacity": 0.3,
-                },
-            ).add_to(_fmap)
-        # Wrap in a fixed-height container so the static fallback matches the
-        # requested widget height regardless of folium's iframe defaults.
-        static_html = (
-            f'<div style="height:{height}; max-height:{height}; overflow:hidden;">'
-            f"{_fmap._repr_html_()}"
-            f"</div>"
-        )
-    except Exception:
-        static_html = ""
-
-    display(reopen_notice, widgets.HTML(f"<h3>{header}</h3>"), exclude=["text/plain"])
-    if static_html and getattr(m, "_model_id", None):
-        display(
-            {
-                "application/vnd.jupyter.widget-view+json": {
-                    "version_major": 2,
-                    "version_minor": 0,
-                    "model_id": m._model_id,
-                },
-                "text/html": static_html,
-            },
-            raw=True,
-        )
-    else:
-        display(m, exclude=["text/plain"])
-    display(status_html, clear_btn, exclude=["text/plain"])
+    display(
+        reopen_notice,
+        widgets.HTML(f"<h3>{header}</h3>"),
+        m,
+        status_html,
+        clear_btn,
+        exclude=["text/plain"],
+    )
 
     # Tell sage_magic.py's auto-display logic that this cell already rendered a
     # live map. Suppresses the static-Folium fallback that would otherwise pick
