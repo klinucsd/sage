@@ -151,6 +151,12 @@ class KernelShellBackend(LocalShellBackend):
     """
 
     def __init__(self, *args, **kwargs) -> None:
+        # LocalShellBackend defaults to inherit_env=False, which gives shell
+        # subprocesses an empty environment — so dotenv-loaded API tokens and
+        # JupyterHub-injected variables (WORKSPACE_API_URL, ACCESS_TOKEN, etc.)
+        # are invisible to agent-issued `curl`/`echo`/etc. commands. Inside a
+        # live kernel we want the user's environment, so flip the default.
+        kwargs.setdefault("inherit_env", True)
         super().__init__(*args, **kwargs)
         try:
             from IPython import get_ipython

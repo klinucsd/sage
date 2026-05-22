@@ -1047,25 +1047,53 @@ def _display_png(path: Path, caption: str = None) -> None:
 
 
 def _display_new_outputs(new: list) -> None:
-    new_paths = [Path(f) for f in new]
+    """Auto-display for new CSVs / PNGs / map layers — INTENTIONALLY DISABLED.
 
-    # If any new GeoJSON or WMS layers: re-render combined map with ALL layers in output dir
-    has_new_map_layer = any(
-        p.suffix == ".geojson" or p.name.endswith(".wms.json")
-        for p in new_paths
-    )
-    if has_new_map_layer:
-        all_geojsons = sorted(Path(SAGE_OUTPUT_DIR).rglob("*.geojson"))
-        all_wms = sorted(Path(SAGE_OUTPUT_DIR).rglob("*.wms.json"))
-        if all_geojsons or all_wms:
-            _display_combined_map(all_geojsons, all_wms)
+    Kept as a documented no-op stub so the design can be revisited.
 
-    # Show new CSVs and PNGs (per-run)
-    for path in sorted(new_paths, key=lambda p: (p.suffix, str(p))):
-        if path.suffix == ".csv":
-            _display_csv(path)
-        elif path.suffix == ".png":
-            _display_png(path)
+    DESIGN DECISION — 2026-05-14, v1.1.18
+    -------------------------------------
+    Disabling this completes the "display is agent-driven" rule that v1.1.17
+    started for map layers (GeoJSON / WMS), and now extends to CSV / PNG.
+
+    Why disabled (the duplicate-display problem):
+      - The agent typically already shows results inside its executed code
+        via `plt.show()`, `display(df)`, `display(Image(...))`, etc., and
+        those displays are captured by KernelShellBackend's display hook.
+      - When the agent ALSO saves the file to disk (e.g.
+        `plt.savefig('chart.png'); plt.show()`), the previous behavior of
+        auto-displaying every new CSV / PNG produced a **duplicate** render
+        — once via the captured display, once via this function.
+      - A simple cap (e.g. show first N files) was considered but only bounds
+        the volume; it does not eliminate the duplicate-display class of bug.
+
+    Current rule (display is agent-driven):
+      • To show a result inline, the agent's code calls `display(...)` /
+        `plt.show()` (captured during exec by KernelShellBackend), OR the
+        agent's final response includes an inline
+        `![caption](file.csv,file.png,file.geojson)` tag, which
+        `_render_markdown_with_files` resolves to the right renderer.
+      • Files saved to disk WITHOUT either of the above remain on disk
+        only — they do NOT auto-render. The user can inspect them
+        explicitly in a follow-up cell.
+
+    User-facing benefit:
+      • No surprise output when a cell saves many data files (e.g. project
+        downloads with hundreds of nested CSV / PNG / GeoJSON files).
+      • No duplicate renders when the agent both shows AND saves a chart.
+      • Consistent rule across all file types — predictable, "what the
+        agent asks for is what the user sees."
+
+    To revisit (e.g. if save-without-show patterns become common):
+      1. Restore a per-file `_display_csv` / `_display_png` loop here.
+      2. Pair it with a cap (e.g. 3 files) to bound volume.
+      3. Pair it with a dedup pass against `_sage_pending_displays` so
+         already-captured displays don't render twice.
+      Without all three of those guards, re-enabling this function will
+      regress to the same duplicate/wall-of-output behavior that motivated
+      this change.
+    """
+    return
 
 
 # ---------------------------------------------------------------------------
@@ -1459,6 +1487,225 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
 
 def _resolve_api_key() -> str | None:
     return os.environ.get("NRP_API_KEY")
+
+
+# ---------------------------------------------------------------------------
+# %%skill — install skills from local paths or GitHub URLs
+# ---------------------------------------------------------------------------
+# Security model (see project_sage_skill_magic.md):
+#   1. Local paths: trusted (user controls the filesystem). No prompt.
+#   2. GitHub URLs from allowlisted orgs: no prompt, but commit pinning enforced.
+#   3. GitHub URLs from unknown orgs: batch trust prompt with SKILL.md preview.
+#   4. Branch refs (main/master/develop/...) rejected — pin to a commit SHA.
+#
+# Two attack surfaces this guards against:
+#   - Malicious helper module code that runs when the agent imports the skill.
+#   - Prompt injection in SKILL.md that gets followed by the LLM.
+
+_SAGE_SKILLS_DIR    = Path.home() / ".deepagents" / "agent" / "skills"
+_SAGE_SKILL_CACHE   = Path.home() / ".deepagents" / "agent" / "_skill_cache"
+_SAGE_TRUSTED_ORGS  = Path.home() / ".deepagents" / ".sage_trusted_orgs.json"
+_SAGE_TRUSTED_ORGS_DEFAULT = {
+    "_comment": "GitHub orgs whose skills install without a trust prompt. "
+                "The commit-pinning rule still applies — branch refs are always rejected.",
+    "orgs": ["klinucsd"],
+}
+_SAGE_BRANCH_LIKE = {"main", "master", "develop", "dev", "trunk", "head"}
+_SAGE_COMMIT_SHA_RE = __import__("re").compile(r"^[0-9a-f]{40}$")
+_SAGE_GITHUB_RE = __import__("re").compile(
+    r"^(?:https?://)?github\.com/"
+    r"(?P<org>[\w.-]+)/(?P<repo>[\w.-]+)/tree/"
+    r"(?P<ref>[\w.-]+)"
+    r"(?P<subpath>(?:/[\w.-]+)*)/?$"
+)
+
+
+def _sage_load_trusted_orgs():
+    """Load (or create) the trusted-orgs allowlist. Returns a set of org names."""
+    if not _SAGE_TRUSTED_ORGS.exists():
+        try:
+            _SAGE_TRUSTED_ORGS.parent.mkdir(parents=True, exist_ok=True)
+            _SAGE_TRUSTED_ORGS.write_text(json.dumps(_SAGE_TRUSTED_ORGS_DEFAULT, indent=2))
+        except Exception:
+            pass
+    try:
+        data = json.loads(_SAGE_TRUSTED_ORGS.read_text())
+        return set(data.get("orgs", []))
+    except Exception:
+        return set(_SAGE_TRUSTED_ORGS_DEFAULT["orgs"])
+
+
+def _sage_parse_skill_entry(raw):
+    """Parse one %%skill line. Returns a dict with kind in:
+    {'github', 'local', 'error', 'skip'} or None for blank/comment.
+    """
+    line = (raw or "").strip()
+    if not line or line.startswith("#"):
+        return None
+
+    m = _SAGE_GITHUB_RE.match(line)
+    if m:
+        subpath = m.group("subpath").lstrip("/")
+        return {
+            "kind": "github",
+            "raw": raw,
+            "org": m.group("org"),
+            "repo": m.group("repo"),
+            "ref": m.group("ref"),
+            "subpath": subpath,
+            "skill_name": Path(subpath).name if subpath else m.group("repo"),
+            "url": line,
+        }
+
+    if line.startswith(("/", "~", "./", "../")):
+        try:
+            path = Path(line).expanduser().resolve()
+        except Exception as e:
+            return {"kind": "error", "raw": raw, "error": f"Failed to resolve path: {e}"}
+        return {
+            "kind": "local",
+            "raw": raw,
+            "path": path,
+            "skill_name": path.name,
+            "url": str(path),
+        }
+
+    return {"kind": "error", "raw": raw,
+            "error": "Not a recognized GitHub URL or local path "
+                     "(expected `github.com/.../tree/<SHA>/...` or a path starting with `/`, `~`, or `./`)"}
+
+
+def _sage_classify_ref(ref):
+    """Returns one of: 'sha', 'tag', 'branch'.
+    SHA = 40-char hex (preferred, tamper-proof).
+    Branch = matches a known branch-like name (rejected).
+    Tag = anything else (accepted with warning).
+    """
+    if not ref:
+        return "branch"
+    if ref.lower() in _SAGE_BRANCH_LIKE:
+        return "branch"
+    if _SAGE_COMMIT_SHA_RE.match(ref):
+        return "sha"
+    return "tag"
+
+
+def _sage_read_skill_md(skill_dir):
+    """Best-effort: read description from SKILL.md frontmatter or body."""
+    import re as _re
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.exists():
+        return None
+    try:
+        text = skill_md.read_text(errors="replace")
+    except Exception:
+        return None
+    # YAML frontmatter description
+    m = _re.search(r'^description:\s*(.+?)$', text, _re.MULTILINE)
+    if m:
+        return m.group(1).strip().strip('"').strip("'")
+    # First non-blank, non-heading line after any frontmatter
+    body = text
+    if text.startswith("---"):
+        parts = text.split("---", 2)
+        if len(parts) >= 3:
+            body = parts[2]
+    for ln in body.splitlines():
+        ln = ln.strip()
+        if ln and not ln.startswith("#"):
+            return ln[:400]
+    return None
+
+
+def _sage_list_skill_files(skill_dir, limit=20):
+    """List files in a skill directory with sizes, capped at `limit`."""
+    files = []
+    truncated = 0
+    for f in sorted(skill_dir.rglob("*")):
+        if not f.is_file() or "__pycache__" in f.parts:
+            continue
+        if len(files) >= limit:
+            truncated += 1
+            continue
+        try:
+            size = f.stat().st_size
+        except Exception:
+            size = 0
+        files.append((str(f.relative_to(skill_dir)), size))
+    return files, truncated
+
+
+def _sage_clone_github_subtree(org, repo, ref, subpath):
+    """Clone (or reuse cached) GitHub subtree at a specific ref.
+    Returns (subtree_dir_or_None, error_or_None)."""
+    import subprocess
+    cache_key = f"{org}__{repo}__{ref}"
+    cache_dir = _SAGE_SKILL_CACHE / cache_key
+    if cache_dir.exists():
+        target = cache_dir / subpath if subpath else cache_dir
+        if not target.exists():
+            return None, f"Cached but subpath {subpath!r} missing in {cache_dir}"
+        return target, None
+    cache_dir.parent.mkdir(parents=True, exist_ok=True)
+    clone_url = f"https://github.com/{org}/{repo}.git"
+    try:
+        subprocess.run(
+            ["git", "clone", "--quiet", "--no-checkout",
+             "--filter=blob:none", clone_url, str(cache_dir)],
+            check=True, capture_output=True, text=True,
+        )
+        if subpath:
+            subprocess.run(
+                ["git", "-C", str(cache_dir), "sparse-checkout", "set", subpath],
+                check=True, capture_output=True, text=True,
+            )
+        subprocess.run(
+            ["git", "-C", str(cache_dir), "checkout", "--quiet", ref],
+            check=True, capture_output=True, text=True,
+        )
+    except subprocess.CalledProcessError as e:
+        # Clean up partial clone
+        try:
+            import shutil
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+        except Exception:
+            pass
+        msg = (e.stderr or "").strip() or str(e)
+        return None, f"git clone/checkout failed: {msg}"
+    except FileNotFoundError:
+        return None, "`git` command not found on PATH"
+
+    target = cache_dir / subpath if subpath else cache_dir
+    if not target.exists():
+        return None, f"Subpath {subpath!r} not found in {org}/{repo}@{ref}"
+    return target, None
+
+
+def _sage_install_skill_dir(src_dir, skill_name):
+    """Copy src_dir → ~/.deepagents/agent/skills/<skill_name>/ (overwriting).
+
+    Guards against the self-destructive case where src and dest are the same
+    directory (e.g. user runs `%%skill` pointing at an already-installed
+    skill's path). Without this guard, `shutil.rmtree(dest)` would delete the
+    source, and `copytree` would then fail.
+    """
+    import shutil
+    _SAGE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = _SAGE_SKILLS_DIR / skill_name
+    src_dir = Path(src_dir)
+    # No-op when src IS dest. Use samefile() to handle symlinks correctly.
+    if dest.exists() and src_dir.exists():
+        try:
+            if dest.samefile(src_dir):
+                return dest
+        except OSError:
+            pass
+    if dest.exists():
+        shutil.rmtree(dest)
+    shutil.copytree(src_dir, dest,
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git", ".gitignore"))
+    return dest
 
 
 # ---------------------------------------------------------------------------
@@ -1906,20 +2153,10 @@ try:
                 # Still show non-map outputs (CSV, PNG) but skip auto-Folium.
                 _display_new_outputs([f for f in new
                                       if not (f.endswith('.geojson') or f.endswith('.wms.json'))])
-        elif new:
-            # Inline rendering found file refs. Auto-display new GeoJSON/WMS only
-            # if no map was actually rendered (e.g. agent referenced a PNG but its
-            # GeoJSON path was wrong or omitted entirely).
-            if not map_rendered and not widget_map_rendered:
-                new_maps = [
-                    f for f in new
-                    if f.endswith('.geojson') or f.endswith('.wms.json')
-                ]
-                if new_maps:
-                    all_geojsons = sorted(Path(SAGE_OUTPUT_DIR).rglob("*.geojson"))
-                    all_wms = sorted(Path(SAGE_OUTPUT_DIR).rglob("*.wms.json"))
-                    if all_geojsons or all_wms:
-                        _display_combined_map(all_geojsons, all_wms)
+        # Map rendering is agent-driven via inline `![](*.geojson)` tags
+        # parsed in `_render_markdown_with_files`. There is no fallback that
+        # stacks the output directory — if the agent did not specify map
+        # layers in its response, none are rendered.
 
     del ask  # keep IPython namespace clean
 
@@ -2032,6 +2269,180 @@ try:
 """))
 
     del reset  # keep IPython namespace clean
+
+    # -----------------------------------------------------------------------
+    # %%skill — install skills from local paths or GitHub URLs
+    # -----------------------------------------------------------------------
+    from IPython.core.magic import register_cell_magic
+
+    @register_cell_magic
+    def skill(line, cell):
+        """Install Sage skills from local paths or GitHub URLs.
+
+        Usage:
+            %%skill
+            /home/jovyan/private_skills/my-skill
+            ~/another_skill
+            https://github.com/<org>/<repo>/tree/<COMMIT_SHA>/path/to/skill
+            # blank lines and comments are ignored
+
+        Security model:
+          - Local paths: installed silently (you control the filesystem).
+          - GitHub URLs from allowlisted orgs (~/.deepagents/.sage_trusted_orgs.json):
+            installed silently, but ref must be a pinned commit SHA or tag.
+          - GitHub URLs from unknown orgs: collected into a single trust prompt
+            showing SKILL.md descriptions + helper file lists. Type 'y' to install
+            all listed skills, anything else to abort.
+          - Branch refs (main/master/develop/...) are always rejected.
+        """
+        from IPython.display import display, HTML
+
+        entries = []
+        errors = []
+        for raw in cell.splitlines():
+            parsed = _sage_parse_skill_entry(raw)
+            if parsed is None:
+                continue
+            if parsed["kind"] == "error":
+                errors.append(parsed)
+            else:
+                entries.append(parsed)
+
+        if not entries and not errors:
+            display(HTML("<div style='color:#888'>%%skill: nothing to install (empty cell)</div>"))
+            return
+
+        # Categorize
+        trusted_orgs = _sage_load_trusted_orgs()
+        auto_install = []   # local paths + trusted-org URLs
+        needs_prompt = []   # unknown-org URLs
+        rejected = list(errors)  # parse errors
+
+        for e in entries:
+            if e["kind"] == "local":
+                if not e["path"].exists():
+                    e["error"] = f"path does not exist: {e['path']}"
+                    rejected.append(e); continue
+                if not e["path"].is_dir():
+                    e["error"] = f"path is not a directory: {e['path']}"
+                    rejected.append(e); continue
+                if not (e["path"] / "SKILL.md").exists():
+                    e["error"] = f"no SKILL.md in {e['path']}"
+                    rejected.append(e); continue
+                auto_install.append(e)
+            elif e["kind"] == "github":
+                ref_kind = _sage_classify_ref(e["ref"])
+                if ref_kind == "branch":
+                    e["error"] = (f"branch ref '{e['ref']}' is not pinned — "
+                                  "use a commit SHA (preferred) or tag")
+                    rejected.append(e); continue
+                e["ref_kind"] = ref_kind
+                if e["org"] in trusted_orgs:
+                    auto_install.append(e)
+                else:
+                    needs_prompt.append(e)
+
+        # Clone all GitHub entries up front (clone is side-effect-free until copytree)
+        for e in (auto_install + needs_prompt):
+            if e["kind"] != "github":
+                continue
+            subtree, err = _sage_clone_github_subtree(
+                e["org"], e["repo"], e["ref"], e["subpath"]
+            )
+            if err:
+                e["error"] = err
+                # Move from its current list to rejected
+                if e in auto_install: auto_install.remove(e)
+                if e in needs_prompt: needs_prompt.remove(e)
+                rejected.append(e)
+            else:
+                e["src_dir"] = subtree
+
+        # Validate cloned skills have SKILL.md
+        for lst in (auto_install, needs_prompt):
+            for e in list(lst):
+                if e["kind"] == "github" and "src_dir" in e:
+                    if not (e["src_dir"] / "SKILL.md").exists():
+                        e["error"] = f"no SKILL.md in {e['org']}/{e['repo']}@{e['ref'][:12]}/{e['subpath']}"
+                        lst.remove(e)
+                        rejected.append(e)
+
+        # Build trust prompt for unknown-org entries
+        if needs_prompt:
+            print()
+            print("=" * 70)
+            print(f"⚠  {len(needs_prompt)} skill(s) from non-allowlisted GitHub org(s)")
+            print("=" * 70)
+            print()
+            print("Skills are arbitrary Python that runs in this kernel with your")
+            print("permissions. Read the previews below before approving.")
+            print()
+            for e in needs_prompt:
+                desc = _sage_read_skill_md(e["src_dir"]) or "(no description in SKILL.md)"
+                files, more = _sage_list_skill_files(e["src_dir"], limit=15)
+                print(f"  📦 {e['skill_name']}")
+                print(f"     source:    https://github.com/{e['org']}/{e['repo']}/tree/{e['ref']}/{e['subpath']}")
+                print(f"     ref kind:  {e['ref_kind']}{' ⚠ tags can be moved — SHA preferred' if e['ref_kind']=='tag' else ''}")
+                print(f"     org:       {e['org']}  (not in ~/.deepagents/.sage_trusted_orgs.json)")
+                print(f"     describes: {desc[:300]}")
+                print(f"     files     ({len(files)}{'+'+str(more) if more else ''}):")
+                for fname, size in files:
+                    print(f"        {fname}  ({size:,} bytes)")
+                if more:
+                    print(f"        ... and {more} more")
+                print()
+
+            try:
+                response = input(
+                    f"Type 'y' to install all {len(needs_prompt)} unknown-org skill(s), "
+                    f"anything else to abort: "
+                ).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                response = ""
+            if response not in ("y", "yes"):
+                print(f"Aborted: {len(needs_prompt)} unknown-org skill(s) NOT installed.")
+                # The auto_install set still proceeds (they're trusted)
+                for e in needs_prompt:
+                    e["error"] = "user declined trust prompt"
+                    rejected.append(e)
+                needs_prompt = []
+
+        # Install everything that survived
+        installed = []
+        for e in (auto_install + needs_prompt):
+            src = e["src_dir"] if e["kind"] == "github" else e["path"]
+            try:
+                dest = _sage_install_skill_dir(src, e["skill_name"])
+                e["dest"] = dest
+                installed.append(e)
+            except Exception as ex:
+                e["error"] = f"install failed: {ex}"
+                rejected.append(e)
+
+        # Render summary as a Markdown panel
+        lines = ["### `%%skill` install summary", ""]
+        if installed:
+            lines.append(f"✅ **Installed ({len(installed)})** — available in the next `%%ask` cell:")
+            for e in installed:
+                if e["kind"] == "local":
+                    src_lbl = f"`{e['path']}`"
+                else:
+                    src_lbl = f"`{e['org']}/{e['repo']}@{e['ref'][:12]}/{e['subpath']}`"
+                lines.append(f"- **{e['skill_name']}** ← {src_lbl}")
+            lines.append("")
+        if rejected:
+            lines.append(f"⛔ **Not installed ({len(rejected)})**:")
+            for e in rejected:
+                label = e.get("skill_name") or e.get("raw", "").strip() or "?"
+                lines.append(f"- **{label}**: {e.get('error', 'unknown error')}")
+            lines.append("")
+        if not installed and not rejected:
+            lines.append("*(no skills processed)*")
+        display(HTML("<hr/>"))
+        from IPython.display import Markdown
+        display(Markdown("\n".join(lines)))
+
+    del skill  # keep IPython namespace clean
 
 except Exception as exc:
     warnings.warn(

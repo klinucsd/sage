@@ -47,13 +47,20 @@ RUN apt-get update && apt-get install -y \
 # Step 1: Install DeepAgents CLI
 # -----------------------------------------------------------------------------
 # [openai] extra provides langchain-openai (ChatOpenAI) for NRP's GLM endpoint
-RUN pip install --no-cache-dir "deepagents-cli[openai]" nest_asyncio folium geopandas matplotlib rasterio \
-    ipywidgets ipyleaflet leafmap plotly
+RUN pip install --no-cache-dir "deepagents-cli[openai]==0.0.41" nest_asyncio folium geopandas matplotlib rasterio \
+    ipywidgets ipyleaflet leafmap plotly pypdf openpyxl tomli-w
 
 # Install PDAL via conda before pyforestscan — pip cannot build pdal from source without
 # the system PDAL library, and pyforestscan pulls it in as a dependency.
 RUN conda install -y -c conda-forge pdal python-pdal && conda clean -afy && \
     pip install --no-cache-dir pyforestscan laspy
+
+# Google Drive client libraries used by ndp-workspaces / ndp-projects to fetch
+# Drive resources when a shared review-account token is present in CephBlock.
+# Bake into the image so the skill code doesn't have to pip install --user at
+# runtime (which on this image triggers a split-install + namespace-package
+# cache trap that requires a kernel restart to clear).
+RUN pip install --no-cache-dir google-api-python-client google-auth-oauthlib google-api-core
 
 # -----------------------------------------------------------------------------
 # Step 2: Copy Assets
