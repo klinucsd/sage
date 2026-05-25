@@ -26,6 +26,176 @@ import warnings
 from datetime import UTC as _SAGE_UTC, datetime as _SAGE_DATETIME
 from pathlib import Path
 
+
+def _sage_pip_artifact_cleanup():
+    """Remove partial pip-install artifacts (~package directories) from
+    site-packages. NRP pod startup and failed `pip install` (no --user)
+    attempts leave these behind, and every subsequent pip op then prints
+    noisy 'Ignoring invalid distribution ~xxx' warnings that pollute cell
+    output. Idempotent and silent on systems without matching paths."""
+    import glob as _glob
+    import os as _os
+    import shutil as _shutil
+    for entry in _glob.glob("/opt/conda/lib/python*/site-packages/~*"):
+        try:
+            if _os.path.isdir(entry):
+                _shutil.rmtree(entry, ignore_errors=True)
+            else:
+                _os.remove(entry)
+        except Exception:
+            pass
+
+
+_sage_pip_artifact_cleanup()
+
+
+def _install_pip_subprocess_guard():
+    """Monkey-patch subprocess.Popen so that any `pip install` invocation
+    from agent-written scripts is transparently rewritten to include
+    `--user --quiet --no-warn-script-location` with stdout/stderr suppressed.
+
+    Rationale: GLM sometimes ignores the PACKAGE INSTALL RULE in the system
+    prompt and calls `pip install <pkg>` directly via subprocess. Without
+    `--user` that fails on the read-only `/opt/conda` site-packages and
+    dumps a "Permission denied" error into the cell. Rather than depend on
+    instruction-following, intercept the call and make it correct.
+
+    Idempotent (safe to call multiple times). Active for the whole kernel
+    session. Plain `subprocess.Popen([...])` calls that aren't pip-install
+    are untouched."""
+    import subprocess as _sp
+    if getattr(_sp, "_sage_pip_guarded", False):
+        return
+
+    _real_Popen = _sp.Popen
+
+    def _split_args(args):
+        if isinstance(args, str):
+            return args.split(), True
+        if isinstance(args, (list, tuple)):
+            return [str(a) for a in args], False
+        return [], False
+
+    def _is_pip_install(parts):
+        if not parts:
+            return False
+        prog = parts[0]
+        # `pip install ...` or `pip3 install ...`
+        if prog.endswith("pip") or prog.endswith("pip3"):
+            return len(parts) >= 2 and parts[1] == "install"
+        # `<python> -m pip install ...`
+        if (prog.endswith("python") or prog.endswith("python3")
+                or "/python" in prog):
+            return (len(parts) >= 4 and parts[1] == "-m"
+                    and parts[2] in ("pip", "pip3") and parts[3] == "install")
+        return False
+
+    def _rewrite(parts):
+        try:
+            i = parts.index("install")
+        except ValueError:
+            return parts
+        existing = set(parts[i + 1:])
+        injected = [f for f in ("--user", "--quiet", "--no-warn-script-location")
+                    if f not in existing]
+        return parts[:i + 1] + injected + parts[i + 1:]
+
+    def _patched_Popen(args, *posargs, **kwargs):
+        parts, was_string = _split_args(args)
+        if not _is_pip_install(parts):
+            return _real_Popen(args, *posargs, **kwargs)
+
+        parts = _rewrite(parts)
+        args = " ".join(parts) if was_string else parts
+        # Suppress stdout (pip's success chatter); capture stderr to PIPE so
+        # we can re-emit it ONLY if the install fails. That way successful
+        # installs stay silent, but a real build failure (e.g. GDAL missing
+        # libgeos-dev) surfaces its error to the agent through the script's
+        # captured stderr.
+        kwargs["stdout"] = _sp.DEVNULL
+        kwargs["stderr"] = _sp.PIPE
+        proc = _real_Popen(args, *posargs, **kwargs)
+
+        _orig_wait = proc.wait
+        _orig_communicate = proc.communicate
+        _holder = {"err": None, "emitted": False}
+
+        def _emit_on_fail(rc):
+            if rc != 0 and _holder["err"] and not _holder["emitted"]:
+                try:
+                    import sys as _sys
+                    _sys.stderr.write(
+                        _holder["err"].decode(errors="replace"))
+                    _holder["emitted"] = True
+                except Exception:
+                    pass
+
+        def _wait(*a, **k):
+            rc = _orig_wait(*a, **k)
+            if (_holder["err"] is None
+                    and proc.stderr is not None
+                    and not proc.stderr.closed):
+                try:
+                    _holder["err"] = proc.stderr.read()
+                except Exception:
+                    pass
+            _emit_on_fail(rc)
+            return rc
+
+        def _communicate(*a, **k):
+            out, err = _orig_communicate(*a, **k)
+            if err is not None:
+                _holder["err"] = err
+            _emit_on_fail(proc.returncode)
+            return out, err
+
+        proc.wait = _wait
+        proc.communicate = _communicate
+        return proc
+
+    _patched_Popen.__name__ = "Popen"
+    _patched_Popen.__doc__ = _real_Popen.__doc__
+    _sp.Popen = _patched_Popen
+    _sp._sage_pip_guarded = True
+
+
+_install_pip_subprocess_guard()
+
+
+def _sage_pip_install(*pkgs: str) -> None:
+    """Silent, correct pip install for use inside agent-written scripts.
+
+    Behavior:
+      - If every package is already importable, no-op.
+      - Otherwise installs with `--user --quiet --no-warn-script-location`,
+        stderr suppressed, then sweeps `~*` artifacts from site-packages.
+      - Raises only if pip's exit code is nonzero.
+
+    The kernel exposes this in user_ns so agent scripts can do:
+        _sage_pip_install("lightkurve")
+        import lightkurve
+    instead of crafting their own pip command (which historically gets the
+    `--user` flag wrong, embeds shell `2>/dev/null` inside subprocess list
+    args, or omits `--quiet` and floods the cell with warnings)."""
+    import importlib.util as _il_util
+    import subprocess as _sp
+    import sys as _sys
+
+    def _pkg_name(spec):
+        for sep in ("[", "=", ">", "<", "~", "!"):
+            spec = spec.split(sep)[0]
+        return spec.strip()
+
+    missing = [p for p in pkgs if _il_util.find_spec(_pkg_name(p)) is None]
+    if not missing:
+        return
+
+    cmd = [_sys.executable, "-m", "pip", "install",
+           "--user", "--quiet", "--no-warn-script-location",
+           *missing]
+    _sp.run(cmd, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, check=True)
+    _sage_pip_artifact_cleanup()
+
 # ---------------------------------------------------------------------------
 # Per-kernel state — unique per notebook, persists for the session
 # ---------------------------------------------------------------------------
@@ -72,9 +242,36 @@ try:
     ip = get_ipython()  # noqa: F821
     ip.user_ns["SAGE_OUTPUT_DIR"] = SAGE_OUTPUT_DIR
     ip.user_ns["SAGE_THREAD_ID"] = SAGE_THREAD_ID
+    ip.user_ns["_sage_pip_install"] = _sage_pip_install
+    ip.user_ns["_sage_pip_artifact_cleanup"] = _sage_pip_artifact_cleanup
     # _SAGE_RESET_KEEP is populated at the END of this startup script (see
     # bottom of file) — at that point every top-level def/import this script
     # adds to user_ns is already there, so the snapshot is complete.
+except Exception:
+    pass
+
+# ---------------------------------------------------------------------------
+# Cleanup of NRP pod-startup pip artifacts
+# ---------------------------------------------------------------------------
+# NRP JupyterHub's pod startup runs pip operations that can be interrupted,
+# leaving ~-prefixed dist-info directories under
+# /opt/conda/lib/python3.*/site-packages/. Every subsequent pip call then
+# emits "WARNING: Ignoring invalid distribution ~..." lines, which surface
+# in Sage cell output and look like errors to viewers.
+# These artifacts are jovyan-writable (pip created them as jovyan during
+# pod startup) even though /opt/conda/ is generally read-only — so silent
+# rmtree works. Safe no-op if no artifacts exist.
+try:
+    import shutil as _shutil
+    import glob as _glob
+    for _bad in _glob.glob("/opt/conda/lib/python3.*/site-packages/~*"):
+        try:
+            _shutil.rmtree(_bad)
+        except (OSError, PermissionError):
+            pass
+    del _shutil, _glob
+    if "_bad" in dir():
+        del _bad
 except Exception:
     pass
 
@@ -1345,8 +1542,18 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
     _skip_msg_id: list = [None]
 
     def _flush_text():
+        # Route through _render_markdown_with_files so `![](file.png)` and
+        # `![](*.geojson)` references in mid-stream text get rendered as
+        # inline images / Folium maps. Some models (notably glm-5) emit the
+        # final summary BEFORE their last tool call rather than after — if
+        # this function just displayed raw Markdown, the browser would see
+        # `<img src="/home/jovyan/...">` and show a broken icon because
+        # JupyterLab doesn't serve arbitrary filesystem paths.
         if text_buffer:
-            display(Markdown(_fix_glm_markdown("".join(text_buffer))))
+            text = _fix_glm_markdown("".join(text_buffer))
+            found, _ = _render_markdown_with_files(text)
+            if not found:
+                display(Markdown(text))
             text_buffer.clear()
         _had_tool_after_text[0] = True
         _skip_msg_id[0] = None
@@ -1557,22 +1764,28 @@ def _sage_parse_skill_entry(raw):
             "url": line,
         }
 
-    if line.startswith(("/", "~", "./", "../")):
-        try:
-            path = Path(line).expanduser().resolve()
-        except Exception as e:
-            return {"kind": "error", "raw": raw, "error": f"Failed to resolve path: {e}"}
-        return {
-            "kind": "local",
-            "raw": raw,
-            "path": path,
-            "skill_name": path.name,
-            "url": str(path),
-        }
-
-    return {"kind": "error", "raw": raw,
-            "error": "Not a recognized GitHub URL or local path "
-                     "(expected `github.com/.../tree/<SHA>/...` or a path starting with `/`, `~`, or `./`)"}
+    # Everything that didn't match a GitHub URL is treated as a local path.
+    # Supports absolute (/abs/path), home-anchored (~/path), explicit relative
+    # (./path or ../path), and bare relative (path/to/skill). Bare relative
+    # paths resolve against the notebook's current working directory so a
+    # shared notebook with `fire_risk_review_skills/science_rubric` works
+    # without modification when the skill folder sits next to the notebook.
+    try:
+        path = Path(line).expanduser()
+        if not path.is_absolute():
+            path = (Path.cwd() / path).resolve()
+        else:
+            path = path.resolve()
+    except Exception as e:
+        return {"kind": "error", "raw": raw,
+                "error": f"Failed to resolve path: {e}"}
+    return {
+        "kind": "local",
+        "raw": raw,
+        "path": path,
+        "skill_name": path.name,
+        "url": str(path),
+    }
 
 
 def _sage_classify_ref(ref):
@@ -1637,15 +1850,36 @@ def _sage_list_skill_files(skill_dir, limit=20):
 
 def _sage_clone_github_subtree(org, repo, ref, subpath):
     """Clone (or reuse cached) GitHub subtree at a specific ref.
-    Returns (subtree_dir_or_None, error_or_None)."""
+    Returns (subtree_dir_or_None, error_or_None).
+
+    Cache key is (org, repo, ref) — but the same cache may be reused across
+    many different subpaths over time. When the subpath was not previously
+    checked out, we extend the sparse-checkout to include it instead of
+    bailing out.
+    """
     import subprocess
     cache_key = f"{org}__{repo}__{ref}"
     cache_dir = _SAGE_SKILL_CACHE / cache_key
     if cache_dir.exists():
         target = cache_dir / subpath if subpath else cache_dir
-        if not target.exists():
-            return None, f"Cached but subpath {subpath!r} missing in {cache_dir}"
-        return target, None
+        if target.exists():
+            return target, None
+        # Cache exists but this subpath wasn't checked out before. Extend
+        # the sparse-checkout to add it.
+        if subpath:
+            try:
+                subprocess.run(
+                    ["git", "-C", str(cache_dir), "sparse-checkout", "add", subpath],
+                    check=True, capture_output=True, text=True,
+                )
+            except subprocess.CalledProcessError as e:
+                msg = (e.stderr or "").strip() or str(e)
+                return None, f"git sparse-checkout add failed: {msg}"
+            if target.exists():
+                return target, None
+            return None, (f"Subpath {subpath!r} not found in "
+                          f"{org}/{repo}@{ref[:12]} after sparse-checkout add")
+        return None, f"Cache dir exists but is empty: {cache_dir}"
     cache_dir.parent.mkdir(parents=True, exist_ok=True)
     clone_url = f"https://github.com/{org}/{repo}.git"
     try:
@@ -1872,9 +2106,21 @@ try:
             f"and risks crashing the run. If you saved a chart or map to a PNG, you already know "
             f"what it contains; embed it in the report with `![Caption](path.png)` and move on. "
             f"To inspect tabular results, read the CSV/JSON sidecar instead, never the rendered image.\n\n"
-            f"As you work, narrate your thought process naturally. Before each tool use, "
-            f"briefly explain your intent. After each result, explain what you learned. "
-            f"Keep it concise and conversational.\n\n"
+            f"NARRATION RULE — every tool call must be preceded by one short sentence "
+            f"(≤ 25 words) explaining the intent of that specific call. Do NOT chain "
+            f"multiple tool calls together without text between them — the reader should "
+            f"never see two adjacent tool calls without a one-line explanation between them. "
+            f"Examples of correct narration:\n"
+            f"  • Before read_file: \"Reading the SKILL.md to find the search endpoint.\"\n"
+            f"  • Before write_file: \"Writing the GPS-station distance script.\"\n"
+            f"  • Before execute: \"Running the script to compute distances.\"\n"
+            f"  • After a read/execute that returns interesting data: \"Found 12 stations "
+            f"    within 100 miles — three under 20 miles.\"\n"
+            f"Tool calls without narration look like a black-box process and reduce trust "
+            f"in the result; this rule applies even when the next call seems obvious to you. "
+            f"For mechanical follow-up calls (e.g. fixing a typo in a file you just wrote), "
+            f"one short sentence like \"Fixing the column name.\" is enough — but it must be "
+            f"present.\n\n"
             f"When writing your final report, organize it as well-structured markdown. "
             f"IMPORTANT — markdown bold syntax: always write **Label**: value with no space "
             f"inside the ** markers and always a space after the closing ** before any text or punctuation. "
@@ -1971,6 +2217,33 @@ try:
             f"![Earthquake]({SAGE_OUTPUT_DIR}/earthquakes.geojson) ... ![GNSS Stations]({SAGE_OUTPUT_DIR}/gnss_stations.geojson)\n"
             f"Always use full absolute paths from {SAGE_OUTPUT_DIR}. "
             f"Do not list files separately at the end — embed them inline in the report.\n\n"
+            f"PYTHON EXECUTION RULE — when running a Python script, ALWAYS use the form "
+            f"`python /abs/path/to/script.py` with no shell prefix. Do NOT use "
+            f"`cd <dir> && python script.py` or any compound shell command — those bypass "
+            f"Sage's in-kernel execution and variables defined at the script's top level "
+            f"won't persist into the kernel namespace. If the script needs a specific "
+            f"working directory, set it inside the script via `os.chdir(...)` rather than "
+            f"prefixing the invocation with `cd`. All script stdout/stderr (including any "
+            f"`print(..., file=sys.__stdout__)` calls) is captured and hidden from the cell "
+            f"— it is only visible to you in the tool result. Do not try to stream progress "
+            f"to the user via stdout; the cell stays clean while the script runs.\n\n"
+            f"PACKAGE INSTALL RULE — `/opt/conda/` is read-only for the kernel user, so any "
+            f"`pip install` without `--user` fails with `Permission denied` and floods the cell. "
+            f"Sage provides a helper that does the right thing silently:\n"
+            f"  `_sage_pip_install('pandas')`            # one package\n"
+            f"  `_sage_pip_install('pandas', 'astropy')` # several at once\n"
+            f"The helper (a) no-ops if every package is already importable, (b) otherwise runs "
+            f"`pip install --user --quiet --no-warn-script-location ...` with stderr suppressed, "
+            f"and (c) sweeps `~*` artifacts from site-packages afterwards. Always use it. "
+            f"DO NOT call `pip install` directly via `subprocess`, `os.system`, or `!pip` — "
+            f"those paths reintroduce the missing-flags / stderr-flood problems. Shell "
+            f"redirections like `2>/dev/null` are shell syntax and DO NOT work inside "
+            f"`subprocess.run([...])` argument lists; use the helper instead.\n"
+            f"The helper is already in the kernel namespace — no import needed. After it "
+            f"returns, the new package is importable in the same kernel immediately.\n"
+            f"Treat `Ignoring invalid distribution ~...` warnings as harmless noise from NRP's "
+            f"pod-startup operations — they are NOT install failures. Verify install success by "
+            f"importing the package (`import <pkg>`); if that works the install succeeded.\n\n"
             f"CRS RULE — whenever you combine, join, overlay, clip, or sample two or more spatial "
             f"datasets (raster + vector, vector + vector, raster + raster), ALWAYS check and align "
             f"their coordinate reference systems before the operation. Misaligned CRSs produce maps "
@@ -2289,11 +2562,14 @@ try:
         Security model:
           - Local paths: installed silently (you control the filesystem).
           - GitHub URLs from allowlisted orgs (~/.deepagents/.sage_trusted_orgs.json):
-            installed silently, but ref must be a pinned commit SHA or tag.
+            installed silently, with any ref. Branch refs (e.g. tree/main/...) work
+            but produce a "not reproducible" notice — the same URL may install
+            different content on a later run as the branch advances. For
+            production / published notebooks, prefer a commit SHA.
           - GitHub URLs from unknown orgs: collected into a single trust prompt
-            showing SKILL.md descriptions + helper file lists. Type 'y' to install
-            all listed skills, anything else to abort.
-          - Branch refs (main/master/develop/...) are always rejected.
+            showing SKILL.md descriptions + helper file lists. Type 'y' to
+            install all listed skills, anything else to abort. Branch refs are
+            rejected for untrusted orgs — use a commit SHA or tag.
         """
         from IPython.display import display, HTML
 
@@ -2332,12 +2608,15 @@ try:
                 auto_install.append(e)
             elif e["kind"] == "github":
                 ref_kind = _sage_classify_ref(e["ref"])
-                if ref_kind == "branch":
-                    e["error"] = (f"branch ref '{e['ref']}' is not pinned — "
-                                  "use a commit SHA (preferred) or tag")
-                    rejected.append(e); continue
                 e["ref_kind"] = ref_kind
-                if e["org"] in trusted_orgs:
+                is_trusted = e["org"] in trusted_orgs
+                if ref_kind == "branch" and not is_trusted:
+                    e["error"] = (f"branch ref '{e['ref']}' is not allowed for "
+                                  f"untrusted org '{e['org']}' — use a commit SHA "
+                                  f"or tag (or add '{e['org']}' to "
+                                  f"~/.deepagents/.sage_trusted_orgs.json)")
+                    rejected.append(e); continue
+                if is_trusted:
                     auto_install.append(e)
                 else:
                     needs_prompt.append(e)
@@ -2419,28 +2698,61 @@ try:
                 e["error"] = f"install failed: {ex}"
                 rejected.append(e)
 
-        # Render summary as a Markdown panel
-        lines = ["### `%%skill` install summary", ""]
+        # Render summary as tight HTML (Markdown adds visible paragraph and
+        # list spacing that we want to avoid).
+        def _esc(s):
+            return (str(s).replace("&", "&amp;")
+                          .replace("<", "&lt;").replace(">", "&gt;"))
+        parts = [
+            "<hr style='margin:8px 0'/>",
+            "<div style='line-height:1.35'>",
+            "<b>Skills install summary</b>",
+        ]
         if installed:
-            lines.append(f"✅ **Installed ({len(installed)})** — available in the next `%%ask` cell:")
+            parts.append(
+                f"<div style='margin-top:4px'>✅ <b>Installed "
+                f"({len(installed)})</b> — available in the next "
+                f"<code>%%ask</code> cell:</div>"
+            )
+            parts.append("<ul style='margin:2px 0 0 0; padding-left:1.5em'>")
+            any_branch = False
             for e in installed:
                 if e["kind"] == "local":
-                    src_lbl = f"`{e['path']}`"
+                    src_lbl = f"<code>{_esc(e['path'])}</code>"
                 else:
-                    src_lbl = f"`{e['org']}/{e['repo']}@{e['ref'][:12]}/{e['subpath']}`"
-                lines.append(f"- **{e['skill_name']}** ← {src_lbl}")
-            lines.append("")
+                    # SHA refs are 40 chars — truncate for display. Tags and
+                    # branches show their full name.
+                    ref_display = (e["ref"][:12] if e.get("ref_kind") == "sha"
+                                   else e["ref"])
+                    src_lbl = (f"<code>{_esc(e['org'])}/{_esc(e['repo'])}"
+                               f"@{_esc(ref_display)}/{_esc(e['subpath'])}</code>")
+                    if e.get("ref_kind") == "branch":
+                        any_branch = True
+                parts.append(f"<li><b>{_esc(e['skill_name'])}</b> ← {src_lbl}</li>")
+            parts.append("</ul>")
+            if any_branch:
+                parts.append(
+                    "<div style='margin-top:4px;color:#64748B;font-size:0.9em'>"
+                    "Note: one or more skills are pinned to a branch. If a "
+                    "future rerun gives different results, check the skill "
+                    "repo for recent changes."
+                    "</div>"
+                )
         if rejected:
-            lines.append(f"⛔ **Not installed ({len(rejected)})**:")
+            parts.append(
+                f"<div style='margin-top:6px'>⛔ <b>Not installed "
+                f"({len(rejected)})</b>:</div>"
+            )
+            parts.append("<ul style='margin:2px 0 0 0; padding-left:1.5em'>")
             for e in rejected:
                 label = e.get("skill_name") or e.get("raw", "").strip() or "?"
-                lines.append(f"- **{label}**: {e.get('error', 'unknown error')}")
-            lines.append("")
+                err = e.get("error", "unknown error")
+                parts.append(f"<li><b>{_esc(label)}</b>: {_esc(err)}</li>")
+            parts.append("</ul>")
         if not installed and not rejected:
-            lines.append("*(no skills processed)*")
-        display(HTML("<hr/>"))
-        from IPython.display import Markdown
-        display(Markdown("\n".join(lines)))
+            parts.append("<div style='color:#888'><i>(no skills processed)</i></div>")
+        parts.append("</div>")
+        display(HTML("".join(parts)))
 
     del skill  # keep IPython namespace clean
 

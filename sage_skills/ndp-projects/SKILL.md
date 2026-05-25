@@ -98,7 +98,9 @@ The three resolution calls (project_by_user → read_project → read_workspaces
 
 #### How to derive `N`, the number of workspaces
 
-There is exactly ONE workspace count to report to the user — the number of **child workspace entries** in the filtered `read_workspaces_by_user` response (entries with non-null `parent_workspace_id` and non-empty `parent_datasets`). This equals the number of submissions the reviewer sees. Use this single number consistently in every progress line and in any summary.
+There is exactly ONE workspace count to report to the user — the number of **child workspace entries** in the filtered `read_workspaces_by_user` response (entries with non-null `parent_workspace_id`). This equals the number of submissions the reviewer sees. Use this single number consistently in every progress line and in any summary.
+
+NOTE: do NOT additionally require `parent_datasets` to be non-empty. A submission may legitimately have no linked catalog datasets while still carrying significant content in `additional_resources` and `repository_links` — those submissions are real and must be downloaded. Filtering by `parent_datasets` silently drops them.
 
 Do **NOT** invent alternative counts. Specifically:
 
@@ -115,7 +117,7 @@ _progress(f"Resolving project: {PROJECT_NAME}")
 _progress(f"Found project: {project_title}")
 # call read_project/{project_id}, then call read_workspaces_by_user,
 # then filter children = [ws for ws in project_workspaces if
-# ws.get("parent_workspace_id") and (ws.get("parent_datasets") or [])]
+# ws.get("parent_workspace_id")]
 
 _progress(f"Loading {len(children)} workspaces…")
 # now call download_project(...), which emits its own final summary line.
@@ -221,7 +223,7 @@ each. The full payload in `read_workspaces_by_user` will appear under
 | `child_workspace_id`    | parent only                | Points forward to the child          |
 
 To dedupe parent/child duplicates when showing results, prefer the child
-entry (the one with non-null `parent_workspace_id` and `parent_datasets`).
+entry (the one with non-null `parent_workspace_id`).
 
 ## Examples
 
@@ -458,8 +460,7 @@ lists per workspace so the user can see what was deferred and why.
 1. read_project_by_user      # resolve project name → project_id
 2. read_project/{project_id} # get the project's workspace ID set (parent + child IDs)
 3. read_workspaces_by_user   # full workspace payloads, filter by ID set
-4. For each child workspace (prefer the entry with .parent_workspace_id set
-   and non-empty .parent_datasets):
+4. For each child workspace (the entry with .parent_workspace_id set):
        create  <sanitized_project_title>/<sanitized_workspace_name>/
        download per the rules above
        write   _manifest.json inside the workspace folder
@@ -811,7 +812,7 @@ def download_project(project_title, project_id, context, project_workspaces):
     # Filter to child workspaces (the half that carries datasets/resources).
     children = [
         ws for ws in project_workspaces
-        if ws.get("parent_workspace_id") and (ws.get("parent_datasets") or [])
+        if ws.get("parent_workspace_id")
     ]
     total = len(children)
     _progress(f"Project: {project_title} ({total} workspaces)")
@@ -946,7 +947,7 @@ def main():
     # NOT report len(ws_id_set); do NOT invent any other count.
     children = [
         ws for ws in project_workspaces
-        if ws.get("parent_workspace_id") and (ws.get("parent_datasets") or [])
+        if ws.get("parent_workspace_id")
     ]
     _progress(f"Loading {len(children)} workspaces…")
 
@@ -1114,7 +1115,14 @@ def _download_drive_folder_recursive(service, folder_id, dest_dir, label_prefix,
         })
         return downloaded, errors, skipped
 
+    # Heartbeat at folder boundary so users can see something is happening
+    # inside a long Drive run (e.g., SIG/Forest with 1,600+ files).
+    n_children = len(children)
+    if n_children > 0:
+        _progress(f"    {label_prefix} — {n_children} item(s)")
+
     dest_dir.mkdir(parents=True, exist_ok=True)
+    files_done = 0
     for child in children:
         child_name = child.get("name", child["id"])
         child_label = f"{label_prefix} / {child_name}"
@@ -1135,6 +1143,11 @@ def _download_drive_folder_recursive(service, folder_id, dest_dir, label_prefix,
             if dl: downloaded.append(dl)
             if err: errors.append(err)
             if sk: skipped.append(sk)
+            files_done += 1
+            # Within-folder heartbeat every 50 files so users see progress
+            # in huge submissions instead of waiting in silence.
+            if files_done % 50 == 0:
+                _progress(f"      …{files_done}/{n_children} files in {label_prefix}")
     return downloaded, errors, skipped
 
 def _download_one_drive_file(service, file_id, label, dest_dir, url_hint=""):
@@ -1223,10 +1236,13 @@ def download_drive_for_workspace(ws_root, service):
     add_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded, errors, filtered = [], [], []
+    n_entries = len(drive_entries)
+    _progress(f"  {n_entries} Drive resource(s) to fetch for this workspace")
 
-    for entry in drive_entries:
+    for idx, entry in enumerate(drive_entries, 1):
         url = entry.get("url", "")
         label = entry.get("label", "unknown")
+        _progress(f"  [{idx}/{n_entries}] {label}")
 
         # Branch on URL form: file vs folder. Drive folder URLs
         # (drive.google.com/drive/folders/<id>) cannot be downloaded as
@@ -1321,11 +1337,14 @@ Example column headers for a per-workspace summary inside a project:
 
 ### Parent/child duplicates
 
-`read_workspaces_by_user` returns each workspace as **two entries**: a
-parent (no `parent_workspace_id`, no `parent_datasets`) and a child
-(non-null `parent_workspace_id`, has `parent_datasets`). The download flow
-must skip the parent entry and operate only on the child — that's where
-all the dataset records and additional resources live.
+`read_workspaces_by_user` may return each workspace as **two entries**: a
+parent (no `parent_workspace_id`) and a child (non-null
+`parent_workspace_id`). The download flow must skip the parent entry and
+operate only on the child — that's where the dataset records and additional
+resources live. Note: a child workspace may have an empty `parent_datasets`
+field — this still represents a real submission (its content lives in
+`additional_resources` and `repository_links`) and must be downloaded.
+Do not filter on `parent_datasets` when selecting children.
 
 ## Troubleshooting
 

@@ -46,8 +46,16 @@ RUN apt-get update && apt-get install -y \
 # -----------------------------------------------------------------------------
 # Step 1: Install DeepAgents CLI
 # -----------------------------------------------------------------------------
+# JupyterLab is pinned to 4.2.4 to match NRP JupyterHub's runtime. Without
+# this pin, the image ships JupyterLab 4.5.5 but NRP downgrades jupyterlab at
+# pod startup, leaving the prebuilt labextensions (e.g. the ipywidgets manager)
+# compiled against the wrong API version — widgets then render as plain text.
+# Pinning here forces pip to install labextension versions compatible with 4.2.4.
+#
 # [openai] extra provides langchain-openai (ChatOpenAI) for NRP's GLM endpoint
-RUN pip install --no-cache-dir "deepagents-cli[openai]==0.0.41" nest_asyncio folium geopandas matplotlib rasterio \
+RUN pip install --no-cache-dir \
+    "jupyterlab==4.2.4" "notebook==7.2.2" \
+    "deepagents-cli[openai]==0.0.41" nest_asyncio folium geopandas matplotlib rasterio \
     ipywidgets ipyleaflet leafmap plotly pypdf openpyxl tomli-w
 
 # Install PDAL via conda before pyforestscan — pip cannot build pdal from source without
@@ -91,11 +99,11 @@ from pathlib import Path; \
 p = Path('/home/jovyan/.deepagents/config.toml'); \
 tomli_w.dump({ \
     'models': { \
-        'default': 'nrp:glm-4.7', \
+        'default': 'nrp:glm-5', \
         'providers': { \
             'nrp': { \
                 'class_path': 'langchain_openai:ChatOpenAI', \
-                'models': ['glm-4.7'], \
+                'models': ['glm-5', 'glm-4.7'], \
                 'api_key_env': 'NRP_API_KEY', \
                 'base_url': 'https://ellm.nrp-nautilus.io/v1', \
                 'params': {'temperature': 0}, \

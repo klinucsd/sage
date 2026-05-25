@@ -786,7 +786,15 @@ def _download_drive_folder_recursive(service, folder_id, dest_dir, label_prefix,
         })
         return downloaded, errors, skipped
 
+    # Heartbeat at folder boundary + within-folder every 50 files so the
+    # user sees progress on huge Drive folders (e.g., SIG/Forest with
+    # 1,600+ files) instead of waiting in silence.
+    n_children = len(children)
+    if n_children > 0:
+        _progress(f"    {label_prefix} — {n_children} item(s)")
+
     dest_dir.mkdir(parents=True, exist_ok=True)
+    files_done = 0
     for child in children:
         child_name = child.get("name", child["id"])
         child_label = f"{label_prefix} / {child_name}"
@@ -807,6 +815,9 @@ def _download_drive_folder_recursive(service, folder_id, dest_dir, label_prefix,
             if dl: downloaded.append(dl)
             if err: errors.append(err)
             if sk: skipped.append(sk)
+            files_done += 1
+            if files_done % 50 == 0:
+                _progress(f"      …{files_done}/{n_children} files in {label_prefix}")
     return downloaded, errors, skipped
 
 def _download_one_drive_file(service, file_id, label, dest_dir, url_hint=""):
@@ -887,10 +898,13 @@ def download_drive_for_workspace(ws_root, service):
     add_dir.mkdir(parents=True, exist_ok=True)
 
     downloaded, errors, filtered = [], [], []
+    n_entries = len(drive_entries)
+    _progress(f"  {n_entries} Drive resource(s) to fetch for this workspace")
 
-    for entry in drive_entries:
+    for idx, entry in enumerate(drive_entries, 1):
         url = entry.get("url", "")
         label = entry.get("label", "unknown")
+        _progress(f"  [{idx}/{n_entries}] {label}")
 
         folder_id = _extract_drive_folder_id(url)
         if folder_id:
