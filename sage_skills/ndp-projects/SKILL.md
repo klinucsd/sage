@@ -111,15 +111,15 @@ Do **NOT** invent alternative counts. Specifically:
 The progress messages are exactly:
 
 ```python
-_progress(f"Resolving project: {PROJECT_NAME}")
+_sage_progress(f"Resolving project: {PROJECT_NAME}")
 # call read_project_by_user, find the project_id
 
-_progress(f"Found project: {project_title}")
+_sage_progress(f"Found project: {project_title}")
 # call read_project/{project_id}, then call read_workspaces_by_user,
 # then filter children = [ws for ws in project_workspaces if
 # ws.get("parent_workspace_id")]
 
-_progress(f"Loading {len(children)} workspaces…")
+_sage_progress(f"Loading {len(children)} workspaces…")
 # now call download_project(...), which emits its own final summary line.
 ```
 
@@ -569,21 +569,9 @@ def _should_skip_by_extension(filename: str) -> bool:
         return False
     return Path(filename).suffix.lower() in skip_set
 
-def _progress(msg: str) -> None:
-    """Live status message — bypasses Sage's stdout buffer so the user sees
-    progress in the cell during long downloads. The captured agent stdout is
-    unaffected; this is purely a UX channel for human eyes.
-
-    Sage's KernelShellBackend replaces sys.stdout with a StringIO buffer for
-    the duration of the script's exec(), so plain print() statements are not
-    visible until the script finishes. sys.__stdout__ still points at
-    IPython's OutStream, which forwards bytes over ZMQ to the cell frontend
-    in real time.
-    """
-    try:
-        print(msg, file=sys.__stdout__, flush=True)
-    except Exception:
-        print(msg)   # fallback if __stdout__ is missing for some reason
+# Live progress is handled by Sage's `_sage_progress(msg)`, which is
+# already in the kernel namespace — no local definition or import needed.
+# It bypasses execute()'s stdout capture and streams one line to the cell.
 
 def sanitize(name: str) -> str:
     name = re.sub(r'[\\/*?:"<>|]', "_", name or "untitled")
@@ -815,11 +803,11 @@ def download_project(project_title, project_id, context, project_workspaces):
         if ws.get("parent_workspace_id")
     ]
     total = len(children)
-    _progress(f"Project: {project_title} ({total} workspaces)")
+    _sage_progress(f"Project: {project_title} ({total} workspaces)")
 
     per_ws = []
     for i, ws in enumerate(children, 1):
-        _progress(f"[{i}/{total}] {ws['workspace_name']} — downloading…")
+        _sage_progress(f"[{i}/{total}] {ws['workspace_name']} — downloading…")
         ws_root = project_root / sanitize(ws["workspace_name"])
         per_ws.append(download_workspace(ws, ws_root))
 
@@ -833,9 +821,9 @@ def download_project(project_title, project_id, context, project_workspaces):
     # subsequent runs even after a JupyterHub restart.
     service = _drive_service()
     if service is not None:
-        _progress(f"Drive phase ({len(per_ws)} workspaces)…")
+        _sage_progress(f"Drive phase ({len(per_ws)} workspaces)…")
         for i, ws_summary in enumerate(per_ws, 1):
-            _progress(f"[{i}/{len(per_ws)}] {ws_summary['workspace_name']} — Drive files…")
+            _sage_progress(f"[{i}/{len(per_ws)}] {ws_summary['workspace_name']} — Drive files…")
             ws_root = project_root / ws_summary["folder"]
             drv_dl, drv_err, drv_skip = download_drive_for_workspace(ws_root, service)
             if drv_dl or drv_err or drv_skip:
@@ -844,16 +832,24 @@ def download_project(project_title, project_id, context, project_workspaces):
                 mf["downloaded"].extend(drv_dl)
                 mf["errors"].extend(drv_err)
                 # Promote per-file filter skips into the manifest's skipped[]
-                # so the reviewer can see what was filtered. Drop the original
-                # folder-URL entries that have now been processed.
+                # so the reviewer can see what was filtered.
                 mf["skipped"].extend(drv_skip)
-                downloaded_urls = {d["url"] for d in drv_dl}
+                # download_drive_for_workspace processed every entry with
+                # reason="drive" (a Drive URL is either downloaded, errored,
+                # or filtered — never left pending). Drop the original
+                # folder-/file-URL "drive" placeholders; URL-level matching
+                # doesn't work because folder expansions produce per-file
+                # download URLs that differ from the original folder URL.
                 mf["skipped"] = [s for s in mf["skipped"]
-                                 if s.get("url") not in downloaded_urls]
+                                 if s.get("reason") != "drive"]
                 mf_path.write_text(json.dumps(mf, indent=2))
-                ws_summary["downloaded_files"] += len(drv_dl)
-                ws_summary["skipped"]          += len(drv_skip) - (len(drv_dl) - len(drv_err))
-                ws_summary["errors"]           += len(drv_err)
+                # Recompute counts from the updated manifest rather than
+                # apply a delta — folder→file expansion makes delta math
+                # error-prone (a single folder skipped entry can resolve
+                # into many downloaded file entries).
+                ws_summary["downloaded_files"] = len(mf["downloaded"])
+                ws_summary["skipped"]          = len(mf["skipped"])
+                ws_summary["errors"]           = len(mf["errors"])
     else:
         pending = sum(
             sum(1 for s in
@@ -863,7 +859,7 @@ def download_project(project_title, project_id, context, project_workspaces):
             for ws_summary in per_ws
         )
         if pending:
-            _progress(
+            _sage_progress(
                 f"Drive phase skipped — {pending} Drive resources pending across "
                 f"all workspaces. Shared Drive token is not present at "
                 f"~/work/_User-Persistent-Storage_CephBlock_/.gdrive_token.json. "
@@ -885,7 +881,7 @@ def download_project(project_title, project_id, context, project_workspaces):
         "workspaces":    per_ws,
         "totals":        totals,
     }, indent=2))
-    _progress(
+    _sage_progress(
         f"Project download complete: {totals['downloaded_files']} files, "
         f"{totals['skipped']} skipped, {totals['errors']} errors."
     )
@@ -899,7 +895,7 @@ def main():
     headers = {"Authorization": f"Bearer {ACCESS_TOKEN}"}
 
     # --- Step 1: resolve project name → project_id ---
-    _progress(f"Resolving project: {PROJECT_NAME}")
+    _sage_progress(f"Resolving project: {PROJECT_NAME}")
     resp = requests.get(
         f"{WORKSPACE_API_URL}/read_project_by_user?where_wkspc_created={CONTEXT}",
         headers=headers, timeout=30,
@@ -915,7 +911,7 @@ def main():
     project = candidates[0]
     project_id = project["project_id"]
     project_title = project["title"]
-    _progress(f"Found project: {project_title}")
+    _sage_progress(f"Found project: {project_title}")
 
     # --- Step 2: fetch project metadata + collect workspace IDs ---
     resp = requests.get(
@@ -949,7 +945,7 @@ def main():
         ws for ws in project_workspaces
         if ws.get("parent_workspace_id")
     ]
-    _progress(f"Loading {len(children)} workspaces…")
+    _sage_progress(f"Loading {len(children)} workspaces…")
 
     # download_project() prints its own final progress line; do not add
     # a separate "Download Summary" block here.
@@ -1119,7 +1115,7 @@ def _download_drive_folder_recursive(service, folder_id, dest_dir, label_prefix,
     # inside a long Drive run (e.g., SIG/Forest with 1,600+ files).
     n_children = len(children)
     if n_children > 0:
-        _progress(f"    {label_prefix} — {n_children} item(s)")
+        _sage_progress(f"    {label_prefix} — {n_children} item(s)")
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     files_done = 0
@@ -1147,7 +1143,7 @@ def _download_drive_folder_recursive(service, folder_id, dest_dir, label_prefix,
             # Within-folder heartbeat every 50 files so users see progress
             # in huge submissions instead of waiting in silence.
             if files_done % 50 == 0:
-                _progress(f"      …{files_done}/{n_children} files in {label_prefix}")
+                _sage_progress(f"      …{files_done}/{n_children} files in {label_prefix}")
     return downloaded, errors, skipped
 
 def _download_one_drive_file(service, file_id, label, dest_dir, url_hint=""):
@@ -1237,12 +1233,12 @@ def download_drive_for_workspace(ws_root, service):
 
     downloaded, errors, filtered = [], [], []
     n_entries = len(drive_entries)
-    _progress(f"  {n_entries} Drive resource(s) to fetch for this workspace")
+    _sage_progress(f"  {n_entries} Drive resource(s) to fetch for this workspace")
 
     for idx, entry in enumerate(drive_entries, 1):
         url = entry.get("url", "")
         label = entry.get("label", "unknown")
-        _progress(f"  [{idx}/{n_entries}] {label}")
+        _sage_progress(f"  [{idx}/{n_entries}] {label}")
 
         # Branch on URL form: file vs folder. Drive folder URLs
         # (drive.google.com/drive/folders/<id>) cannot be downloaded as
@@ -1271,23 +1267,10 @@ def download_drive_for_workspace(ws_root, service):
         if err: errors.append(err)
         if sk: filtered.append(sk)
 
-    # Also keep the sidecar text file in sync (informational only): remove
-    # the URLs we successfully downloaded; if everything succeeded, delete
-    # the file.
+    # Sidecar text file is informational only and now stale; remove it.
     sidecar = ws_root / "_drive_urls_to_download_later.txt"
     if sidecar.exists():
-        downloaded_urls = {d["url"] for d in downloaded}
-        kept = []
-        for raw in sidecar.read_text().splitlines():
-            if "\t" not in raw:
-                continue
-            _, u = raw.split("\t", 1)
-            if u not in downloaded_urls:
-                kept.append(raw)
-        if kept:
-            sidecar.write_text("\n".join(kept))
-        else:
-            sidecar.unlink()
+        sidecar.unlink()
 
     return downloaded, errors, filtered
 ```

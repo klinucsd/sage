@@ -22,9 +22,32 @@ NRP_API_KEY lookup order:
 import asyncio
 import json
 import os
+import sys
 import warnings
 from datetime import UTC as _SAGE_UTC, datetime as _SAGE_DATETIME
 from pathlib import Path
+
+
+# Reference to the kernel's IPython OutStream, captured BEFORE anything in
+# this session has a chance to swap sys.stdout. _sage_progress() writes to
+# this so progress lines stream live to the cell even when execute() has
+# redirected sys.stdout / sys.__stdout__ to the capture buffer.
+_SAGE_KERNEL_STDOUT = sys.stdout
+
+
+def _sage_progress(msg: str) -> None:
+    """Print one line of progress live to the cell, bypassing the execute()
+    stdout capture. Use ONLY for multi-item loops in long-running skills
+    (e.g. downloading many workspaces, batch-processing many submissions)
+    where the user needs to see that work is happening. Plain `print()`
+    is captured and hidden; this helper is the explicit opt-in for live
+    visibility.
+
+    Available in the kernel namespace — no import needed."""
+    try:
+        print(msg, file=_SAGE_KERNEL_STDOUT, flush=True)
+    except Exception:
+        pass  # never let progress emission break the script
 
 
 def _sage_pip_artifact_cleanup():
@@ -244,6 +267,7 @@ try:
     ip.user_ns["SAGE_THREAD_ID"] = SAGE_THREAD_ID
     ip.user_ns["_sage_pip_install"] = _sage_pip_install
     ip.user_ns["_sage_pip_artifact_cleanup"] = _sage_pip_artifact_cleanup
+    ip.user_ns["_sage_progress"] = _sage_progress
     # _SAGE_RESET_KEEP is populated at the END of this startup script (see
     # bottom of file) — at that point every top-level def/import this script
     # adds to user_ns is already there, so the snapshot is complete.
@@ -2226,7 +2250,15 @@ try:
             f"prefixing the invocation with `cd`. All script stdout/stderr (including any "
             f"`print(..., file=sys.__stdout__)` calls) is captured and hidden from the cell "
             f"— it is only visible to you in the tool result. Do not try to stream progress "
-            f"to the user via stdout; the cell stays clean while the script runs.\n\n"
+            f"to the user via stdout; the cell stays clean while the script runs.\n"
+            f"EXCEPTION — for long-running multi-item loops (downloading many "
+            f"workspaces, batch-processing many submissions, etc.), Sage provides "
+            f"`_sage_progress(msg)` in the kernel namespace. Calling it emits ONE "
+            f"line of text live to the cell, bypassing the stdout capture, so the "
+            f"user can see something is happening. Use it ONLY for genuine "
+            f"per-item progress (e.g. `_sage_progress(f\"[{{i}}/{{n}}] {{name}}\")`); "
+            f"do NOT use it for ad-hoc debug prints or for short scripts where "
+            f"progress isn't needed.\n\n"
             f"PACKAGE INSTALL RULE — `/opt/conda/` is read-only for the kernel user, so any "
             f"`pip install` without `--user` fails with `Permission denied` and floods the cell. "
             f"Sage provides a helper that does the right thing silently:\n"

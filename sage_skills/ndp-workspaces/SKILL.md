@@ -394,21 +394,9 @@ def _should_skip_by_extension(filename: str) -> bool:
         return False
     return Path(filename).suffix.lower() in skip_set
 
-def _progress(msg: str) -> None:
-    """Live status message — bypasses Sage's stdout buffer so the user sees
-    progress in the cell during long downloads. The captured agent stdout is
-    unaffected; this is purely a UX channel for human eyes.
-
-    Sage's KernelShellBackend replaces sys.stdout with a StringIO buffer for
-    the duration of the script's exec(), so plain print() statements are not
-    visible until the script finishes. sys.__stdout__ still points at
-    IPython's OutStream, which forwards bytes over ZMQ to the cell frontend
-    in real time.
-    """
-    try:
-        print(msg, file=sys.__stdout__, flush=True)
-    except Exception:
-        print(msg)   # fallback if __stdout__ is missing for some reason
+# Live progress is handled by Sage's `_sage_progress(msg)`, which is
+# already in the kernel namespace — no local definition or import needed.
+# It bypasses execute()'s stdout capture and streams one line to the cell.
 
 def sanitize(name: str) -> str:
     name = re.sub(r'[\\/*?:"<>|]', "_", name or "untitled")
@@ -523,14 +511,14 @@ def download_file(url: str, dest: Path):
 def download_workspace(ws: dict) -> Path:
     ws_root = OUTPUT_DIR / sanitize(ws["workspace_name"])
     ws_root.mkdir(parents=True, exist_ok=True)
-    _progress(f"Workspace: {ws['workspace_name']}")
+    _sage_progress(f"Workspace: {ws['workspace_name']}")
 
     downloaded, skipped, errors = [], [], []
     drive_log, arcgis_log, other_log = [], [], []
 
     # 1. catalog_assets/ — CKAN dataset files. Every URL is downloaded as a
     #    plain file regardless of hostname (publisher's choice).
-    _progress("  catalog_assets…")
+    _sage_progress("  catalog_assets…")
     for ds in (ws.get("parent_datasets") or []):
         ds_dir = ws_root / "catalog_assets" / sanitize(ds.get("dataset_title", "dataset"))
         for res in (ds.get("dataset_resources") or []):
@@ -551,7 +539,7 @@ def download_workspace(ws: dict) -> Path:
 
     # 2. additional_resources/ — extras. Skip Drive and ArcGIS; everything
     #    else is a plain HTTP download. No hostname-based branching.
-    _progress("  additional_resources…")
+    _sage_progress("  additional_resources…")
     add_dir = ws_root / "additional_resources"
     for r in (ws.get("additional_resources") or []):
         url, label = r.get("resource_url", ""), r.get("information", "unknown")
@@ -584,7 +572,7 @@ def download_workspace(ws: dict) -> Path:
     repo_dir = ws_root / "repositories"
     repo_entries = (ws.get("repository_links") or []) + (ws.get("parent_repository_links") or [])
     if repo_entries:
-        _progress(f"  repositories ({len(repo_entries)})…")
+        _sage_progress(f"  repositories ({len(repo_entries)})…")
     for r in repo_entries:
         url = r.get("url", "")
         if not url:
@@ -629,7 +617,7 @@ def download_workspace(ws: dict) -> Path:
     # subsequent runs even after a JupyterHub restart.
     service = _drive_service()
     if service is not None:
-        _progress(f"  Drive phase…")
+        _sage_progress(f"  Drive phase…")
         download_drive_for_workspace(ws_root, service)
 
     return ws_root
@@ -791,7 +779,7 @@ def _download_drive_folder_recursive(service, folder_id, dest_dir, label_prefix,
     # 1,600+ files) instead of waiting in silence.
     n_children = len(children)
     if n_children > 0:
-        _progress(f"    {label_prefix} — {n_children} item(s)")
+        _sage_progress(f"    {label_prefix} — {n_children} item(s)")
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     files_done = 0
@@ -817,7 +805,7 @@ def _download_drive_folder_recursive(service, folder_id, dest_dir, label_prefix,
             if sk: skipped.append(sk)
             files_done += 1
             if files_done % 50 == 0:
-                _progress(f"      …{files_done}/{n_children} files in {label_prefix}")
+                _sage_progress(f"      …{files_done}/{n_children} files in {label_prefix}")
     return downloaded, errors, skipped
 
 def _download_one_drive_file(service, file_id, label, dest_dir, url_hint=""):
@@ -899,12 +887,12 @@ def download_drive_for_workspace(ws_root, service):
 
     downloaded, errors, filtered = [], [], []
     n_entries = len(drive_entries)
-    _progress(f"  {n_entries} Drive resource(s) to fetch for this workspace")
+    _sage_progress(f"  {n_entries} Drive resource(s) to fetch for this workspace")
 
     for idx, entry in enumerate(drive_entries, 1):
         url = entry.get("url", "")
         label = entry.get("label", "unknown")
-        _progress(f"  [{idx}/{n_entries}] {label}")
+        _sage_progress(f"  [{idx}/{n_entries}] {label}")
 
         folder_id = _extract_drive_folder_id(url)
         if folder_id:
@@ -928,30 +916,23 @@ def download_drive_for_workspace(ws_root, service):
         if sk: filtered.append(sk)
 
     # Update the workspace manifest in place: extend downloaded[], extend
-    # errors[], promote filtered into skipped[] with reason="filtered",
-    # and remove from skipped[] anything that succeeded.
+    # errors[], promote filtered into skipped[] with reason="filtered", and
+    # remove every original reason="drive" placeholder. Per-file download
+    # URLs from folder expansions don't URL-match the original folder URL,
+    # so URL-based filtering would leave stale "drive" entries behind. This
+    # function processes every reason="drive" entry it picked up, so it's
+    # safe to drop them all in one pass.
     mf["downloaded"].extend(downloaded)
     mf["errors"].extend(errors)
     mf["skipped"].extend(filtered)
-    downloaded_urls = {d["url"] for d in downloaded}
     mf["skipped"] = [s for s in mf.get("skipped", [])
-                     if s.get("url") not in downloaded_urls]
+                     if s.get("reason") != "drive"]
     mf_path.write_text(json.dumps(mf, indent=2))
 
-    # Also keep the sidecar text file in sync (informational only).
+    # Sidecar text file is informational only and now stale; remove it.
     sidecar = ws_root / "_drive_urls_to_download_later.txt"
     if sidecar.exists():
-        kept = []
-        for raw in sidecar.read_text().splitlines():
-            if "\t" not in raw:
-                continue
-            _, u = raw.split("\t", 1)
-            if u not in downloaded_urls:
-                kept.append(raw)
-        if kept:
-            sidecar.write_text("\n".join(kept))
-        else:
-            sidecar.unlink()
+        sidecar.unlink()
 
     return downloaded, errors, filtered
 ```
