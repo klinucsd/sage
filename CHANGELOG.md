@@ -4,6 +4,55 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## v1.2.10 — 2026-05-25
+- **`ndp-projects` Drive-phase manifest reconciliation fix**: the per-workspace summary used `len(drv_skip) - (len(drv_dl) - len(drv_err))` to update the skipped count. Folder→file expansion (one folder URL becomes N downloaded files) made this delta math produce nonsense like `-7 skipped`. Replaced with a manifest re-read after the Drive phase so counts come from authoritative state.
+- **`ndp-workspaces` Drive phase**: same manifest reconciliation pattern fixed inside `download_drive_for_workspace`. Now drops every `reason="drive"` entry from `skipped[]` instead of URL-matching (which fails for folder-expansion URLs). Sidecar `_drive_urls_to_download_later.txt` is unlinked unconditionally after a Drive pass since the function processes every entry it picks up.
+- **Repo hygiene**: moved `KERNEL_SHELL_BACKEND.md` and `notes_ui_skills_and_registry.md` out of the public repo into `paper_notes/` next to other internal/paper-source documents.
+
+## v1.2.9 — 2026-05-25
+- **`_sage_progress(msg)` helper**: exposed in the kernel namespace. Writes one line of text live to the cell, bypassing the `execute()` stdout capture. Captures a reference to the IPython OutStream at kernel startup *before* anything can swap `sys.stdout`. Use only for explicit per-item progress in long-running multi-item loops (downloads, batch processing). Plain `print()` still goes to the captured/hidden buffer.
+- **`ndp-projects` / `ndp-workspaces`**: removed the local `_progress()` helper definitions (which used `sys.__stdout__` and stopped working after v1.2.4 made that capture too). All ~25 call sites now use `_sage_progress(...)` directly. Project-wide and workspace downloads stream progress live again.
+- **Private wildfire skills** (5 of them): same migration applied to `_progress` markers and the "do not print PDF content" warnings.
+- **System prompt**: documents `_sage_progress` with an explicit scope rule (multi-item long-running loops only; not for ad-hoc debug prints).
+
+## v1.2.8 — 2026-05-25
+- **Refined pip subprocess guard** (supersedes v1.2.7): the v1.2.7 version `DEVNULL`'d both stdout and stderr, which hid legitimate diagnostic output from real install failures (e.g. GDAL missing `libgeos-dev`). v1.2.8 captures stderr to a `PIPE` and re-emits it only when `returncode != 0`. Successful installs stay silent; failed installs surface their full error text to the agent through the script's `sys.stderr`.
+- Internal: wraps `Popen.wait()` and `Popen.communicate()` so the captured stderr is inspected at the moment the return code becomes known.
+
+## v1.2.7 — 2026-05-25 (superseded by v1.2.8 within hours)
+- **`subprocess.Popen` guard for `pip install`**: any `pip install`, `pip3 install`, `python -m pip install` call (list form or shell-string form) is transparently rewritten at the `subprocess` layer to inject `--user --quiet --no-warn-script-location` and route stdio to `DEVNULL`. Catches the GLM compliance failure where the agent writes `subprocess.run(["pip", "install", "pandas"])` directly despite the system-prompt rule.
+- Non-pip subprocess calls are passed through unchanged.
+- Already-flagged `--user` is detected and not duplicated.
+
+## v1.2.6 — 2026-05-25
+- **`_sage_pip_install(*pkgs)` helper**: exposed in the kernel namespace. No-ops if every package is already importable (`importlib.util.find_spec`); otherwise installs with `--user --quiet --no-warn-script-location`, stderr suppressed, then sweeps `~*` artifacts from `site-packages`.
+- **`PACKAGE INSTALL RULE` rewritten** in the system prompt to direct the agent to the helper instead of crafting its own `pip install` command. Explicitly forbids raw `subprocess`/`os.system`/`!pip` paths and calls out that shell redirections like `2>/dev/null` don't work inside `subprocess.run([...])` arg lists.
+- **`~*` artifact cleanup** also runs at the end of every `execute()`, not just kernel startup. Catches mid-session failed installs so the next pip operation doesn't print "Ignoring invalid distribution ~xxx" leftovers.
+
+## v1.2.5 — 2026-05-25
+- **`~*` artifact cleanup at kernel startup**: NRP pod startup occasionally leaves partial `~package`-prefixed directories in `/opt/conda/lib/python3.13/site-packages/`. Every subsequent `pip` operation then emits "Ignoring invalid distribution ~xxx" warnings. Sage now sweeps these at kernel start via a hook in `00-sage-magic.py`. Idempotent and silent on systems without matching paths.
+
+## v1.2.4 — 2026-05-25
+- **Capture `sys.__stdout__` and `sys.__stderr__` during `execute()`**: agent scripts that wrote progress via `print(..., file=sys.__stdout__)` were bypassing Sage's Python-level stdout capture and dumping into the cell. Now both `sys.stdout`/`sys.stderr` and `sys.__stdout__`/`sys.__stderr__` are redirected to the same capture buffer for the duration of `exec()`. Cell output stays clean even if the agent uses the underscore-prefixed form.
+- **System prompt** updated to remove the now-misleading "`print(..., file=sys.__stdout__)` streams live" guidance. The agent is told that all script stdout/stderr is captured and hidden from the cell.
+
+## v1.2.3 — 2026-05-23
+- **Combined `wildfire-rubric-review` skill** (private): generates both the Science and Practitioner rubric JSON files for a submission in one cell, reading each workspace file once and producing both rubrics from the shared evidence. Replaces back-to-back invocations of the two single-rubric skills (which read the same files twice). Wall-clock for one workspace dropped from ~25–35 minutes to ~15 minutes.
+- `write_rubric_review(..., write_xlsx=False)` mode added so the combined skill doesn't write the now-unused Excel output.
+
+## v1.2.2 — 2026-05-22
+- **GLM-5 is the new default**: `/home/jovyan/.deepagents/config.toml` ships with `default = "nrp:glm-5"` and `models = ["glm-5", "glm-4.7"]`. GLM-4.7 is kept as a selectable fallback for cells where GLM-5 hangs (the NRP/Zhipu endpoint occasionally stalls mid-call on long-context tasks).
+- Comprehensive-report language neutralized: "Sage" branding removed from the boss-facing PDF; review-agent voice introduced alongside team self-report and reviewer-commentary placeholders; `_coerce_reason()` defensively recovers older dict-of-chars `branching_notes` values.
+
+## v1.2.1 — 2026-05-22
+- **Pin `jupyterlab==4.2.4` and `notebook==7.2.2`** in the Dockerfile. NRP JupyterHub downgrades `jupyterlab` at pod startup but does not touch prebuilt labextensions, so a base image shipping JupyterLab 4.5+ ends up with extensions compiled against the wrong API version — `ipywidgets` then renders as plain text. Pinning forces compatible labextension versions.
+
+## v1.1.30 — 2026-05-08
+- **`%%skill` cell magic** introduced: loads a skill from a local path (e.g. `private_skills/<name>`) or a public GitHub URL into the current kernel session, so end users can extend Sage with new skills without rebuilding the Docker image. Multiple paths per cell (one per line) are supported.
+- **Slim core image**: the 14 domain demo skills (`ca-vegetation-treatments`, `cop30-topo`, `exoplanet-transits`, `gedi-l2a`, `kanawha-*`, `nhd-rivers`, `py3dep-dem`, `sdge-*`, `sentinel1-sar`, `sentinel2-l2a`, `usgs-earthquake-events`, `usgs-lidar`) moved to the public [`klinucsd/sage_skills`](https://github.com/klinucsd/sage_skills) repo and removed from the base image. End users `%%skill` them in on demand.
+
+---
+
 ## kernel-0.1.30 — 2026-04-23 (experimental branch: kernel-shell-backend)
 Expanded the reopen-cleanup script in usgs-lidar Step 1 to hide the remaining eyesores:
 - **"Error displaying widget: model not found"** — iterate every `.jp-OutputArea-output` and hide any whose textContent matches the error and is under 200 chars.
