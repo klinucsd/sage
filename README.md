@@ -142,6 +142,7 @@ base_url = "https://ellm.nrp-nautilus.io/v1"
 
 [models.providers.nrp.params]
 temperature = 0
+stream_chunk_timeout = 1200.0   # NRP GLM occasionally pauses mid-stream; raise from the 120s default
 ```
 
 ### 4. Start Sage
