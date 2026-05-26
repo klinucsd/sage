@@ -66,7 +66,7 @@ Sage works with any LangChain-compatible LLM endpoint. Configure your preferred 
 | Provider | Notes |
 |---|---|
 | NRP GLM-5 | Free for NRP/NDP users; default in the published image (GLM-4.7 available as a fallback) |
-| OpenAI GPT-4o / GPT-4-turbo | Standard OpenAI API |
+| OpenAI GPT-5.5 | Standard OpenAI API |
 | Anthropic Claude | Via `langchain_anthropic` |
 | Any OpenAI-compatible endpoint | `base_url` configurable |
 
@@ -117,11 +117,11 @@ NRP_API_KEY=your_nrp_key_here
 ```toml
 # config.toml — OpenAI example
 [models]
-default = "openai:gpt-4o"
+default = "openai:gpt-5.5"
 
 [models.providers.openai]
 class_path = "langchain_openai:ChatOpenAI"
-models = ["gpt-4o"]
+models = ["gpt-5.5"]
 api_key_env = "OPENAI_API_KEY"
 base_url = "https://api.openai.com/v1"
 
