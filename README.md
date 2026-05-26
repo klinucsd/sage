@@ -65,7 +65,7 @@ Sage works with any LangChain-compatible LLM endpoint. Configure your preferred 
 
 | Provider | Notes |
 |---|---|
-| NRP GLM-4.7 | Free for NRP/NDP users; used in the demo notebooks |
+| NRP GLM-5 | Free for NRP/NDP users; default in the published image (GLM-4.7 available as a fallback) |
 | OpenAI GPT-4o / GPT-4-turbo | Standard OpenAI API |
 | Anthropic Claude | Via `langchain_anthropic` |
 | Any OpenAI-compatible endpoint | `base_url` configurable |
@@ -132,11 +132,11 @@ temperature = 0
 ```toml
 # config.toml — NRP GLM example
 [models]
-default = "nrp:glm-4.7"
+default = "nrp:glm-5"
 
 [models.providers.nrp]
 class_path = "langchain_openai:ChatOpenAI"
-models = ["glm-4.7"]
+models = ["glm-5", "glm-4.7"]
 api_key_env = "NRP_API_KEY"
 base_url = "https://ellm.nrp-nautilus.io/v1"
 
