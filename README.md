@@ -1,16 +1,16 @@
-# Sage — Science Agent for Jupyter Notebooks
+# ARGUS — Science Agent for Jupyter Notebooks
 
-**Sage** (Science Agent) is a natural language data science agent for Jupyter notebooks. Unlike general-purpose AI assistants that return text answers, Sage delivers **complete, verified scientific results** — interactive maps, charts, structured tables, and a narrative summary — all rendered inline in a notebook cell. Every intermediate script, data file, and API call is saved and inspectable, making results fully reproducible and shareable.
+**ARGUS** (Science Agent) is a natural language data science agent for Jupyter notebooks. Unlike general-purpose AI assistants that return text answers, ARGUS delivers **complete, verified scientific results** — interactive maps, charts, structured tables, and a narrative summary — all rendered inline in a notebook cell. Every intermediate script, data file, and API call is saved and inspectable, making results fully reproducible and shareable.
 
-> *You ask a scientific question. Sage answers it with data.*
+> *You ask a scientific question. ARGUS answers it with data.*
 
-Sage is developed as part of the [National Data Platform](https://nationaldataplatform.org) (NDP) project, supported by the NSF. It is built on top of [deepagents-cli](https://pypi.org/project/deepagents-cli/).
+ARGUS is developed as part of the [National Data Platform](https://nationaldataplatform.org) (NDP) project, supported by the NSF. It is built on top of [deepagents-cli](https://pypi.org/project/deepagents-cli/).
 
 ---
 
-## Why Sage?
+## Why ARGUS?
 
-| | General AI Assistant (e.g. ChatGPT) | Sage |
+| | General AI Assistant (e.g. ChatGPT) | ARGUS |
 |---|---|---|
 | **Input** | Text | Text |
 | **Output** | Text | Interactive maps, charts, tables, narrative |
@@ -34,7 +34,7 @@ and show them on a map with magnitude and location details.
 ```
 
 ### 2. End-to-End Result Delivery with Self-Correction
-Sage does not generate code and hand it back to you — it runs the full analytical pipeline autonomously: data discovery, retrieval, code generation, execution, and verification. When a step fails (API error, schema mismatch, unexpected null values), the agent diagnoses the failure, revises its approach, and retries — without any user intervention. The final output is a verified result, not a code draft.
+ARGUS does not generate code and hand it back to you — it runs the full analytical pipeline autonomously: data discovery, retrieval, code generation, execution, and verification. When a step fails (API error, schema mismatch, unexpected null values), the agent diagnoses the failure, revises its approach, and retries — without any user intervention. The final output is a verified result, not a code draft.
 
 ### 3. Rich, Structured Output
 Every `%%ask` response delivers:
@@ -47,21 +47,21 @@ Every `%%ask` response delivers:
 Every tool call — API request, code execution, file read — is displayed as a collapsible panel inside the notebook cell, before the narrative continues. All generated scripts and intermediate data files are saved to a dedicated output folder (`_{notebook_name}_sage_/`) next to the notebook. Nothing is hidden. Any result can be verified by inspecting the exact code and data that produced it.
 
 ### 5. Reproducible and Shareable Workflows
-A Sage notebook is a self-contained scientific record: the natural language prompts that drove the analysis, the complete tool-call trace at every step, and all rendered outputs — captured automatically in a standard `.ipynb` file. Sharing the notebook shares the entire analytical workflow. Re-running it reproduces the results.
+A ARGUS notebook is a self-contained scientific record: the natural language prompts that drove the analysis, the complete tool-call trace at every step, and all rendered outputs — captured automatically in a standard `.ipynb` file. Sharing the notebook shares the entire analytical workflow. Re-running it reproduces the results.
 
 ### 6. Cross-Cell Conversational Memory
-Sage maintains conversational context across cells. Each cell builds on the findings of the previous ones without re-stating context. A second cell can refer to "the earthquake from the previous cell" and Sage resolves it from memory — enabling coherent multi-step scientific reasoning within a single notebook session. Use `%reset` to start a fresh session.
+ARGUS maintains conversational context across cells. Each cell builds on the findings of the previous ones without re-stating context. A second cell can refer to "the earthquake from the previous cell" and ARGUS resolves it from memory — enabling coherent multi-step scientific reasoning within a single notebook session. Use `%reset` to start a fresh session.
 
 ### 7. Extensible Skill Architecture
-Sage's domain knowledge is supplied through **skills** — plain-text `SKILL.md` files that describe data sources, APIs, and analytical workflows. Skills can be:
+ARGUS's domain knowledge is supplied through **skills** — plain-text `SKILL.md` files that describe data sources, APIs, and analytical workflows. Skills can be:
 - **Written by hand** by any domain scientist (no coding required)
 - **Generated by the agent** from an API description
 - **Installed from the [SkillsMP marketplace](https://skillsmp.com)** with a single `%%ask` prompt, without restarting the kernel
 
-Adding a skill extends Sage to a new scientific domain without modifying any core code.
+Adding a skill extends ARGUS to a new scientific domain without modifying any core code.
 
 ### 8. Multiple LLM Providers
-Sage works with any LangChain-compatible LLM endpoint. Configure your preferred provider in a `config.toml` file:
+ARGUS works with any LangChain-compatible LLM endpoint. Configure your preferred provider in a `config.toml` file:
 
 | Provider | Notes |
 |---|---|
@@ -74,7 +74,7 @@ Sage works with any LangChain-compatible LLM endpoint. Configure your preferred 
 
 ## Demo Notebooks
 
-See Sage in action across multiple scientific domains:
+See ARGUS in action across multiple scientific domains:
 
 | Notebook | Description | View |
 |---|---|---|
@@ -145,7 +145,7 @@ temperature = 0
 stream_chunk_timeout = 1200.0   # NRP GLM occasionally pauses mid-stream; raise from the 120s default
 ```
 
-### 4. Start Sage
+### 4. Start ARGUS
 
 ```bash
 docker run -p 8888:8888 \
@@ -165,7 +165,7 @@ shutil.copy("/home/jovyan/work/config.toml", os.path.expanduser("~/.deepagents/c
 
 ---
 
-## Using Sage
+## Using ARGUS
 
 ### Magic commands
 
@@ -195,7 +195,7 @@ All generated files (scripts, GeoJSON, CSV, PNG) are saved to `_{notebook_name}_
 
 ### Built-in skills
 
-These four skills ship with every Sage deployment.
+These four skills ship with every ARGUS deployment.
 
 | Skill | Data Source | Description |
 |---|---|---|
@@ -206,7 +206,7 @@ These four skills ship with every Sage deployment.
 
 ### Example skills
 
-These skills are included as working examples used by the [demo notebooks](#demo-notebooks). They illustrate how to connect Sage to real scientific data services and can serve as templates for writing your own skills.
+These skills are included as working examples used by the [demo notebooks](#demo-notebooks). They illustrate how to connect ARGUS to real scientific data services and can serve as templates for writing your own skills.
 
 | Skill | Data Source | Description |
 |---|---|---|
@@ -258,4 +258,4 @@ docker build -t sage:jupyterhub .
 
 ## Project
 
-Sage is developed as part of the [National Data Platform](https://nationaldataplatform.org) (NDP) project (NSF award #2333609). NDP provides open infrastructure for data sharing, discovery, and collaboration across scientific disciplines.
+ARGUS is developed as part of the [National Data Platform](https://nationaldataplatform.org) (NDP) project (NSF award #2333609). NDP provides open infrastructure for data sharing, discovery, and collaboration across scientific disciplines.
