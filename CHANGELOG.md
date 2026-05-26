@@ -4,6 +4,10 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## v1.2.11 — 2026-05-25
+- **Bake `stream_chunk_timeout = 1200.0` into the NRP provider config**: GLM-5 on NRP occasionally pauses mid-stream long enough to trip `langchain_openai`'s default 120-second `stream_chunk_timeout`. The setting was being applied via env var in some runs but not written into the Dockerfile-baked `config.toml`, so it was effectively absent in the published image. The 1200-second ceiling absorbs the longest pauses observed during the wildfire-rubric batch.
+- README NRP example updated to match.
+
 ## v1.2.10 — 2026-05-25
 - **`ndp-projects` Drive-phase manifest reconciliation fix**: the per-workspace summary used `len(drv_skip) - (len(drv_dl) - len(drv_err))` to update the skipped count. Folder→file expansion (one folder URL becomes N downloaded files) made this delta math produce nonsense like `-7 skipped`. Replaced with a manifest re-read after the Drive phase so counts come from authoritative state.
 - **`ndp-workspaces` Drive phase**: same manifest reconciliation pattern fixed inside `download_drive_for_workspace`. Now drops every `reason="drive"` entry from `skipped[]` instead of URL-matching (which fails for folder-expansion URLs). Sidecar `_drive_urls_to_download_later.txt` is unlinked unconditionally after a Drive pass since the function processes every entry it picks up.
