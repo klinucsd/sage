@@ -2083,6 +2083,138 @@ def _sage_install_skill_dir(src_dir, skill_name):
 
 
 # ---------------------------------------------------------------------------
+# Learnings.md frontmatter audit (Phase 4 of the Learnings protocol)
+# ---------------------------------------------------------------------------
+# Sage owns the `skill_digest` and `last_updated` fields in each
+# Learnings.md frontmatter. The agent writes the body sections; Sage keeps
+# the metadata accurate. When SKILL.md changes (image upgrade, %%skill
+# reload), Sage updates the digest and prepends a one-line warning banner
+# so the agent's next read flags pre-existing lessons as possibly stale.
+
+# Placeholder digests written by the agent before Phase 4 shipped. The
+# md5 of the empty string and the literal "auto" should be treated as
+# "not yet computed" and replaced silently on the first audit (no banner).
+_SAGE_LEARNINGS_PLACEHOLDER_DIGESTS = {
+    "", "auto", "d41d8cd98f00b204e9800998ecf8427e",
+}
+
+
+def _sage_compute_skill_digest(skill_md_path) -> str:
+    """Return md5 of a SKILL.md file. Empty string if unreadable."""
+    import hashlib as _hashlib
+    try:
+        return _hashlib.md5(Path(skill_md_path).read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def _sage_audit_learnings(skill_name: str, skill_md_path=None) -> None:
+    """Normalize a single skill's Learnings.md frontmatter against its SKILL.md.
+
+    Behavior:
+      - File missing → no-op (agent will create on first lesson; the next
+        audit pass normalizes it).
+      - Frontmatter present and digest matches → refresh `last_updated`.
+      - Frontmatter missing/malformed → rebuild it (no banner).
+      - Stored digest was a placeholder → fill in the real digest (no banner).
+      - Stored digest mismatches a real prior digest → prepend (or refresh)
+        a one-line warning banner so the agent sees that pre-recorded
+        lessons may be stale.
+
+    Idempotent. A prior banner is stripped before any new one is added, so
+    repeated audits don't stack banners.
+    """
+    import re as _re
+    from datetime import datetime as _dt, timezone as _tz
+
+    learn_path = Path(SAGE_LEARNINGS_DIR) / skill_name / "Learnings.md"
+    if not learn_path.exists():
+        return
+
+    if skill_md_path is None:
+        skill_md_path = _SAGE_SKILLS_DIR / skill_name / "SKILL.md"
+    skill_md_path = Path(skill_md_path)
+    if not skill_md_path.exists():
+        return
+
+    current_digest = _sage_compute_skill_digest(skill_md_path)
+    if not current_digest:
+        return
+
+    content = learn_path.read_text(encoding="utf-8", errors="replace")
+    today = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+
+    fm_re = _re.compile(r"^---\s*\n(.*?)\n---\s*\n", _re.DOTALL)
+    m = fm_re.match(content)
+    if m:
+        fm_text = m.group(1)
+        body = content[m.end():]
+    else:
+        fm_text = ""
+        body = content
+
+    # Parse frontmatter (simple `key: value` per line — no nested YAML).
+    fm = {}
+    for line in fm_text.splitlines():
+        if ":" in line:
+            k, _, v = line.partition(":")
+            fm[k.strip()] = v.strip()
+
+    stored_digest = fm.get("skill_digest", "")
+    real_change = (stored_digest not in _SAGE_LEARNINGS_PLACEHOLDER_DIGESTS
+                   and stored_digest != current_digest)
+
+    # Strip any prior banner before (optionally) re-adding a fresh one.
+    banner_re = _re.compile(
+        r"^> ⚠️ Skill `[^`]+` was updated on \d{4}-\d{2}-\d{2}\.[^\n]*\n+",
+        _re.MULTILINE,
+    )
+    body = banner_re.sub("", body, count=1).lstrip("\n")
+
+    if real_change:
+        banner = (
+            f"> ⚠️ Skill `{skill_name}` was updated on {today}. "
+            f"Lessons recorded before this date may be stale — verify "
+            f"before applying.\n\n"
+        )
+        body = banner + body
+
+    fm["skill"] = skill_name
+    fm["skill_digest"] = current_digest
+    fm["last_updated"] = today
+
+    new_fm_lines = "\n".join(f"{k}: {v}" for k, v in fm.items())
+    new_content = f"---\n{new_fm_lines}\n---\n\n{body.lstrip()}"
+    if new_content != content:
+        learn_path.write_text(new_content, encoding="utf-8")
+
+
+def _sage_audit_all_learnings() -> None:
+    """Walk SAGE_LEARNINGS_DIR and audit every skill's Learnings.md.
+    Called at kernel startup so digests reflect any skill changes that
+    happened while the kernel was down (image upgrade, %%skill reload
+    in a previous session, etc.)."""
+    root = Path(SAGE_LEARNINGS_DIR)
+    if not root.exists():
+        return
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        if (child / "Learnings.md").exists():
+            try:
+                _sage_audit_learnings(child.name)
+            except Exception:
+                pass  # one corrupt file must not break startup
+
+
+# Run the startup audit pass.
+try:
+    _sage_audit_all_learnings()
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Magic command registration
 # ---------------------------------------------------------------------------
 
@@ -2379,14 +2511,20 @@ try:
             f"  - Apply every fix in 'Recurring Errors & Fixes' pre-emptively in "
             f"the code you write — do not wait for the error to recur.\n"
             f"  - Avoid every pattern in 'What Doesn't Work.'\n"
-            f"AFTER THE WORK, append a new lesson ONLY when ALL of these hold:\n"
-            f"  1. You hit a real error or wrong behavior during this run that "
-            f"needed a fix.\n"
-            f"  2. The fix is non-obvious from SKILL.md alone — a reader of just "
-            f"the skill would not see it.\n"
-            f"  3. The lesson is not already recorded. Before appending, scan "
-            f"the existing entries; if a similar one exists, EDIT it to clarify "
-            f"rather than adding a duplicate.\n"
+            f"AFTER THE WORK, you MUST append a lesson to Learnings.md when "
+            f"ALL of these hold. Do NOT skip this step — without it, the next "
+            f"session has no memory of the fix and will repeat the same error.\n"
+            f"  1. The script needed at least one edit-and-retry — i.e. the "
+            f"first `execute` produced an error, OR you called `edit_file` and "
+            f"then re-ran the same script. A clean one-shot execute means no "
+            f"lesson is needed.\n"
+            f"  2. The fix is non-obvious from SKILL.md alone — a reader of "
+            f"just the skill would not see it.\n"
+            f"  3. The lesson is not already in the on-disk Learnings.md file "
+            f"you read earlier. Your conversation memory does NOT count as "
+            f"'already recorded' — the next session starts with no "
+            f"conversation, only the file. If the file has a similar entry, "
+            f"EDIT it to clarify rather than adding a duplicate.\n"
             f"DO NOT append for: routine successful runs, confirmations of "
             f"patterns already in SKILL.md, per-session journaling, open "
             f"questions, or future ideas. If a line in Learnings.md does not "
@@ -2871,6 +3009,14 @@ try:
                 dest = _sage_install_skill_dir(src, e["skill_name"])
                 e["dest"] = dest
                 installed.append(e)
+                # Phase 4: refresh the per-skill Learnings.md frontmatter
+                # against the newly installed SKILL.md. If the digest
+                # changed (skill was updated), prepend a warning banner so
+                # the agent flags pre-existing lessons on next read.
+                try:
+                    _sage_audit_learnings(e["skill_name"])
+                except Exception:
+                    pass
             except Exception as ex:
                 e["error"] = f"install failed: {ex}"
                 rejected.append(e)
