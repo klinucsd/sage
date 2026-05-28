@@ -596,6 +596,14 @@ def _reconstruct_messages_from_notebook(stop_at_cell_id: str | None = None) -> l
         if stop_at_cell_id and cell.get("id") == stop_at_cell_id:
             break
 
+        # Skip cells that were never executed. A %%ask cell the user wrote
+        # but did not run is NOT part of the prior conversation; including
+        # its prompt would feed the agent a request the user hasn't asked
+        # yet. (Observed bug: running the last %%ask cell caused the agent
+        # to process every unrun %%ask cell above it as a single batch.)
+        if cell.get("execution_count") is None:
+            continue
+
         source = cell.get("source", [])
         if isinstance(source, list):
             source = "".join(source)
@@ -1935,6 +1943,32 @@ def _sage_clone_github_subtree(org, repo, ref, subpath):
     import subprocess
     cache_key = f"{org}__{repo}__{ref}"
     cache_dir = _SAGE_SKILL_CACHE / cache_key
+
+    # Branch refs advance on the remote, so a cached clone goes stale every
+    # time the branch moves. Refresh the cache to the current tip before
+    # reusing it. Pinned refs (commit SHA, tag) are immutable — cache reuse
+    # is safe as-is.
+    if cache_dir.exists() and _sage_classify_ref(ref) == "branch":
+        try:
+            subprocess.run(
+                ["git", "-C", str(cache_dir), "fetch", "--quiet",
+                 "origin", ref],
+                check=True, capture_output=True, text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(cache_dir), "reset", "--hard",
+                 "--quiet", "FETCH_HEAD"],
+                check=True, capture_output=True, text=True,
+            )
+        except subprocess.CalledProcessError:
+            # Refresh failed (network, branch deleted, corrupted clone, …).
+            # Don't silently serve stale content — nuke the cache and let
+            # the fresh-clone path below re-create it.
+            import shutil as _shutil
+            _shutil.rmtree(cache_dir, ignore_errors=True)
+        except FileNotFoundError:
+            return None, "`git` command not found on PATH"
+
     if cache_dir.exists():
         target = cache_dir / subpath if subpath else cache_dir
         if target.exists():
