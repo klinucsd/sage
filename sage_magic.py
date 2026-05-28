@@ -260,11 +260,42 @@ def _init_output_dir() -> str:
 
 SAGE_OUTPUT_DIR = _init_output_dir()
 
+
+def _init_learnings_dir() -> str:
+    """Resolve the per-skill Learnings.md root.
+
+    Order of resolution:
+      1. SAGE_LEARNINGS_PATH env var (set explicitly by the user or by the
+         Docker image — the NRP image points this at the persistent CephBlock
+         mount so learnings survive across pod restarts).
+      2. ~/.sage_learnings/ as a portable default.
+
+    The directory is created if missing. Per-skill subdirectories
+    (<root>/<skill_name>/Learnings.md) are created on demand by the
+    agent the first time it writes a lesson."""
+    override = os.environ.get("SAGE_LEARNINGS_PATH", "").strip()
+    if override:
+        root = Path(override).expanduser()
+    else:
+        root = Path.home() / ".sage_learnings"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # Read-only filesystem or permission error — fall back to /tmp so
+        # the agent still has somewhere to write.
+        root = Path("/tmp/sage_learnings")
+        root.mkdir(parents=True, exist_ok=True)
+    return str(root)
+
+
+SAGE_LEARNINGS_DIR = _init_learnings_dir()
+
 # Expose both in IPython namespace so users can reference them
 try:
     ip = get_ipython()  # noqa: F821
     ip.user_ns["SAGE_OUTPUT_DIR"] = SAGE_OUTPUT_DIR
     ip.user_ns["SAGE_THREAD_ID"] = SAGE_THREAD_ID
+    ip.user_ns["SAGE_LEARNINGS_DIR"] = SAGE_LEARNINGS_DIR
     ip.user_ns["_sage_pip_install"] = _sage_pip_install
     ip.user_ns["_sage_pip_artifact_cleanup"] = _sage_pip_artifact_cleanup
     ip.user_ns["_sage_progress"] = _sage_progress
@@ -2302,6 +2333,43 @@ try:
             f"`print(..., file=sys.__stdout__)` calls) is captured and hidden from the cell "
             f"— it is only visible to you in the tool result. Do not try to stream progress "
             f"to the user via stdout; the cell stays clean while the script runs.\n\n"
+            f"LEARNINGS PROTOCOL — Sage maintains a per-skill memory of "
+            f"error→fix patterns and anti-patterns the agent has learned across "
+            f"past runs. These files live at:\n"
+            f"  {SAGE_LEARNINGS_DIR}/<skill_name>/Learnings.md\n"
+            f"`SAGE_LEARNINGS_DIR` is exposed in the kernel namespace. "
+            f"`<skill_name>` is the directory name of the skill whose SKILL.md "
+            f"you just read.\n"
+            f"WHEN YOU READ A SKILL'S SKILL.md, immediately also try to read "
+            f"its Learnings.md (use `read_file`). If the file exists:\n"
+            f"  - Apply every fix in 'Recurring Errors & Fixes' pre-emptively in "
+            f"the code you write — do not wait for the error to recur.\n"
+            f"  - Avoid every pattern in 'What Doesn't Work.'\n"
+            f"AFTER THE WORK, append a new lesson ONLY when ALL of these hold:\n"
+            f"  1. You hit a real error or wrong behavior during this run that "
+            f"needed a fix.\n"
+            f"  2. The fix is non-obvious from SKILL.md alone — a reader of just "
+            f"the skill would not see it.\n"
+            f"  3. The lesson is not already recorded. Before appending, scan "
+            f"the existing entries; if a similar one exists, EDIT it to clarify "
+            f"rather than adding a duplicate.\n"
+            f"DO NOT append for: routine successful runs, confirmations of "
+            f"patterns already in SKILL.md, per-session journaling, open "
+            f"questions, or future ideas. If a line in Learnings.md does not "
+            f"change what code gets written on the next run, it does not belong "
+            f"in the file.\n"
+            f"FILE FORMAT — exactly two body sections:\n"
+            f"  ## What Doesn't Work\n"
+            f"  - **<short title>**\n"
+            f"    <2-3 lines: the pattern, why it fails, what to do instead>\n"
+            f"  ## Recurring Errors & Fixes\n"
+            f"  - **<error message or short title>**\n"
+            f"    Cause: <one line>\n"
+            f"    Fix: <one line — minimal code if needed>\n"
+            f"YAML frontmatter (`skill`, `skill_digest`, `last_updated`) is "
+            f"maintained by Sage; do not edit it. No per-entry dates. No "
+            f"confidence ratings. Keep entries terse — 2-3 lines, not "
+            f"paragraphs.\n\n"
             f"PACKAGE INSTALL RULE — `/opt/conda/` is read-only for the kernel user, so any "
             f"`pip install` without `--user` fails with `Permission denied` and floods the cell. "
             f"Sage provides a helper that does the right thing silently:\n"
