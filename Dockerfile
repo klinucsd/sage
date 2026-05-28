@@ -106,7 +106,7 @@ tomli_w.dump({ \
                 'models': ['glm-5', 'glm-4.7'], \
                 'api_key_env': 'NRP_API_KEY', \
                 'base_url': 'https://ellm.nrp-nautilus.io/v1', \
-                'params': {'temperature': 0, 'stream_chunk_timeout': 1200.0}, \
+                'params': {'temperature': 0, 'stream_chunk_timeout': 1200.0, 'max_retries': 6}, \
             } \
         } \
     } \

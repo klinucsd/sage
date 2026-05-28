@@ -1035,8 +1035,49 @@ def _display_combined_map(
         if not geojson_layers and not wms_layers:
             return
 
-        # Determine map center from GeoJSON bounds or WMS bbox
+        # Partition GeoJSON layers into those with usable geometry and those
+        # without. A layer with empty or null geometry yields
+        # total_bounds = [nan, nan, nan, nan]; centering on it would crash
+        # folium.Map(). We drop such layers from the map so it still renders,
+        # BUT we surface a visible warning naming them rather than hiding the
+        # problem silently — an empty-geometry layer usually means an upstream
+        # data error (e.g. a boundary fetched with returnGeometry=false), and
+        # the user needs to know their layer is missing, not assume it rendered.
+        import math as _math
+
+        def _finite_bounds(b):
+            try:
+                return (b is not None and len(b) == 4
+                        and all(_math.isfinite(float(x)) for x in b))
+            except (TypeError, ValueError):
+                return False
+
+        kept_layers = []
+        dropped_layer_names = []
+        for name, gdf, colormap in geojson_layers:
+            if _finite_bounds(gdf.total_bounds):
+                kept_layers.append((name, gdf, colormap))
+            else:
+                dropped_layer_names.append(name)
+        geojson_layers = kept_layers
+
+        # Emit the warning early so it appears even if a later step fails.
+        if dropped_layer_names:
+            import html as _html
+            _names = ", ".join(f"<code>{_html.escape(str(n))}</code>"
+                               for n in dropped_layer_names)
+            display(HTML(
+                '<div style="background:#fff3cd; border-left:3px solid #f0ad4e;'
+                ' padding:6px 10px; margin:4px 0; font-size:0.85em;">'
+                f'⚠️ Omitted from the map (empty or null geometry): {_names}. '
+                'These layers have no valid coordinates — likely an upstream '
+                'data error. Verify the source before trusting any analysis '
+                'derived from them.</div>'
+            ))
+
+        # Determine map center: valid GeoJSON bounds → WMS bbox → US fallback.
         fit_bounds = None  # [[south, west], [north, east]] for auto-zoom
+        center = None
         if geojson_layers:
             all_bounds = [gdf.total_bounds for _, gdf, _ in geojson_layers]
             minx = min(b[0] for b in all_bounds)
@@ -1045,14 +1086,24 @@ def _display_combined_map(
             maxy = max(b[3] for b in all_bounds)
             center = [(miny + maxy) / 2, (minx + maxx) / 2]
             fit_bounds = [[miny, minx], [maxy, maxx]]
-        else:
+        elif wms_layers and wms_layers[0].get("bbox"):
             # bbox format: [min_lat, min_lon, max_lat, max_lon]
-            bbox = wms_layers[0].get("bbox")
-            if bbox:
-                center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
-                fit_bounds = [[bbox[0], bbox[1]], [bbox[2], bbox[3]]]
-            else:
-                center = [39.5, -98.5]  # continental US fallback
+            bbox = wms_layers[0]["bbox"]
+            center = [(bbox[0] + bbox[2]) / 2, (bbox[1] + bbox[3]) / 2]
+            fit_bounds = [[bbox[0], bbox[1]], [bbox[2], bbox[3]]]
+
+        # If every layer was dropped and there's no WMS bbox, there is nothing
+        # meaningful to show — say so instead of rendering an empty US map.
+        if center is None:
+            if dropped_layer_names:
+                display(HTML(
+                    '<div style="background:#f8d7da; border-left:3px solid #d9534f;'
+                    ' padding:6px 10px; margin:4px 0; font-size:0.85em;">'
+                    '⚠️ No map rendered: every layer had empty or null '
+                    'geometry. Nothing was plotted.</div>'
+                ))
+                return
+            center = [39.5, -98.5]  # continental US fallback
 
         m = folium.Map(location=center, zoom_start=4, tiles=None)
 
@@ -2250,15 +2301,7 @@ try:
             f"prefixing the invocation with `cd`. All script stdout/stderr (including any "
             f"`print(..., file=sys.__stdout__)` calls) is captured and hidden from the cell "
             f"— it is only visible to you in the tool result. Do not try to stream progress "
-            f"to the user via stdout; the cell stays clean while the script runs.\n"
-            f"EXCEPTION — for long-running multi-item loops (downloading many "
-            f"workspaces, batch-processing many submissions, etc.), Sage provides "
-            f"`_sage_progress(msg)` in the kernel namespace. Calling it emits ONE "
-            f"line of text live to the cell, bypassing the stdout capture, so the "
-            f"user can see something is happening. Use it ONLY for genuine "
-            f"per-item progress (e.g. `_sage_progress(f\"[{{i}}/{{n}}] {{name}}\")`); "
-            f"do NOT use it for ad-hoc debug prints or for short scripts where "
-            f"progress isn't needed.\n\n"
+            f"to the user via stdout; the cell stays clean while the script runs.\n\n"
             f"PACKAGE INSTALL RULE — `/opt/conda/` is read-only for the kernel user, so any "
             f"`pip install` without `--user` fails with `Permission denied` and floods the cell. "
             f"Sage provides a helper that does the right thing silently:\n"

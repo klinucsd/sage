@@ -4,6 +4,14 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## v1.2.13 — 2026-05-26
+- **Stop the agent over-using `_sage_progress` in ad-hoc scripts.** Removed the `_sage_progress` mention from the system prompt. The agent had begun emitting progress lines (e.g. "Searching NDP: …") into short ad-hoc scripts that don't warrant live output. Skills that genuinely need progress (`ndp-projects`, `ndp-workspaces`, wildfire batch) call `_sage_progress` in their own code, so project/workspace downloads keep streaming progress — but ad-hoc scripts now stay quiet.
+- **`ndp-search` no longer dumps the full result set.** The Complete Example printed every station and resource via `print()`; replaced with a count-only summary (`print(f"{len(stations)} relevant station datasets")`). Added Key Rule #6: never print the full result set or per-result details — searches can return thousands of datasets; keep the data in variables/saved JSON and reserve the "top 10" list for the final report.
+
+## v1.2.12 — 2026-05-26
+- **NaN-safe map centering + visible warnings for empty-geometry layers.** `_display_combined_map` crashed with `Location values cannot contain NaNs` when a GeoJSON layer had empty/null geometry (e.g. a county boundary fetched with `returnGeometry=false`). Now such layers are dropped from the map so it still renders, AND a yellow warning banner names each dropped layer ("Omitted from the map (empty or null geometry): …") so the data error is surfaced rather than silently hidden. If every layer is empty and there is no WMS bbox, a red banner is shown and nothing is rendered (instead of a misleading continental-US map).
+- **`max_retries = 6` in the NRP provider config.** Auto-retries transient connection errors to the GLM endpoint with the OpenAI client's exponential backoff, reducing spurious mid-session `Connection error` failures. (Handles request-time drops; mid-stream drops still surface and are recovered via new-cell resume.)
+
 ## v1.2.11 — 2026-05-25
 - **Bake `stream_chunk_timeout = 1200.0` into the NRP provider config**: GLM-5 on NRP occasionally pauses mid-stream long enough to trip `langchain_openai`'s default 120-second `stream_chunk_timeout`. The setting was being applied via env var in some runs but not written into the Dockerfile-baked `config.toml`, so it was effectively absent in the published image. The 1200-second ceiling absorbs the longest pauses observed during the wildfire-rubric batch.
 - README NRP example updated to match.

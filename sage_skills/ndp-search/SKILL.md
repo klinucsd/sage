@@ -161,10 +161,11 @@ stations = filter_relevant_datasets(
     excluded_terms=["model", "simulation"]
 )
 
-for s in stations:
-    print(f"{s['title']:30s}  lat={s['lat']}, lon={s['lon']}")
-    for res in s['resources']:
-        print(f"  [{res['format']}] {res['url']}")
+# Print ONLY a count — never the per-result details. The full data lives
+# in the `stations` variable and the saved JSON/GeoJSON. A broad search can
+# return thousands of datasets; printing each one floods both the (hidden)
+# tool result and your context window for no benefit.
+print(f"{len(stations)} relevant station datasets")
 ```
 
 ## Output Format
@@ -187,3 +188,4 @@ Save final results as JSON. If datasets have coordinates, also save as GeoJSON (
 3. **No geographic keywords** — filter spatially via `bbox`, not by putting place names in `text`.
 4. **Geometry verification** — mandatory for county/state/region queries.
 5. **Spatial envelope order** — `ENVELOPE(min_lon, max_lon, max_lat, min_lat)` — Solr's order has max_lat before min_lat.
+6. **Never print the full result set or per-result details.** Searches can return thousands of datasets. Print only summary counts (e.g. `print(f"{len(results)} datasets")`); keep the full data in variables and saved JSON/GeoJSON. The "top 10" numbered list in Output Format is for the final Markdown report only — not for `print()` inside the search script.
