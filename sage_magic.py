@@ -290,12 +290,44 @@ def _init_learnings_dir() -> str:
 
 SAGE_LEARNINGS_DIR = _init_learnings_dir()
 
+
+def _sage_build_learnings_skills_set() -> set:
+    """Return the set of skill names that currently have a Learnings.md
+    file under SAGE_LEARNINGS_DIR.
+
+    Used to short-circuit the agent's read-Learnings.md step: if a skill
+    is not in this set, the agent skips the read entirely instead of
+    issuing a `read_file` that returns "file not found". Saves ~5-10s
+    of LLM round-trip per skill on cells that consult several skills
+    whose Learnings.md does not yet exist.
+
+    Called at kernel startup (initial population) AND at the start of
+    every `%%ask` cell (right before system-prompt assembly) so any
+    Learnings.md created in earlier cells of the session is picked up
+    on the next cell. The scan is cheap: one `(child / 'Learnings.md').
+    exists()` per child of SAGE_LEARNINGS_DIR."""
+    root = Path(SAGE_LEARNINGS_DIR)
+    if not root.exists():
+        return set()
+    out = set()
+    try:
+        for child in root.iterdir():
+            if child.is_dir() and (child / "Learnings.md").exists():
+                out.add(child.name)
+    except OSError:
+        pass
+    return out
+
+
+SAGE_LEARNINGS_SKILLS = _sage_build_learnings_skills_set()
+
 # Expose both in IPython namespace so users can reference them
 try:
     ip = get_ipython()  # noqa: F821
     ip.user_ns["SAGE_OUTPUT_DIR"] = SAGE_OUTPUT_DIR
     ip.user_ns["SAGE_THREAD_ID"] = SAGE_THREAD_ID
     ip.user_ns["SAGE_LEARNINGS_DIR"] = SAGE_LEARNINGS_DIR
+    ip.user_ns["SAGE_LEARNINGS_SKILLS"] = SAGE_LEARNINGS_SKILLS
     ip.user_ns["_sage_pip_install"] = _sage_pip_install
     ip.user_ns["_sage_pip_artifact_cleanup"] = _sage_pip_artifact_cleanup
     ip.user_ns["_sage_progress"] = _sage_progress
@@ -2316,6 +2348,18 @@ try:
                     except Exception:
                         pass
 
+        # Refresh the set of skills with Learnings.md so the system prompt
+        # below reflects any Learnings.md created (by the agent or out of
+        # band) since the last cell. The agent uses this set to skip the
+        # `read_file` round-trip for skills that have no Learnings.md yet,
+        # eliminating 5-10 s of latency per skipped skill.
+        global SAGE_LEARNINGS_SKILLS
+        SAGE_LEARNINGS_SKILLS = _sage_build_learnings_skills_set()
+        try:
+            get_ipython().user_ns["SAGE_LEARNINGS_SKILLS"] = SAGE_LEARNINGS_SKILLS  # noqa: F821
+        except Exception:
+            pass
+
         # Inject output directory and thinking requirement into prompt
         import sys as _sys
         full_prompt = (
@@ -2500,46 +2544,43 @@ try:
             f"— it is only visible to you in the tool result. Do not try to stream progress "
             f"to the user via stdout; the cell stays clean while the script runs.\n\n"
             f"LEARNINGS PROTOCOL — Sage maintains a per-skill memory of "
-            f"error→fix patterns and anti-patterns the agent has learned across "
-            f"past runs. These files live at:\n"
-            f"  {SAGE_LEARNINGS_DIR}/<skill_name>/Learnings.md\n"
-            f"`SAGE_LEARNINGS_DIR` is exposed in the kernel namespace. "
+            f"error→fix patterns the agent has learned across past runs. The "
+            f"single most-important rule of this protocol, and the one agents "
+            f"skip most often, is the WRITE rule below. Read it first.\n"
+            f"\n"
+            f"### ★ WRITE RULE — DO THIS BEFORE ANYTHING ELSE IN A TASK THAT HIT AN ERROR ★\n"
+            f"If, during this task, you call `edit_file` (or `write_file` "
+            f"replacing a previous script) and then re-run the same script "
+            f"via `execute` — i.e. ANY edit-and-retry cycle — you MUST "
+            f"record the lesson in the corresponding skill's Learnings.md. "
+            f"You MUST do this BEFORE continuing the task, BEFORE writing "
+            f"any further script, and BEFORE composing the final report. "
+            f"Skipping this step is the single most common failure mode of "
+            f"this protocol — the agent fixes the error, moves on, and the "
+            f"next session repeats the same mistake because the lesson was "
+            f"never persisted. Do not be that agent.\n"
+            f"\n"
+            f"Files live at: {SAGE_LEARNINGS_DIR}/<skill_name>/Learnings.md\n"
             f"`<skill_name>` is the directory name of the skill whose SKILL.md "
             f"you just read.\n"
-            f"WHEN YOU READ A SKILL'S SKILL.md, immediately also try to read "
-            f"its Learnings.md (use `read_file`). If the file exists:\n"
-            f"  - Apply every fix in 'Recurring Errors & Fixes' pre-emptively in "
-            f"the code you write — do not wait for the error to recur.\n"
-            f"  - Avoid every pattern in 'What Doesn't Work.'\n"
-            f"AS SOON AS you fix an error that required at least one "
-            f"edit-and-retry, append the lesson to that skill's Learnings.md "
-            f"BEFORE continuing to the next step in your work. Record each "
-            f"lesson IMMEDIATELY while the failure context is fresh — do NOT "
-            f"defer recording until the end of the task and try to recall "
-            f"every fix at once. Recording is not a closing ritual; it is "
-            f"an inline step woven into the work.\n"
-            f"Append the lesson WHEN ALL of these hold:\n"
-            f"  1. The script needed at least one edit-and-retry — i.e. the "
-            f"first `execute` produced an error, OR you called `edit_file` "
-            f"and then re-ran the same script. A clean one-shot execute "
-            f"means no lesson is needed.\n"
+            f"\n"
+            f"WRITE the lesson WHEN ALL of these hold:\n"
+            f"  1. The script needed at least one edit-and-retry (the first "
+            f"`execute` produced an error, OR you called `edit_file` and "
+            f"re-ran). A clean one-shot execute means no lesson is needed.\n"
             f"  2. The fix is non-obvious from SKILL.md alone — a reader of "
             f"just the skill would not see it.\n"
             f"  3. The lesson is not already in the on-disk Learnings.md "
-            f"file you read earlier. Your conversation memory does NOT "
-            f"count as 'already recorded' — the next session starts with "
-            f"no conversation, only the file. If the file has a similar "
-            f"entry, EDIT it to clarify rather than adding a duplicate.\n"
-            f"BEFORE REPORTING FINAL RESULTS to the user, verify every "
-            f"error→fix cycle from this run has been recorded. If any are "
-            f"still missing — even ones from earlier in the task — record "
-            f"them now. Without persistence, the next session repeats the "
-            f"same errors.\n"
-            f"DO NOT append for: routine successful runs, confirmations of "
-            f"patterns already in SKILL.md, per-session journaling, open "
-            f"questions, or future ideas. If a line in Learnings.md does not "
-            f"change what code gets written on the next run, it does not belong "
-            f"in the file.\n"
+            f"file. Your conversation memory does NOT count as 'already "
+            f"recorded' — the next session starts with no conversation, "
+            f"only the file. If the file has a similar entry, EDIT it to "
+            f"clarify rather than adding a duplicate.\n"
+            f"DO NOT append for: routine one-shot successes, confirmations "
+            f"of patterns already in SKILL.md, per-session journaling, open "
+            f"questions, future ideas. If a line in Learnings.md does not "
+            f"change what code gets written on the next run, it does not "
+            f"belong in the file.\n"
+            f"\n"
             f"FILE FORMAT — exactly two body sections:\n"
             f"  ## What Doesn't Work\n"
             f"  - **<short title>**\n"
@@ -2551,7 +2592,36 @@ try:
             f"YAML frontmatter (`skill`, `skill_digest`, `last_updated`) is "
             f"maintained by Sage; do not edit it. No per-entry dates. No "
             f"confidence ratings. Keep entries terse — 2-3 lines, not "
-            f"paragraphs.\n\n"
+            f"paragraphs.\n"
+            f"\n"
+            f"### READ RULE — short-circuited by the list below ###\n"
+            f"SKILLS WITH AN EXISTING Learnings.md (as of this cell's start): "
+            f"{sorted(SAGE_LEARNINGS_SKILLS) if SAGE_LEARNINGS_SKILLS else '(none)'}\n"
+            f"When you read a skill's SKILL.md, check whether `<skill_name>` "
+            f"is in the list above. If yes, immediately also read its "
+            f"Learnings.md (`read_file`); if no, SKIP the `read_file` — the "
+            f"file does not exist yet and the attempt is a wasted round "
+            f"trip. When Learnings.md IS present, apply every fix in "
+            f"'Recurring Errors & Fixes' pre-emptively and avoid every "
+            f"pattern in 'What Doesn't Work'.\n"
+            f"The list above SHORT-CIRCUITS READS ONLY. It has NOTHING to "
+            f"do with the WRITE RULE above. A skill being absent from the "
+            f"list is exactly when you would CREATE its Learnings.md if "
+            f"this task discovers a lesson worth recording.\n"
+            f"\n"
+            f"### ★ CLOSING SELF-AUDIT — BEFORE YOUR FINAL REPORT ★\n"
+            f"Before you write your final natural-language report to the "
+            f"user, AUDIT your own tool-call history in this task. For each "
+            f"`edit_file`/`write_file` that was followed by a re-`execute` "
+            f"of the same script, confirm that you have a corresponding "
+            f"`write_file` or `edit_file` on a Learnings.md. If any "
+            f"edit-and-retry cycle in your trace has no corresponding "
+            f"Learnings.md update, record it NOW — this is your last "
+            f"chance before the cell ends. Only then proceed to the "
+            f"final report. This audit exists because skipping the WRITE "
+            f"RULE mid-task is the single most common protocol failure; "
+            f"the audit is the safety net.\n"
+            f"\n"
             f"PACKAGE INSTALL RULE — `/opt/conda/` is read-only for the kernel user, so any "
             f"`pip install` without `--user` fails with `Permission denied` and floods the cell. "
             f"Sage provides a helper that does the right thing silently:\n"
