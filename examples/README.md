@@ -1,4 +1,4 @@
-# Sage Example Notebooks
+# ARGUS Example Notebooks
 
 These notebooks demonstrate Sage across multiple scientific domains.
 GitHub's notebook renderer does not handle embedded maps and charts well —
