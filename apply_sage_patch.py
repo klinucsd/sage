@@ -1,14 +1,18 @@
-"""Apply Sage patches to the installed deepagents-cli config.py.
+"""Apply Sage patches to the installed deepagents-code config.py.
 
 Patches applied:
   1. detect_provider() — maps glm-* model names to the 'nrp' provider
+
+NOTE: the interactive-agent package was renamed from `deepagents-cli`
+(0.0.x) to `deepagents-code` (0.1.x) starting June 2026. This patch
+script targets the new package.
 """
 
 import os
 import sysconfig
 
 site = sysconfig.get_path("purelib")
-config_path = os.path.join(site, "deepagents_cli", "config.py")
+config_path = os.path.join(site, "deepagents_code", "config.py")
 
 print(f"Patching {config_path}")
 with open(config_path) as f:
