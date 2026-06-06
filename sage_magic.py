@@ -225,7 +225,7 @@ def _sage_pip_install(*pkgs: str) -> None:
 
 # Single thread ID for the whole kernel session — gives the agent memory
 # across all %%ask cells in the same notebook.
-from deepagents_cli.sessions import generate_thread_id  # noqa: E402
+from deepagents_code.sessions import generate_thread_id  # noqa: E402
 SAGE_THREAD_ID = generate_thread_id()[:8]
 
 # Conversation history for cross-cell memory — maintained in Python, no SQLite checkpointer.
@@ -1751,12 +1751,12 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
 
     from deepagents import create_deep_agent
     from deepagents.backends.local_shell import LocalShellBackend
-    from deepagents_cli.config import create_model
+    from deepagents_code.config import create_model
     try:
         from sage_kernel_backend import KernelShellBackend
     except ImportError:
         KernelShellBackend = None
-    from deepagents_cli.model_config import ModelConfigError
+    from deepagents_code.model_config import ModelConfigError
     from langchain_core.messages import AIMessage, ToolMessage
 
     try:

@@ -52,10 +52,14 @@ RUN apt-get update && apt-get install -y \
 # compiled against the wrong API version — widgets then render as plain text.
 # Pinning here forces pip to install labextension versions compatible with 4.2.4.
 #
-# [openai] extra provides langchain-openai (ChatOpenAI) for NRP's GLM endpoint
+# deepagents-code is the interactive coding agent package (renamed from
+# deepagents-cli starting at 0.2.x; the legacy deepagents-cli 0.2.x is now
+# deployment tooling only). 0.1.10 brings deepagents==0.6.8, langchain-openai,
+# langchain-anthropic, langchain-mcp-adapters, and the LangGraph runtime as
+# default deps — no extras needed.
 RUN pip install --no-cache-dir \
     "jupyterlab==4.2.4" "notebook==7.2.2" \
-    "deepagents-cli[openai]==0.0.41" nest_asyncio folium geopandas matplotlib rasterio \
+    "deepagents-code==0.1.10" nest_asyncio folium geopandas matplotlib rasterio \
     ipywidgets ipyleaflet leafmap plotly pypdf openpyxl tomli-w
 
 # Install PDAL via conda before pyforestscan — pip cannot build pdal from source without
