@@ -1648,7 +1648,13 @@ def _fix_glm_markdown(text: str) -> str:
     # be mistaken for bold content).
     # Use [^*\n] (not [^*]) to prevent matching across line boundaries, which would
     # span from one bold pair's closing ** to the next pair's opening ** on another line.
-    text = re.sub(r'\*\*([^*\n]*\w[^*\n]*)\*\*([^\s*])', r'**\1** \2', text)
+    # Lookahead `(?=[^\s*])` requires content's first char to be non-whitespace,
+    # non-asterisk WITHOUT consuming it. Prevents the regex from matching across
+    # two adjacent bold pairs on the same line, where the content between them
+    # would otherwise start with whitespace (e.g. on `**A** more **B**X`, the
+    # old regex matched `** more **` as a bold pair). See [[feedback_sage_bold_regex]]
+    # Rule 3 for the full story.
+    text = re.sub(r'\*\*(?=[^\s*])([^*\n]*\w[^*\n]*)\*\*([^\s*])', r'**\1** \2', text)
     return text
 
 
