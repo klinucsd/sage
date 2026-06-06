@@ -1747,7 +1747,7 @@ def _render_markdown_with_files(text: str) -> tuple:
 # Agent streaming with tool detail display
 # ---------------------------------------------------------------------------
 
-async def _run_agent_async(prompt: str) -> tuple[str, dict]:
+async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tuple[str, dict]:
     """Create and stream the agent, displaying tool calls with details.
 
     Returns (final_text, tool_counts) where tool_counts is a dict mapping
@@ -1778,13 +1778,19 @@ async def _run_agent_async(prompt: str) -> tuple[str, dict]:
     skills_paths = sorted([str(d) for d in skills_dir.iterdir() if d.is_dir()]) if skills_dir.exists() else []
 
     # No checkpointer — cross-cell memory is carried via SAGE_MESSAGES.
+    # Pass system_prompt at construction time so the new deepagents 0.6.8
+    # delivers our rules as a proper system message rather than as a
+    # preamble inside the user message. With GLM's weak instruction-following,
+    # system-level rules carry materially more weight than user-message rules.
     backend_cls = KernelShellBackend if KernelShellBackend is not None else LocalShellBackend
-    agent = create_deep_agent(
-        model,
-        skills=skills_paths,
-        backend=backend_cls(virtual_mode=False),
-        checkpointer=None,
-    )
+    create_kwargs: dict = {
+        "skills": skills_paths,
+        "backend": backend_cls(virtual_mode=False),
+        "checkpointer": None,
+    }
+    if system_prompt:
+        create_kwargs["system_prompt"] = system_prompt
+    agent = create_deep_agent(model, **create_kwargs)
 
     config = {"metadata": {"assistant_id": "sage"}}
 
@@ -2504,7 +2510,7 @@ try:
 
         # Inject output directory and thinking requirement into prompt
         import sys as _sys
-        full_prompt = (
+        system_prompt_text = (
             f"The Python interpreter is at: {_sys.executable} — always use this exact path "
             f"when running Python scripts (do not use 'python' or 'python3').\n"
             f"Use {SAGE_OUTPUT_DIR} as your working directory for ALL files — "
@@ -2804,8 +2810,7 @@ try:
             f"reproject the vector geometry into the raster's CRS before sampling, not the other way around.\n"
             f"Never assume two datasets share a CRS just because they describe the same geographic area. "
             f"USGS services often return Web Mercator (EPSG:3857), FEMA NSI returns WGS84 (EPSG:4326), "
-            f"EPT point clouds are commonly EPSG:3857, state-plane data can be any of hundreds of codes.\n\n"
-            f"{prompt}"
+            f"EPT point clouds are commonly EPSG:3857, state-plane data can be any of hundreds of codes."
         )
 
         # Snapshot output folder before run
@@ -2838,7 +2843,7 @@ try:
         _loop.set_exception_handler(_suppress_context_errors)
         try:
             final_text, tool_counts = _loop.run_until_complete(
-                _run_agent_async(full_prompt)
+                _run_agent_async(prompt, system_prompt_text)
             )
         except Exception as _err:
             _loop.set_exception_handler(_orig_exc_handler)
