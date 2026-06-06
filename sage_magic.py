@@ -260,11 +260,74 @@ def _init_output_dir() -> str:
 
 SAGE_OUTPUT_DIR = _init_output_dir()
 
+
+def _init_learnings_dir() -> str:
+    """Resolve the per-skill Learnings.md root.
+
+    Order of resolution:
+      1. SAGE_LEARNINGS_PATH env var (set explicitly by the user or by the
+         Docker image — the NRP image points this at the persistent CephBlock
+         mount so learnings survive across pod restarts).
+      2. ~/.sage_learnings/ as a portable default.
+
+    The directory is created if missing. Per-skill subdirectories
+    (<root>/<skill_name>/Learnings.md) are created on demand by the
+    agent the first time it writes a lesson."""
+    override = os.environ.get("SAGE_LEARNINGS_PATH", "").strip()
+    if override:
+        root = Path(override).expanduser()
+    else:
+        root = Path.home() / ".sage_learnings"
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        # Read-only filesystem or permission error — fall back to /tmp so
+        # the agent still has somewhere to write.
+        root = Path("/tmp/sage_learnings")
+        root.mkdir(parents=True, exist_ok=True)
+    return str(root)
+
+
+SAGE_LEARNINGS_DIR = _init_learnings_dir()
+
+
+def _sage_build_learnings_skills_set() -> set:
+    """Return the set of skill names that currently have a Learnings.md
+    file under SAGE_LEARNINGS_DIR.
+
+    Used to short-circuit the agent's read-Learnings.md step: if a skill
+    is not in this set, the agent skips the read entirely instead of
+    issuing a `read_file` that returns "file not found". Saves ~5-10s
+    of LLM round-trip per skill on cells that consult several skills
+    whose Learnings.md does not yet exist.
+
+    Called at kernel startup (initial population) AND at the start of
+    every `%%ask` cell (right before system-prompt assembly) so any
+    Learnings.md created in earlier cells of the session is picked up
+    on the next cell. The scan is cheap: one `(child / 'Learnings.md').
+    exists()` per child of SAGE_LEARNINGS_DIR."""
+    root = Path(SAGE_LEARNINGS_DIR)
+    if not root.exists():
+        return set()
+    out = set()
+    try:
+        for child in root.iterdir():
+            if child.is_dir() and (child / "Learnings.md").exists():
+                out.add(child.name)
+    except OSError:
+        pass
+    return out
+
+
+SAGE_LEARNINGS_SKILLS = _sage_build_learnings_skills_set()
+
 # Expose both in IPython namespace so users can reference them
 try:
     ip = get_ipython()  # noqa: F821
     ip.user_ns["SAGE_OUTPUT_DIR"] = SAGE_OUTPUT_DIR
     ip.user_ns["SAGE_THREAD_ID"] = SAGE_THREAD_ID
+    ip.user_ns["SAGE_LEARNINGS_DIR"] = SAGE_LEARNINGS_DIR
+    ip.user_ns["SAGE_LEARNINGS_SKILLS"] = SAGE_LEARNINGS_SKILLS
     ip.user_ns["_sage_pip_install"] = _sage_pip_install
     ip.user_ns["_sage_pip_artifact_cleanup"] = _sage_pip_artifact_cleanup
     ip.user_ns["_sage_progress"] = _sage_progress
@@ -539,7 +602,113 @@ def _new_files(before: dict, after: dict) -> list:
 
 
 # Internal files that should never be tracked as cell outputs
-_SAGE_INTERNAL_FILES = {".sage_cells.json", ".sage_run.jsonl", ".sage_colors.json", ".sage_kernel_vars.json"}
+_SAGE_INTERNAL_FILES = {
+    ".sage_cells.json", ".sage_run.jsonl", ".sage_colors.json",
+    ".sage_kernel_vars.json", ".sage_cell_runs.json",
+}
+
+
+# Persisted cell-run windows — track which %%ask cells started but didn't
+# finish, across kernel restarts. Used for orphan-file cleanup.
+#
+# Schema (.sage_cell_runs.json):
+#   {
+#     "<cell_id>": {"started_at": <float>, "finished_at": <float|None>},
+#     ...
+#   }
+#
+# At cell entry: any record with finished_at=null is from a killed cell
+# (interrupted, kernel crashed, cell deleted before finally ran). Files in
+# that cell's window which aren't in any cell-output registry are presumed
+# partial outputs and get removed with a warning.
+#
+# Persisting to disk (rather than in-memory) means a kernel restart still
+# remembers "the previous cell was killed" and the next cell can clean up.
+
+def _load_cell_runs() -> dict[str, dict[str, float | None]]:
+    p = Path(SAGE_OUTPUT_DIR) / ".sage_cell_runs.json"
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return {}
+
+
+def _save_cell_runs(runs: dict[str, dict[str, float | None]]) -> None:
+    p = Path(SAGE_OUTPUT_DIR) / ".sage_cell_runs.json"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(runs, indent=2))
+    except Exception:
+        pass
+
+
+def _orphan_cleanup_for_dead_cell(
+    prev_start: float,
+    now: float,
+) -> list[str]:
+    """Delete files in SAGE_OUTPUT_DIR whose mtime falls inside the dead
+    cell's window, are NOT in any cell's file-registry, and are not
+    internal sage files. Returns the list of deleted file paths.
+
+    Caller has determined that some previous cell's run had no
+    finished_at (it was killed); we treat unregistered files in its
+    window as presumed partial outputs.
+    """
+    # 1-second buffer on both sides for mtime/clock fuzziness
+    window_lo = prev_start - 1.0
+    window_hi = now + 1.0
+    reg = _load_cell_registry()
+    all_registered = {f for files in reg.values() for f in files}
+    deleted: list[str] = []
+    for orphan in Path(SAGE_OUTPUT_DIR).rglob("*"):
+        try:
+            if not orphan.is_file():
+                continue
+            if orphan.name in _SAGE_INTERNAL_FILES:
+                continue
+            if str(orphan) in all_registered:
+                continue
+            mtime = orphan.stat().st_mtime
+            if not (window_lo <= mtime <= window_hi):
+                continue
+            orphan.unlink(missing_ok=True)
+            deleted.append(str(orphan))
+        except Exception:
+            pass
+    return deleted
+
+
+def _display_orphan_cleanup_warning(deleted: list[str]) -> None:
+    """Show a yellow banner telling the user that orphan files from a
+    previous-cell that didn't finish were removed."""
+    from IPython.display import display, HTML
+    n = len(deleted)
+    if n == 0:
+        return
+    # Show up to first 15 filenames so the banner stays readable.
+    shown = deleted[:15]
+    file_items = "".join(
+        f"<li><code>{Path(f).name}</code></li>"
+        for f in shown
+    )
+    more = (
+        f"<li><i>… and {n - len(shown)} more</i></li>"
+        if n > len(shown) else ""
+    )
+    display(HTML(
+        '<div style="background:#fff8e1; border-left:4px solid #f0ad4e; '
+        'padding:10px 14px; margin:6px 0; font-size:0.92em;">'
+        f'<b>⚠️ The previous <code>%%ask</code> cell did not complete normally.</b> '
+        f'Removed {n} file(s) from the working directory as presumed partial outputs:'
+        f'<ul style="margin:6px 0 0 18px;">{file_items}{more}</ul>'
+        '<div style="margin-top:6px; color:#7a5d00;">'
+        'If any of these were files you intended to keep, save them outside the '
+        'working directory before running cells. Use <code>%reset</code> to '
+        'clear all working-directory files.'
+        '</div></div>'
+    ))
 
 
 def _get_cell_id() -> str | None:
@@ -2052,6 +2221,138 @@ def _sage_install_skill_dir(src_dir, skill_name):
 
 
 # ---------------------------------------------------------------------------
+# Learnings.md frontmatter audit (Phase 4 of the Learnings protocol)
+# ---------------------------------------------------------------------------
+# Sage owns the `skill_digest` and `last_updated` fields in each
+# Learnings.md frontmatter. The agent writes the body sections; Sage keeps
+# the metadata accurate. When SKILL.md changes (image upgrade, %%skill
+# reload), Sage updates the digest and prepends a one-line warning banner
+# so the agent's next read flags pre-existing lessons as possibly stale.
+
+# Placeholder digests written by the agent before Phase 4 shipped. The
+# md5 of the empty string and the literal "auto" should be treated as
+# "not yet computed" and replaced silently on the first audit (no banner).
+_SAGE_LEARNINGS_PLACEHOLDER_DIGESTS = {
+    "", "auto", "d41d8cd98f00b204e9800998ecf8427e",
+}
+
+
+def _sage_compute_skill_digest(skill_md_path) -> str:
+    """Return md5 of a SKILL.md file. Empty string if unreadable."""
+    import hashlib as _hashlib
+    try:
+        return _hashlib.md5(Path(skill_md_path).read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def _sage_audit_learnings(skill_name: str, skill_md_path=None) -> None:
+    """Normalize a single skill's Learnings.md frontmatter against its SKILL.md.
+
+    Behavior:
+      - File missing → no-op (agent will create on first lesson; the next
+        audit pass normalizes it).
+      - Frontmatter present and digest matches → refresh `last_updated`.
+      - Frontmatter missing/malformed → rebuild it (no banner).
+      - Stored digest was a placeholder → fill in the real digest (no banner).
+      - Stored digest mismatches a real prior digest → prepend (or refresh)
+        a one-line warning banner so the agent sees that pre-recorded
+        lessons may be stale.
+
+    Idempotent. A prior banner is stripped before any new one is added, so
+    repeated audits don't stack banners.
+    """
+    import re as _re
+    from datetime import datetime as _dt, timezone as _tz
+
+    learn_path = Path(SAGE_LEARNINGS_DIR) / skill_name / "Learnings.md"
+    if not learn_path.exists():
+        return
+
+    if skill_md_path is None:
+        skill_md_path = _SAGE_SKILLS_DIR / skill_name / "SKILL.md"
+    skill_md_path = Path(skill_md_path)
+    if not skill_md_path.exists():
+        return
+
+    current_digest = _sage_compute_skill_digest(skill_md_path)
+    if not current_digest:
+        return
+
+    content = learn_path.read_text(encoding="utf-8", errors="replace")
+    today = _dt.now(_tz.utc).strftime("%Y-%m-%d")
+
+    fm_re = _re.compile(r"^---\s*\n(.*?)\n---\s*\n", _re.DOTALL)
+    m = fm_re.match(content)
+    if m:
+        fm_text = m.group(1)
+        body = content[m.end():]
+    else:
+        fm_text = ""
+        body = content
+
+    # Parse frontmatter (simple `key: value` per line — no nested YAML).
+    fm = {}
+    for line in fm_text.splitlines():
+        if ":" in line:
+            k, _, v = line.partition(":")
+            fm[k.strip()] = v.strip()
+
+    stored_digest = fm.get("skill_digest", "")
+    real_change = (stored_digest not in _SAGE_LEARNINGS_PLACEHOLDER_DIGESTS
+                   and stored_digest != current_digest)
+
+    # Strip any prior banner before (optionally) re-adding a fresh one.
+    banner_re = _re.compile(
+        r"^> ⚠️ Skill `[^`]+` was updated on \d{4}-\d{2}-\d{2}\.[^\n]*\n+",
+        _re.MULTILINE,
+    )
+    body = banner_re.sub("", body, count=1).lstrip("\n")
+
+    if real_change:
+        banner = (
+            f"> ⚠️ Skill `{skill_name}` was updated on {today}. "
+            f"Lessons recorded before this date may be stale — verify "
+            f"before applying.\n\n"
+        )
+        body = banner + body
+
+    fm["skill"] = skill_name
+    fm["skill_digest"] = current_digest
+    fm["last_updated"] = today
+
+    new_fm_lines = "\n".join(f"{k}: {v}" for k, v in fm.items())
+    new_content = f"---\n{new_fm_lines}\n---\n\n{body.lstrip()}"
+    if new_content != content:
+        learn_path.write_text(new_content, encoding="utf-8")
+
+
+def _sage_audit_all_learnings() -> None:
+    """Walk SAGE_LEARNINGS_DIR and audit every skill's Learnings.md.
+    Called at kernel startup so digests reflect any skill changes that
+    happened while the kernel was down (image upgrade, %%skill reload
+    in a previous session, etc.)."""
+    root = Path(SAGE_LEARNINGS_DIR)
+    if not root.exists():
+        return
+    for child in root.iterdir():
+        if not child.is_dir():
+            continue
+        if (child / "Learnings.md").exists():
+            try:
+                _sage_audit_learnings(child.name)
+            except Exception:
+                pass  # one corrupt file must not break startup
+
+
+# Run the startup audit pass.
+try:
+    _sage_audit_all_learnings()
+except Exception:
+    pass
+
+
+# ---------------------------------------------------------------------------
 # Magic command registration
 # ---------------------------------------------------------------------------
 
@@ -2092,6 +2393,43 @@ try:
                 "  3. os.environ['NRP_API_KEY'] = 'your_key'"
             )
             return
+
+        # Orphan-file cleanup for any %%ask cell that didn't finish normally.
+        # Uses the persisted .sage_cell_runs.json so kernel restarts don't
+        # lose the "killed cell" signal. For each record with finished_at=None,
+        # delete files in its window that aren't in any cell-output registry,
+        # then remove the record.
+        import time as _t_mod
+        _cell_entry_now = _t_mod.time()
+        _runs = _load_cell_runs()
+        _all_deleted: list[str] = []
+        _current_cell_id_for_runs = _get_cell_id()
+        # Walk every cell's prior run record (INCLUDING this cell's own, in
+        # case it was rerun after a kill). For each one whose finished_at
+        # is null, the cell was killed (interrupt / kernel crash / cell
+        # deleted) and any orphan files in its window should be removed.
+        # Cells that finished normally have finished_at set and are skipped.
+        for _cid in list(_runs.keys()):
+            _rec = _runs.get(_cid) or {}
+            _start = _rec.get("started_at")
+            _finished = _rec.get("finished_at")
+            if _start is None or _finished is not None:
+                continue
+            # Dead cell — clean orphans in its window
+            _all_deleted.extend(
+                _orphan_cleanup_for_dead_cell(_start, _cell_entry_now)
+            )
+            # Remove the dead record so we don't re-clean on a future cell
+            del _runs[_cid]
+        if _all_deleted:
+            _display_orphan_cleanup_warning(_all_deleted)
+        # Record the current cell as in-flight
+        if _current_cell_id_for_runs:
+            _runs[_current_cell_id_for_runs] = {
+                "started_at": _cell_entry_now,
+                "finished_at": None,
+            }
+        _save_cell_runs(_runs)
 
         # Cross-cell conversation history management (must run before the agent):
         #   1. On a fresh kernel (SAGE_MESSAGES empty), restore from notebook —
@@ -2139,19 +2477,24 @@ try:
                 del _kvar_reg[cell_id]
                 _save_kernel_vars_registry(_kvar_reg)
 
-            # Delete orphaned files: in output dir but not in any registry entry.
-            # These are generated by cells that were stopped before finishing.
-            _all_registered = {f for files in _reg.values() for f in files}
-            for _orphan in Path(SAGE_OUTPUT_DIR).rglob("*"):
-                if (
-                    _orphan.is_file()
-                    and _orphan.name not in _SAGE_INTERNAL_FILES
-                    and str(_orphan) not in _all_registered
-                ):
-                    try:
-                        _orphan.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+        # NOTE: orphan-file cleanup was previously here. It walked the output
+        # directory and deleted any file not in any cell's registry, which
+        # incorrectly removed files the user had copied in (since user files
+        # have no registry entry). The replacement runs at cell entry above
+        # and is gated on "previous cell didn't finish normally" — see
+        # _orphan_cleanup_for_dead_cell().
+
+        # Refresh the set of skills with Learnings.md so the system prompt
+        # below reflects any Learnings.md created (by the agent or out of
+        # band) since the last cell. The agent uses this set to skip the
+        # `read_file` round-trip for skills that have no Learnings.md yet,
+        # eliminating 5-10 s of latency per skipped skill.
+        global SAGE_LEARNINGS_SKILLS
+        SAGE_LEARNINGS_SKILLS = _sage_build_learnings_skills_set()
+        try:
+            get_ipython().user_ns["SAGE_LEARNINGS_SKILLS"] = SAGE_LEARNINGS_SKILLS  # noqa: F821
+        except Exception:
+            pass
 
         # Inject output directory and thinking requirement into prompt
         import sys as _sys
@@ -2336,6 +2679,85 @@ try:
             f"`print(..., file=sys.__stdout__)` calls) is captured and hidden from the cell "
             f"— it is only visible to you in the tool result. Do not try to stream progress "
             f"to the user via stdout; the cell stays clean while the script runs.\n\n"
+            f"LEARNINGS PROTOCOL — Sage maintains a per-skill memory of "
+            f"error→fix patterns the agent has learned across past runs. The "
+            f"single most-important rule of this protocol, and the one agents "
+            f"skip most often, is the WRITE rule below. Read it first.\n"
+            f"\n"
+            f"### ★ WRITE RULE — DO THIS BEFORE ANYTHING ELSE IN A TASK THAT HIT AN ERROR ★\n"
+            f"If, during this task, you call `edit_file` (or `write_file` "
+            f"replacing a previous script) and then re-run the same script "
+            f"via `execute` — i.e. ANY edit-and-retry cycle — you MUST "
+            f"record the lesson in the corresponding skill's Learnings.md. "
+            f"You MUST do this BEFORE continuing the task, BEFORE writing "
+            f"any further script, and BEFORE composing the final report. "
+            f"Skipping this step is the single most common failure mode of "
+            f"this protocol — the agent fixes the error, moves on, and the "
+            f"next session repeats the same mistake because the lesson was "
+            f"never persisted. Do not be that agent.\n"
+            f"\n"
+            f"Files live at: {SAGE_LEARNINGS_DIR}/<skill_name>/Learnings.md\n"
+            f"`<skill_name>` is the directory name of the skill whose SKILL.md "
+            f"you just read.\n"
+            f"\n"
+            f"WRITE the lesson WHEN ALL of these hold:\n"
+            f"  1. The script needed at least one edit-and-retry (the first "
+            f"`execute` produced an error, OR you called `edit_file` and "
+            f"re-ran). A clean one-shot execute means no lesson is needed.\n"
+            f"  2. The fix is non-obvious from SKILL.md alone — a reader of "
+            f"just the skill would not see it.\n"
+            f"  3. The lesson is not already in the on-disk Learnings.md "
+            f"file. Your conversation memory does NOT count as 'already "
+            f"recorded' — the next session starts with no conversation, "
+            f"only the file. If the file has a similar entry, EDIT it to "
+            f"clarify rather than adding a duplicate.\n"
+            f"DO NOT append for: routine one-shot successes, confirmations "
+            f"of patterns already in SKILL.md, per-session journaling, open "
+            f"questions, future ideas. If a line in Learnings.md does not "
+            f"change what code gets written on the next run, it does not "
+            f"belong in the file.\n"
+            f"\n"
+            f"FILE FORMAT — exactly two body sections:\n"
+            f"  ## What Doesn't Work\n"
+            f"  - **<short title>**\n"
+            f"    <2-3 lines: the pattern, why it fails, what to do instead>\n"
+            f"  ## Recurring Errors & Fixes\n"
+            f"  - **<error message or short title>**\n"
+            f"    Cause: <one line>\n"
+            f"    Fix: <one line — minimal code if needed>\n"
+            f"YAML frontmatter (`skill`, `skill_digest`, `last_updated`) is "
+            f"maintained by Sage; do not edit it. No per-entry dates. No "
+            f"confidence ratings. Keep entries terse — 2-3 lines, not "
+            f"paragraphs.\n"
+            f"\n"
+            f"### READ RULE — short-circuited by the list below ###\n"
+            f"SKILLS WITH AN EXISTING Learnings.md (as of this cell's start): "
+            f"{sorted(SAGE_LEARNINGS_SKILLS) if SAGE_LEARNINGS_SKILLS else '(none)'}\n"
+            f"When you read a skill's SKILL.md, check whether `<skill_name>` "
+            f"is in the list above. If yes, immediately also read its "
+            f"Learnings.md (`read_file`); if no, SKIP the `read_file` — the "
+            f"file does not exist yet and the attempt is a wasted round "
+            f"trip. When Learnings.md IS present, apply every fix in "
+            f"'Recurring Errors & Fixes' pre-emptively and avoid every "
+            f"pattern in 'What Doesn't Work'.\n"
+            f"The list above SHORT-CIRCUITS READS ONLY. It has NOTHING to "
+            f"do with the WRITE RULE above. A skill being absent from the "
+            f"list is exactly when you would CREATE its Learnings.md if "
+            f"this task discovers a lesson worth recording.\n"
+            f"\n"
+            f"### ★ CLOSING SELF-AUDIT — BEFORE YOUR FINAL REPORT ★\n"
+            f"Before you write your final natural-language report to the "
+            f"user, AUDIT your own tool-call history in this task. For each "
+            f"`edit_file`/`write_file` that was followed by a re-`execute` "
+            f"of the same script, confirm that you have a corresponding "
+            f"`write_file` or `edit_file` on a Learnings.md. If any "
+            f"edit-and-retry cycle in your trace has no corresponding "
+            f"Learnings.md update, record it NOW — this is your last "
+            f"chance before the cell ends. Only then proceed to the "
+            f"final report. This audit exists because skipping the WRITE "
+            f"RULE mid-task is the single most common protocol failure; "
+            f"the audit is the safety net.\n"
+            f"\n"
             f"PACKAGE INSTALL RULE — `/opt/conda/` is read-only for the kernel user, so any "
             f"`pip install` without `--user` fails with `Permission denied` and floods the cell. "
             f"Sage provides a helper that does the right thing silently:\n"
@@ -2405,6 +2827,15 @@ try:
             )
         except Exception as _err:
             _loop.set_exception_handler(_orig_exc_handler)
+            # Mark this cell as finished (even on error) in the persisted
+            # registry so the next cell's orphan cleanup doesn't treat
+            # files written during this cell's window as partial outputs.
+            if _current_cell_id_for_runs:
+                _runs_err = _load_cell_runs()
+                _rec_err = _runs_err.get(_current_cell_id_for_runs) or {}
+                _rec_err["finished_at"] = _t_mod.time()
+                _runs_err[_current_cell_id_for_runs] = _rec_err
+                _save_cell_runs(_runs_err)
             _err_str = str(_err)
             _err_type = type(_err).__name__
             # Classify common API errors for a user-friendly message
@@ -2425,6 +2856,15 @@ try:
             ))
             return
         _loop.set_exception_handler(_orig_exc_handler)
+        # Mark this cell as finished normally in the persisted registry.
+        # On the next cell entry, the orphan cleanup will see finished_at
+        # is set and skip this window.
+        if _current_cell_id_for_runs:
+            _runs_ok = _load_cell_runs()
+            _rec_ok = _runs_ok.get(_current_cell_id_for_runs) or {}
+            _rec_ok["finished_at"] = _t_mod.time()
+            _runs_ok[_current_cell_id_for_runs] = _rec_ok
+            _save_cell_runs(_runs_ok)
 
         # Flush any ipywidgets.Output containers collected by KernelShellBackend.
         # display() is called here — after run_until_complete — so we are back
@@ -2803,6 +3243,14 @@ try:
                 dest = _sage_install_skill_dir(src, e["skill_name"])
                 e["dest"] = dest
                 installed.append(e)
+                # Phase 4: refresh the per-skill Learnings.md frontmatter
+                # against the newly installed SKILL.md. If the digest
+                # changed (skill was updated), prepend a warning banner so
+                # the agent flags pre-existing lessons on next read.
+                try:
+                    _sage_audit_learnings(e["skill_name"])
+                except Exception:
+                    pass
             except Exception as ex:
                 e["error"] = f"install failed: {ex}"
                 rejected.append(e)

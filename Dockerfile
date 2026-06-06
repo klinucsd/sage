@@ -159,5 +159,12 @@ RUN mkdir -p /home/jovyan/.cache/pip && \
 USER jovyan
 WORKDIR /home/jovyan/work
 
+# Point per-skill Learnings.md storage at the NRP CephBlock persistent mount.
+# `/home/jovyan/work/_User-Persistent-Storage_CephBlock_/` survives pod
+# restarts; `~/.sage_learnings/` (the portable code default) would be wiped
+# every restart on NRP since `~/` is on the ephemeral pod filesystem.
+# Override this env var at `docker run` time for non-NRP deployments.
+ENV SAGE_LEARNINGS_PATH=/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.sage_learnings
+
 EXPOSE 8888
 CMD ["sleep", "infinity"]
