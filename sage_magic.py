@@ -602,7 +602,113 @@ def _new_files(before: dict, after: dict) -> list:
 
 
 # Internal files that should never be tracked as cell outputs
-_SAGE_INTERNAL_FILES = {".sage_cells.json", ".sage_run.jsonl", ".sage_colors.json", ".sage_kernel_vars.json"}
+_SAGE_INTERNAL_FILES = {
+    ".sage_cells.json", ".sage_run.jsonl", ".sage_colors.json",
+    ".sage_kernel_vars.json", ".sage_cell_runs.json",
+}
+
+
+# Persisted cell-run windows — track which %%ask cells started but didn't
+# finish, across kernel restarts. Used for orphan-file cleanup.
+#
+# Schema (.sage_cell_runs.json):
+#   {
+#     "<cell_id>": {"started_at": <float>, "finished_at": <float|None>},
+#     ...
+#   }
+#
+# At cell entry: any record with finished_at=null is from a killed cell
+# (interrupted, kernel crashed, cell deleted before finally ran). Files in
+# that cell's window which aren't in any cell-output registry are presumed
+# partial outputs and get removed with a warning.
+#
+# Persisting to disk (rather than in-memory) means a kernel restart still
+# remembers "the previous cell was killed" and the next cell can clean up.
+
+def _load_cell_runs() -> dict[str, dict[str, float | None]]:
+    p = Path(SAGE_OUTPUT_DIR) / ".sage_cell_runs.json"
+    if not p.exists():
+        return {}
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return {}
+
+
+def _save_cell_runs(runs: dict[str, dict[str, float | None]]) -> None:
+    p = Path(SAGE_OUTPUT_DIR) / ".sage_cell_runs.json"
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps(runs, indent=2))
+    except Exception:
+        pass
+
+
+def _orphan_cleanup_for_dead_cell(
+    prev_start: float,
+    now: float,
+) -> list[str]:
+    """Delete files in SAGE_OUTPUT_DIR whose mtime falls inside the dead
+    cell's window, are NOT in any cell's file-registry, and are not
+    internal sage files. Returns the list of deleted file paths.
+
+    Caller has determined that some previous cell's run had no
+    finished_at (it was killed); we treat unregistered files in its
+    window as presumed partial outputs.
+    """
+    # 1-second buffer on both sides for mtime/clock fuzziness
+    window_lo = prev_start - 1.0
+    window_hi = now + 1.0
+    reg = _load_cell_registry()
+    all_registered = {f for files in reg.values() for f in files}
+    deleted: list[str] = []
+    for orphan in Path(SAGE_OUTPUT_DIR).rglob("*"):
+        try:
+            if not orphan.is_file():
+                continue
+            if orphan.name in _SAGE_INTERNAL_FILES:
+                continue
+            if str(orphan) in all_registered:
+                continue
+            mtime = orphan.stat().st_mtime
+            if not (window_lo <= mtime <= window_hi):
+                continue
+            orphan.unlink(missing_ok=True)
+            deleted.append(str(orphan))
+        except Exception:
+            pass
+    return deleted
+
+
+def _display_orphan_cleanup_warning(deleted: list[str]) -> None:
+    """Show a yellow banner telling the user that orphan files from a
+    previous-cell that didn't finish were removed."""
+    from IPython.display import display, HTML
+    n = len(deleted)
+    if n == 0:
+        return
+    # Show up to first 15 filenames so the banner stays readable.
+    shown = deleted[:15]
+    file_items = "".join(
+        f"<li><code>{Path(f).name}</code></li>"
+        for f in shown
+    )
+    more = (
+        f"<li><i>… and {n - len(shown)} more</i></li>"
+        if n > len(shown) else ""
+    )
+    display(HTML(
+        '<div style="background:#fff8e1; border-left:4px solid #f0ad4e; '
+        'padding:10px 14px; margin:6px 0; font-size:0.92em;">'
+        f'<b>⚠️ The previous <code>%%ask</code> cell did not complete normally.</b> '
+        f'Removed {n} file(s) from the working directory as presumed partial outputs:'
+        f'<ul style="margin:6px 0 0 18px;">{file_items}{more}</ul>'
+        '<div style="margin-top:6px; color:#7a5d00;">'
+        'If any of these were files you intended to keep, save them outside the '
+        'working directory before running cells. Use <code>%reset</code> to '
+        'clear all working-directory files.'
+        '</div></div>'
+    ))
 
 
 def _get_cell_id() -> str | None:
@@ -2288,6 +2394,43 @@ try:
             )
             return
 
+        # Orphan-file cleanup for any %%ask cell that didn't finish normally.
+        # Uses the persisted .sage_cell_runs.json so kernel restarts don't
+        # lose the "killed cell" signal. For each record with finished_at=None,
+        # delete files in its window that aren't in any cell-output registry,
+        # then remove the record.
+        import time as _t_mod
+        _cell_entry_now = _t_mod.time()
+        _runs = _load_cell_runs()
+        _all_deleted: list[str] = []
+        _current_cell_id_for_runs = _get_cell_id()
+        # Walk every cell's prior run record (INCLUDING this cell's own, in
+        # case it was rerun after a kill). For each one whose finished_at
+        # is null, the cell was killed (interrupt / kernel crash / cell
+        # deleted) and any orphan files in its window should be removed.
+        # Cells that finished normally have finished_at set and are skipped.
+        for _cid in list(_runs.keys()):
+            _rec = _runs.get(_cid) or {}
+            _start = _rec.get("started_at")
+            _finished = _rec.get("finished_at")
+            if _start is None or _finished is not None:
+                continue
+            # Dead cell — clean orphans in its window
+            _all_deleted.extend(
+                _orphan_cleanup_for_dead_cell(_start, _cell_entry_now)
+            )
+            # Remove the dead record so we don't re-clean on a future cell
+            del _runs[_cid]
+        if _all_deleted:
+            _display_orphan_cleanup_warning(_all_deleted)
+        # Record the current cell as in-flight
+        if _current_cell_id_for_runs:
+            _runs[_current_cell_id_for_runs] = {
+                "started_at": _cell_entry_now,
+                "finished_at": None,
+            }
+        _save_cell_runs(_runs)
+
         # Cross-cell conversation history management (must run before the agent):
         #   1. On a fresh kernel (SAGE_MESSAGES empty), restore from notebook —
         #      includes only cells *before* the current cell in document order.
@@ -2334,19 +2477,12 @@ try:
                 del _kvar_reg[cell_id]
                 _save_kernel_vars_registry(_kvar_reg)
 
-            # Delete orphaned files: in output dir but not in any registry entry.
-            # These are generated by cells that were stopped before finishing.
-            _all_registered = {f for files in _reg.values() for f in files}
-            for _orphan in Path(SAGE_OUTPUT_DIR).rglob("*"):
-                if (
-                    _orphan.is_file()
-                    and _orphan.name not in _SAGE_INTERNAL_FILES
-                    and str(_orphan) not in _all_registered
-                ):
-                    try:
-                        _orphan.unlink(missing_ok=True)
-                    except Exception:
-                        pass
+        # NOTE: orphan-file cleanup was previously here. It walked the output
+        # directory and deleted any file not in any cell's registry, which
+        # incorrectly removed files the user had copied in (since user files
+        # have no registry entry). The replacement runs at cell entry above
+        # and is gated on "previous cell didn't finish normally" — see
+        # _orphan_cleanup_for_dead_cell().
 
         # Refresh the set of skills with Learnings.md so the system prompt
         # below reflects any Learnings.md created (by the agent or out of
@@ -2691,6 +2827,15 @@ try:
             )
         except Exception as _err:
             _loop.set_exception_handler(_orig_exc_handler)
+            # Mark this cell as finished (even on error) in the persisted
+            # registry so the next cell's orphan cleanup doesn't treat
+            # files written during this cell's window as partial outputs.
+            if _current_cell_id_for_runs:
+                _runs_err = _load_cell_runs()
+                _rec_err = _runs_err.get(_current_cell_id_for_runs) or {}
+                _rec_err["finished_at"] = _t_mod.time()
+                _runs_err[_current_cell_id_for_runs] = _rec_err
+                _save_cell_runs(_runs_err)
             _err_str = str(_err)
             _err_type = type(_err).__name__
             # Classify common API errors for a user-friendly message
@@ -2711,6 +2856,15 @@ try:
             ))
             return
         _loop.set_exception_handler(_orig_exc_handler)
+        # Mark this cell as finished normally in the persisted registry.
+        # On the next cell entry, the orphan cleanup will see finished_at
+        # is set and skip this window.
+        if _current_cell_id_for_runs:
+            _runs_ok = _load_cell_runs()
+            _rec_ok = _runs_ok.get(_current_cell_id_for_runs) or {}
+            _rec_ok["finished_at"] = _t_mod.time()
+            _runs_ok[_current_cell_id_for_runs] = _rec_ok
+            _save_cell_runs(_runs_ok)
 
         # Flush any ipywidgets.Output containers collected by KernelShellBackend.
         # display() is called here — after run_until_complete — so we are back
