@@ -123,62 +123,68 @@ def _install_pip_subprocess_guard():
                     if f not in existing]
         return parts[:i + 1] + injected + parts[i + 1:]
 
-    def _patched_Popen(args, *posargs, **kwargs):
-        parts, was_string = _split_args(args)
-        if not _is_pip_install(parts):
-            return _real_Popen(args, *posargs, **kwargs)
+    class _PatchedPopen(_real_Popen):
+        """Subclass of subprocess.Popen that rewrites pip-install invocations.
 
-        parts = _rewrite(parts)
-        args = " ".join(parts) if was_string else parts
-        # Suppress stdout (pip's success chatter); capture stderr to PIPE so
-        # we can re-emit it ONLY if the install fails. That way successful
-        # installs stay silent, but a real build failure (e.g. GDAL missing
-        # libgeos-dev) surfaces its error to the agent through the script's
-        # captured stderr.
-        kwargs["stdout"] = _sp.DEVNULL
-        kwargs["stderr"] = _sp.PIPE
-        proc = _real_Popen(args, *posargs, **kwargs)
+        Why a subclass (not a function wrapper): some third-party code uses
+        ``subprocess.Popen[bytes]`` type annotations evaluated at class-body
+        time. A function replacement breaks those with ``'function' object is
+        not subscriptable``. A real subclass inherits ``__class_getitem__``
+        and stays subscriptable.
 
-        _orig_wait = proc.wait
-        _orig_communicate = proc.communicate
-        _holder = {"err": None, "emitted": False}
+        Non-pip calls short-circuit in ``__new__`` by returning a plain
+        ``_real_Popen`` instance, so the override has zero impact outside the
+        pip-install path.
+        """
 
-        def _emit_on_fail(rc):
-            if rc != 0 and _holder["err"] and not _holder["emitted"]:
+        def __new__(cls, args, *posargs, **kwargs):
+            parts, _ = _split_args(args)
+            if not _is_pip_install(parts):
+                return _real_Popen(args, *posargs, **kwargs)
+            return super().__new__(cls)
+
+        def __init__(self, args, *posargs, **kwargs):
+            parts, was_string = _split_args(args)
+            parts = _rewrite(parts)
+            args = " ".join(parts) if was_string else parts
+            # Suppress stdout (pip's success chatter); capture stderr to PIPE
+            # so we can re-emit it ONLY if the install fails.
+            kwargs["stdout"] = _sp.DEVNULL
+            kwargs["stderr"] = _sp.PIPE
+            super().__init__(args, *posargs, **kwargs)
+            self._sage_pip_err = {"data": None, "emitted": False}
+
+        def _sage_pip_emit_on_fail(self, rc):
+            h = self._sage_pip_err
+            if rc != 0 and h["data"] and not h["emitted"]:
                 try:
                     import sys as _sys
-                    _sys.stderr.write(
-                        _holder["err"].decode(errors="replace"))
-                    _holder["emitted"] = True
+                    _sys.stderr.write(h["data"].decode(errors="replace"))
+                    h["emitted"] = True
                 except Exception:
                     pass
 
-        def _wait(*a, **k):
-            rc = _orig_wait(*a, **k)
-            if (_holder["err"] is None
-                    and proc.stderr is not None
-                    and not proc.stderr.closed):
+        def wait(self, *a, **k):
+            rc = super().wait(*a, **k)
+            h = self._sage_pip_err
+            if (h["data"] is None
+                    and self.stderr is not None
+                    and not self.stderr.closed):
                 try:
-                    _holder["err"] = proc.stderr.read()
+                    h["data"] = self.stderr.read()
                 except Exception:
                     pass
-            _emit_on_fail(rc)
+            self._sage_pip_emit_on_fail(rc)
             return rc
 
-        def _communicate(*a, **k):
-            out, err = _orig_communicate(*a, **k)
+        def communicate(self, *a, **k):
+            out, err = super().communicate(*a, **k)
             if err is not None:
-                _holder["err"] = err
-            _emit_on_fail(proc.returncode)
+                self._sage_pip_err["data"] = err
+            self._sage_pip_emit_on_fail(self.returncode)
             return out, err
 
-        proc.wait = _wait
-        proc.communicate = _communicate
-        return proc
-
-    _patched_Popen.__name__ = "Popen"
-    _patched_Popen.__doc__ = _real_Popen.__doc__
-    _sp.Popen = _patched_Popen
+    _sp.Popen = _PatchedPopen
     _sp._sage_pip_guarded = True
 
 
