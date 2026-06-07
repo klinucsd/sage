@@ -4,7 +4,7 @@
 
 > *You ask a scientific question. ARGUS answers it with data.*
 
-ARGUS is developed as part of the [National Data Platform](https://nationaldataplatform.org) (NDP) project, supported by the NSF. It is built on top of [deepagents-cli](https://pypi.org/project/deepagents-cli/).
+ARGUS is developed as part of the [National Data Platform](https://nationaldataplatform.org) (NDP) project, supported by the NSF. It is built on top of [deepagents-code](https://pypi.org/project/deepagents-code/).
 
 ---
 
