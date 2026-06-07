@@ -181,7 +181,7 @@ max_retries = 6                 # auto-retry transient connection errors with ex
 ```bash
 docker run -p 8888:8888 \
   -v ~/sage-workspace:/home/jovyan/work \
-  kaiucsd/sage-dev:latest \
+  kaiucsd/sage-dev:v1.4.0 \
   jupyter lab --ip=0.0.0.0 --NotebookApp.token=''
 ```
 
@@ -273,7 +273,9 @@ API endpoint, parameters, response format, conversion to GeoDataFrame, etc.
 
 ## NRP JupyterHub Deployment
 
-On NRP JupyterHub, select the `kaiucsd/sage-dev:latest` image. No local setup needed — `NRP_API_KEY` is loaded from `/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env`.
+On NRP JupyterHub, select the `kaiucsd/sage-dev:v1.4.0` image. No local setup needed — `NRP_API_KEY` is loaded from `/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env`.
+
+> **Always use a specific version tag** (e.g. `:v1.4.0`). NRP JupyterHub caches images by tag on each compute node — mutable tags like `:latest` can keep resolving to a stale version even after a new release is published.
 
 ---
 
