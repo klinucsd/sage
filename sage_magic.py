@@ -616,9 +616,42 @@ _SAGE_INTERNAL_FILES = {
 
 # MCP server registry — populated by %%mcp, consumed by %%ask.
 # Kernel-scoped: persists across cells, wiped on kernel restart.
-_SAGE_MCP_TOOLS: list = []
+# Tools are stored per-server so MERGE semantics can replace one server's
+# tools without touching others.
+_SAGE_MCP_TOOLS_BY_SERVER: dict = {}  # server name → list of BaseTool
 _SAGE_MCP_CLIENT = None
-_SAGE_MCP_SERVERS: dict = {}
+_SAGE_MCP_SERVERS: dict = {}          # server name → normalized config
+
+
+def _sage_mcp_all_tools():
+    """Flatten all registered MCP tools across servers into one list."""
+    return [t for tools in _SAGE_MCP_TOOLS_BY_SERVER.values() for t in tools]
+
+
+def _sage_find_notebook_with_mcp_cell():
+    """Scan CWD .ipynb files for a cell whose source starts with %%mcp.
+
+    Returns the relative name of the first such notebook, or None. Used
+    to surface a soft warning when %%ask runs with an empty MCP registry
+    but a nearby notebook has a %%mcp cell (typically: user jumped to a
+    later cell after a kernel restart without re-running the %%mcp cell).
+    """
+    try:
+        for path in sorted(Path.cwd().glob("*.ipynb")):
+            try:
+                with open(path) as f:
+                    nb = json.load(f)
+            except Exception:
+                continue
+            for cell in nb.get("cells", []):
+                if cell.get("cell_type") != "code":
+                    continue
+                src = "".join(cell.get("source", []))
+                if src.lstrip().startswith("%%mcp"):
+                    return path.name
+    except Exception:
+        pass
+    return None
 
 
 # Persisted cell-run windows — track which %%ask cells started but didn't
@@ -1805,8 +1838,9 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
         create_kwargs["system_prompt"] = system_prompt
     # Merge in any MCP tools registered via %%mcp earlier in this kernel
     # session. Adds to (does not replace) the built-in skill toolset.
-    if _SAGE_MCP_TOOLS:
-        create_kwargs["tools"] = list(_SAGE_MCP_TOOLS)
+    _mcp_tools = _sage_mcp_all_tools()
+    if _mcp_tools:
+        create_kwargs["tools"] = _mcp_tools
     agent = create_deep_agent(model, **create_kwargs)
 
     config = {"metadata": {"assistant_id": "sage"}}
@@ -2991,6 +3025,25 @@ try:
         # instead of asyncio.run(), which conflicts with Python 3.13's task cleanup.
         import time as _time
         from IPython.display import display, HTML
+
+        # Out-of-order detector: if no MCP tools are registered but a nearby
+        # notebook has a %%mcp cell, the user likely jumped to a later cell
+        # after a kernel restart without re-running the %%mcp cell first.
+        if not _SAGE_MCP_TOOLS_BY_SERVER:
+            _nb_with_mcp = _sage_find_notebook_with_mcp_cell()
+            if _nb_with_mcp:
+                display(HTML(
+                    f"<div style='color:#8a6d00; background:#fff8e1; "
+                    f"padding:6px 10px; border-left:3px solid #f0b400; "
+                    f"margin-bottom:8px; font-family:-apple-system,sans-serif; "
+                    f"font-size:13px'>"
+                    f"⚠ MCP registry is empty, but <code>{_nb_with_mcp}</code> "
+                    f"contains a <code>%%mcp</code> cell. If this question relies "
+                    f"on MCP tools, run that cell first — kernel restart wipes "
+                    f"the registry."
+                    f"</div>"
+                ))
+
         _t_start = _time.time()
         _loop = asyncio.get_event_loop()
         _orig_exc_handler = _loop.get_exception_handler()
@@ -3515,14 +3568,18 @@ try:
         top-level "mcpServers" wrapper is optional. Use $VARNAME (or
         ${VARNAME}) in any string field to interpolate environment variables.
 
-        Tools loaded here are merged into every subsequent %%ask cell's
-        toolset. Re-running %%mcp REPLACES the registry. If some servers
-        fail to load, the rest still register; the previous registry is
-        kept untouched on a total failure.
+        Tools loaded here are MERGED into the kernel-scoped registry, so
+        multiple %%mcp cells accumulate. If a server name appears in more
+        than one cell, the most recent config wins for THAT server only;
+        other servers stay registered. On total failure (no server loaded),
+        the prior registry is kept untouched.
+
+        Kernel restart wipes the registry. After restart, re-run the
+        %%mcp cell(s) before any %%ask cell that depends on MCP tools.
         """
         import html as _html
         from IPython.display import display, HTML
-        global _SAGE_MCP_TOOLS, _SAGE_MCP_SERVERS, _SAGE_MCP_CLIENT
+        global _SAGE_MCP_TOOLS_BY_SERVER, _SAGE_MCP_SERVERS, _SAGE_MCP_CLIENT
 
         def _esc(s):
             return _html.escape(str(s), quote=False)
@@ -3553,9 +3610,8 @@ try:
 
         from langchain_mcp_adapters.client import MultiServerMCPClient
 
-        loaded_tools: list = []
+        loaded_tools_by_server: dict = {}  # server name → list of tools
         loaded_servers: dict = {}
-        server_tool_info: dict = {}
         failures: list = []
 
         _loop = asyncio.get_event_loop()
@@ -3563,43 +3619,66 @@ try:
             try:
                 _client = MultiServerMCPClient({name: server_cfg})
                 _tools = _loop.run_until_complete(_client.get_tools())
-                loaded_tools.extend(_tools)
+                loaded_tools_by_server[name] = _tools
                 loaded_servers[name] = server_cfg
-                server_tool_info[name] = [
-                    (t.name, (t.description or "").strip()) for t in _tools
-                ]
             except Exception as e:
                 failures.append((name, str(e)))
 
-        # Replace registry only if at least one server loaded. On total failure,
-        # keep the prior registry — user can fix and retry without losing state.
+        # MERGE this cell's loaded servers into the kernel-scoped registry.
+        # Per-server replace: if a server name was already registered, the
+        # new config (and tools) wins. Servers from prior %%mcp cells that
+        # weren't named in this cell are left untouched. On total failure
+        # (no loaded_servers), the prior registry is kept intact.
+        replaced_servers: list = []
         if loaded_servers:
-            _SAGE_MCP_CLIENT = MultiServerMCPClient(loaded_servers)
-            _SAGE_MCP_TOOLS = loaded_tools
-            _SAGE_MCP_SERVERS = loaded_servers
+            for sname in loaded_servers:
+                if sname in _SAGE_MCP_SERVERS:
+                    replaced_servers.append(sname)
+            _SAGE_MCP_SERVERS = {**_SAGE_MCP_SERVERS, **loaded_servers}
+            _SAGE_MCP_TOOLS_BY_SERVER = {
+                **_SAGE_MCP_TOOLS_BY_SERVER, **loaded_tools_by_server
+            }
+            _SAGE_MCP_CLIENT = MultiServerMCPClient(_SAGE_MCP_SERVERS)
+
+        loaded_tool_count = sum(len(t) for t in loaded_tools_by_server.values())
+        total_servers = len(_SAGE_MCP_SERVERS)
+        total_tools = sum(len(t) for t in _SAGE_MCP_TOOLS_BY_SERVER.values())
 
         parts = ["<div style='font-family: -apple-system, sans-serif; font-size: 13px;'>"]
-        if loaded_tools:
+        if loaded_tool_count:
             parts.append(
-                f"<div><b>✓ Loaded {len(loaded_tools)} tool(s) from "
-                f"{len(loaded_servers)} server(s)</b> "
-                f"<span style='color:#888'>(available to subsequent %%ask cells)</span></div>"
+                f"<div><b>✓ Loaded {loaded_tool_count} tool(s) from "
+                f"{len(loaded_servers)} server(s) this cell</b></div>"
             )
-            for sname, tool_list in server_tool_info.items():
+            for sname, tool_list in loaded_tools_by_server.items():
+                replaced_tag = (
+                    " <span style='color:#a60'>(replaced previous config)</span>"
+                    if sname in replaced_servers else ""
+                )
                 parts.append(
                     f"<div style='margin-top:8px'><b>{_esc(sname)}</b> "
-                    f"<span style='color:#888'>({len(tool_list)} tools)</span></div>"
+                    f"<span style='color:#888'>({len(tool_list)} tools)</span>"
+                    f"{replaced_tag}</div>"
                 )
                 parts.append("<ul style='margin:2px 0 0 0; padding-left:1.5em'>")
-                for tname, tdesc in tool_list:
-                    desc_short = tdesc.replace("\n", " ")
+                for t in tool_list:
+                    desc_short = (t.description or "").strip().replace("\n", " ")
                     if len(desc_short) > 200:
                         desc_short = desc_short[:200] + "…"
                     parts.append(
-                        f"<li><code>{_esc(tname)}</code> "
+                        f"<li><code>{_esc(t.name)}</code> "
                         f"<span style='color:#666'>— {_esc(desc_short)}</span></li>"
                     )
                 parts.append("</ul>")
+            # Show cumulative registry total if this cell wasn't the first
+            if total_servers > len(loaded_servers):
+                other_servers = sorted(set(_SAGE_MCP_SERVERS) - set(loaded_servers))
+                parts.append(
+                    f"<div style='margin-top:10px; color:#555'>"
+                    f"<b>Registry total: {total_tools} tools from {total_servers} server(s)</b> "
+                    f"<span style='color:#888'>(also active from earlier cells: "
+                    f"{', '.join(_esc(s) for s in other_servers)})</span></div>"
+                )
 
         if failures:
             kept_note = (
@@ -3623,7 +3702,7 @@ try:
                 )
             parts.append("</ul>")
 
-        if not loaded_tools and not failures:
+        if not loaded_tool_count and not failures:
             parts.append("<i style='color:#888'>No tools loaded.</i>")
 
         parts.append("</div>")
