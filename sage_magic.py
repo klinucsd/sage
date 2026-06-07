@@ -608,6 +608,13 @@ _SAGE_INTERNAL_FILES = {
 }
 
 
+# MCP server registry — populated by %%mcp, consumed by %%ask.
+# Kernel-scoped: persists across cells, wiped on kernel restart.
+_SAGE_MCP_TOOLS: list = []
+_SAGE_MCP_CLIENT = None
+_SAGE_MCP_SERVERS: dict = {}
+
+
 # Persisted cell-run windows — track which %%ask cells started but didn't
 # finish, across kernel restarts. Used for orphan-file cleanup.
 #
@@ -1790,6 +1797,10 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     }
     if system_prompt:
         create_kwargs["system_prompt"] = system_prompt
+    # Merge in any MCP tools registered via %%mcp earlier in this kernel
+    # session. Adds to (does not replace) the built-in skill toolset.
+    if _SAGE_MCP_TOOLS:
+        create_kwargs["tools"] = list(_SAGE_MCP_TOOLS)
     agent = create_deep_agent(model, **create_kwargs)
 
     config = {"metadata": {"assistant_id": "sage"}}
@@ -2362,6 +2373,120 @@ try:
     _sage_audit_all_learnings()
 except Exception:
     pass
+
+
+# ---------------------------------------------------------------------------
+# MCP config helpers (used by %%mcp magic)
+# ---------------------------------------------------------------------------
+
+def _sage_interpolate_mcp_env(s):
+    """Replace $VARNAME or ${VARNAME} in s with values from os.environ.
+
+    Raises ValueError if a referenced variable is unset, so the user gets a
+    clear error rather than a silently-empty token in the MCP request.
+    """
+    if not isinstance(s, str):
+        return s
+    import re as _re
+
+    def _repl(m):
+        var = m.group(1) or m.group(2)
+        val = os.environ.get(var)
+        if val is None:
+            raise ValueError(
+                f"Environment variable ${var} is referenced in %%mcp config but not set"
+            )
+        return val
+
+    return _re.sub(r"\$\{(\w+)\}|\$(\w+)", _repl, s)
+
+
+def _sage_normalize_mcp_config(raw):
+    """Normalize Claude Desktop / VS Code / Gemini MCP config to MultiServerMCPClient format.
+
+    Accepts:
+      - {"mcpServers": {name: cfg}}    (Claude Desktop wrapper; optional)
+      - {name: cfg}                    (bare, langchain-style)
+
+    Per-server cfg can use:
+      - {"url": "..."}              — http transport (preferred field name)
+      - {"httpUrl": "..."}          — Gemini's alias for url
+      - {"command": "...", "args": [...], "env": {...}}  — stdio transport
+      - "type" or "transport"       — transport-name override (synonyms)
+      - "headers"                   — optional headers for http transports
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("MCP config must be a JSON object")
+    if len(raw) == 1 and "mcpServers" in raw and isinstance(raw["mcpServers"], dict):
+        raw = raw["mcpServers"]
+
+    normalized = {}
+    for name, cfg in raw.items():
+        if not isinstance(cfg, dict):
+            raise ValueError(f"Server '{name}' config must be a JSON object")
+
+        url = cfg.get("url") or cfg.get("httpUrl")
+        command = cfg.get("command")
+        transport = cfg.get("transport") or cfg.get("type")
+
+        if transport in ("http", "https", "streamable-http"):
+            transport = "streamable_http"
+
+        if not transport:
+            if url:
+                transport = "streamable_http"
+            elif command:
+                transport = "stdio"
+            else:
+                raise ValueError(
+                    f"Server '{name}' must specify url, httpUrl, or command"
+                )
+
+        if transport == "streamable_http":
+            if not url:
+                raise ValueError(
+                    f"Server '{name}' uses http transport but no url given"
+                )
+            entry = {
+                "transport": "streamable_http",
+                "url": _sage_interpolate_mcp_env(url),
+            }
+            hdrs = cfg.get("headers")
+            if hdrs:
+                entry["headers"] = {
+                    k: _sage_interpolate_mcp_env(v) for k, v in hdrs.items()
+                }
+        elif transport == "sse":
+            if not url:
+                raise ValueError(
+                    f"Server '{name}' uses sse transport but no url given"
+                )
+            entry = {"transport": "sse", "url": _sage_interpolate_mcp_env(url)}
+        elif transport == "stdio":
+            if not command:
+                raise ValueError(
+                    f"Server '{name}' uses stdio transport but no command given"
+                )
+            entry = {
+                "transport": "stdio",
+                "command": _sage_interpolate_mcp_env(command),
+            }
+            args = cfg.get("args")
+            if args:
+                entry["args"] = [_sage_interpolate_mcp_env(a) for a in args]
+            env = cfg.get("env")
+            if env:
+                entry["env"] = {
+                    k: _sage_interpolate_mcp_env(v) for k, v in env.items()
+                }
+        else:
+            raise ValueError(
+                f"Server '{name}' has unsupported transport: {transport}"
+            )
+
+        normalized[name] = entry
+
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -3353,6 +3478,145 @@ try:
         display(HTML("".join(parts)))
 
     del skill  # keep IPython namespace clean
+
+    # -----------------------------------------------------------------------
+    # %%mcp — register MCP (Model Context Protocol) servers for the session
+    # -----------------------------------------------------------------------
+    @register_cell_magic
+    def mcp(line, cell):
+        """Register MCP servers for this notebook session.
+
+        Usage:
+            %%mcp
+            {
+              "mcpServers": {
+                "wenokn": {"url": "https://wenokn.fastmcp.app/mcp"},
+                "filesystem": {
+                  "command": "npx",
+                  "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+                }
+              }
+            }
+
+        Accepts Claude Desktop / VS Code / Gemini-style JSON config. The
+        top-level "mcpServers" wrapper is optional. Use $VARNAME (or
+        ${VARNAME}) in any string field to interpolate environment variables.
+
+        Tools loaded here are merged into every subsequent %%ask cell's
+        toolset. Re-running %%mcp REPLACES the registry. If some servers
+        fail to load, the rest still register; the previous registry is
+        kept untouched on a total failure.
+        """
+        import html as _html
+        from IPython.display import display, HTML
+        global _SAGE_MCP_TOOLS, _SAGE_MCP_SERVERS, _SAGE_MCP_CLIENT
+
+        def _esc(s):
+            return _html.escape(str(s), quote=False)
+
+        body = (cell or "").strip()
+        if not body:
+            display(HTML("<i style='color:#888'>Empty %%mcp cell — nothing to register.</i>"))
+            return
+
+        try:
+            raw = json.loads(body)
+        except json.JSONDecodeError as e:
+            display(HTML(
+                f"<b style='color:#c33'>Error:</b> %%mcp body must be valid JSON.<br>"
+                f"<code>{_esc(e)}</code>"
+            ))
+            return
+
+        try:
+            servers = _sage_normalize_mcp_config(raw)
+        except ValueError as e:
+            display(HTML(f"<b style='color:#c33'>Error:</b> {_esc(e)}"))
+            return
+
+        if not servers:
+            display(HTML("<i style='color:#888'>No servers found in %%mcp body.</i>"))
+            return
+
+        from langchain_mcp_adapters.client import MultiServerMCPClient
+
+        loaded_tools: list = []
+        loaded_servers: dict = {}
+        server_tool_info: dict = {}
+        failures: list = []
+
+        _loop = asyncio.get_event_loop()
+        for name, server_cfg in servers.items():
+            try:
+                _client = MultiServerMCPClient({name: server_cfg})
+                _tools = _loop.run_until_complete(_client.get_tools())
+                loaded_tools.extend(_tools)
+                loaded_servers[name] = server_cfg
+                server_tool_info[name] = [
+                    (t.name, (t.description or "").strip()) for t in _tools
+                ]
+            except Exception as e:
+                failures.append((name, str(e)))
+
+        # Replace registry only if at least one server loaded. On total failure,
+        # keep the prior registry — user can fix and retry without losing state.
+        if loaded_servers:
+            _SAGE_MCP_CLIENT = MultiServerMCPClient(loaded_servers)
+            _SAGE_MCP_TOOLS = loaded_tools
+            _SAGE_MCP_SERVERS = loaded_servers
+
+        parts = ["<div style='font-family: -apple-system, sans-serif; font-size: 13px;'>"]
+        if loaded_tools:
+            parts.append(
+                f"<div><b>✓ Loaded {len(loaded_tools)} tool(s) from "
+                f"{len(loaded_servers)} server(s)</b> "
+                f"<span style='color:#888'>(available to subsequent %%ask cells)</span></div>"
+            )
+            for sname, tool_list in server_tool_info.items():
+                parts.append(
+                    f"<div style='margin-top:8px'><b>{_esc(sname)}</b> "
+                    f"<span style='color:#888'>({len(tool_list)} tools)</span></div>"
+                )
+                parts.append("<ul style='margin:2px 0 0 0; padding-left:1.5em'>")
+                for tname, tdesc in tool_list:
+                    desc_short = tdesc.replace("\n", " ")
+                    if len(desc_short) > 200:
+                        desc_short = desc_short[:200] + "…"
+                    parts.append(
+                        f"<li><code>{_esc(tname)}</code> "
+                        f"<span style='color:#666'>— {_esc(desc_short)}</span></li>"
+                    )
+                parts.append("</ul>")
+
+        if failures:
+            kept_note = (
+                " (previous registry kept)"
+                if loaded_servers or _SAGE_MCP_SERVERS
+                else ""
+            )
+            parts.append(
+                f"<div style='margin-top:10px; color:#c33'>"
+                f"<b>⚠ Failed to load {len(failures)} server(s)</b>"
+                f"<span style='color:#888'>{_esc(kept_note)}</span></div>"
+            )
+            parts.append("<ul style='margin:2px 0 0 0; padding-left:1.5em'>")
+            for fname, ferr in failures:
+                ferr_short = ferr.replace("\n", " ")
+                if len(ferr_short) > 300:
+                    ferr_short = ferr_short[:300] + "…"
+                parts.append(
+                    f"<li><b>{_esc(fname)}</b>: "
+                    f"<code style='color:#c33'>{_esc(ferr_short)}</code></li>"
+                )
+            parts.append("</ul>")
+
+        if not loaded_tools and not failures:
+            parts.append("<i style='color:#888'>No tools loaded.</i>")
+
+        parts.append("</div>")
+        display(HTML("".join(parts)))
+
+    del mcp  # keep IPython namespace clean
 
 except Exception as exc:
     warnings.warn(
