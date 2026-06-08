@@ -2576,14 +2576,29 @@ def _sage_patch_empty_params_mcp_tools(tools):
             description="Unused; ignored by the tool. Leave empty.",
         )
 
+    def _schema_is_empty(schema):
+        """Detect 'empty parameters' across the two shapes langchain accepts.
+
+        langchain-mcp-adapters stores args_schema as the raw JSON Schema dict
+        ({"type": "object", "properties": {...}}). Other langchain integrations
+        store it as a pydantic BaseModel subclass with .model_fields. We need
+        to handle both — empty in either form triggers the vLLM bug.
+        """
+        if schema is None:
+            return True
+        # Pydantic v2 model class
+        if hasattr(schema, "model_fields"):
+            return not schema.model_fields
+        # Raw JSON Schema dict
+        if isinstance(schema, dict):
+            return not schema.get("properties")
+        # Unknown shape — conservative: don't patch (avoids breaking working tools)
+        return False
+
     patched = []
     for tool in tools:
         schema = getattr(tool, "args_schema", None)
-        is_empty = (
-            schema is None
-            or (hasattr(schema, "model_fields") and not schema.model_fields)
-        )
-        if not is_empty:
+        if not _schema_is_empty(schema):
             patched.append(tool)
             continue
 
