@@ -629,26 +629,38 @@ def _sage_mcp_all_tools():
 
 
 def _sage_find_notebook_with_mcp_cell():
-    """Scan CWD .ipynb files for a cell whose source starts with %%mcp.
+    """Check the CURRENT notebook for a cell whose source starts with %%mcp.
 
-    Returns the relative name of the first such notebook, or None. Used
-    to surface a soft warning when %%ask runs with an empty MCP registry
-    but a nearby notebook has a %%mcp cell (typically: user jumped to a
-    later cell after a kernel restart without re-running the %%mcp cell).
+    Returns the notebook's filename if it has a %%mcp cell, None otherwise.
+    Used to surface a soft warning when %%ask runs with an empty MCP
+    registry — but only when the user's *own* notebook expects MCP. We
+    intentionally do NOT scan other notebooks in the directory (false
+    positive: an unrelated mcp_test.ipynb sitting next to a fresh notebook
+    that doesn't use MCP).
+
+    Identifies the current notebook via JPY_SESSION_NAME (set by
+    JupyterHub/JupyterLab to the notebook path). If unset (terminal
+    kernel, non-Jupyter context), returns None — we'd rather miss a true
+    positive than show a misleading warning naming the wrong notebook.
     """
+    session = os.environ.get("JPY_SESSION_NAME", "")
+    if not session:
+        return None
+    nb_path = Path(session)
+    if not nb_path.is_absolute():
+        # Resolve relative paths against home dir (matches JupyterLab convention)
+        nb_path = Path.home() / nb_path
+    if not nb_path.exists():
+        return None
     try:
-        for path in sorted(Path.cwd().glob("*.ipynb")):
-            try:
-                with open(path) as f:
-                    nb = json.load(f)
-            except Exception:
+        with open(nb_path) as f:
+            nb = json.load(f)
+        for cell in nb.get("cells", []):
+            if cell.get("cell_type") != "code":
                 continue
-            for cell in nb.get("cells", []):
-                if cell.get("cell_type") != "code":
-                    continue
-                src = "".join(cell.get("source", []))
-                if src.lstrip().startswith("%%mcp"):
-                    return path.name
+            src = "".join(cell.get("source", []))
+            if src.lstrip().startswith("%%mcp"):
+                return nb_path.name
     except Exception:
         pass
     return None
