@@ -2546,6 +2546,66 @@ def _sage_interpolate_mcp_env(s):
     return _re.sub(r"\$\{(\w+)\}|\$(\w+)", _repl, s)
 
 
+def _sage_patch_empty_params_mcp_tools(tools):
+    """Work around NRP vLLM NVFP4 GLM-5 streaming bug (verified 2026-06-09).
+
+    vLLM's NVFP4 GLM-5 endpoint silently drops tool_call deltas during
+    streaming when a tool's JSON schema has empty properties
+    (``{"type": "object", "properties": {}}``). The tool_call JSON is
+    generated server-side but never reaches the client stream — the cell
+    looks silent even though the model emitted the call. Non-empty
+    properties (any single field) lets the tool_call through cleanly.
+
+    Workaround: for each MCP tool whose args schema has zero fields, return
+    a wrapper StructuredTool whose schema presents one optional placeholder
+    field. The vLLM streaming serializer is happy with a non-empty schema;
+    the placeholder is stripped before the underlying tool's ``ainvoke`` is
+    called, so the MCP server protocol stays clean.
+
+    Safe for non-NRP models: the placeholder is optional, ignored by the
+    underlying tool, and never leaves ARGUS. ZAI GLM-5, OpenAI, Anthropic
+    all tolerate the optional field — they may set it to empty string or
+    omit it, either way our wrapper strips it before invocation.
+    """
+    from langchain_core.tools import StructuredTool
+    from pydantic import BaseModel, Field
+
+    class _ArgusEmptyParamsPlaceholder(BaseModel):
+        sage_placeholder: str = Field(
+            default="",
+            description="Unused; ignored by the tool. Leave empty.",
+        )
+
+    patched = []
+    for tool in tools:
+        schema = getattr(tool, "args_schema", None)
+        is_empty = (
+            schema is None
+            or (hasattr(schema, "model_fields") and not schema.model_fields)
+        )
+        if not is_empty:
+            patched.append(tool)
+            continue
+
+        # Bind tool reference at iteration time via default-arg trick to
+        # avoid the classic Python closure-over-loop-variable pitfall.
+        async def _arun(sage_placeholder="", _orig=tool, **_kw):
+            return await _orig.ainvoke(_kw)
+
+        def _run(sage_placeholder="", _orig=tool, **_kw):
+            return _orig.invoke(_kw)
+
+        patched.append(StructuredTool(
+            name=tool.name,
+            description=tool.description,
+            args_schema=_ArgusEmptyParamsPlaceholder,
+            coroutine=_arun,
+            func=_run,
+        ))
+
+    return patched
+
+
 def _sage_normalize_mcp_config(raw):
     """Normalize Claude Desktop / VS Code / Gemini MCP config to MultiServerMCPClient format.
 
@@ -3725,6 +3785,10 @@ try:
             try:
                 _client = MultiServerMCPClient({name: server_cfg})
                 _tools = _loop.run_until_complete(_client.get_tools())
+                # Wrap any zero-parameter tools to dodge the NRP vLLM
+                # NVFP4 GLM-5 streaming bug. See helper docstring for the
+                # full diagnosis. No-op for tools with non-empty schemas.
+                _tools = _sage_patch_empty_params_mcp_tools(_tools)
                 loaded_tools_by_server[name] = _tools
                 loaded_servers[name] = server_cfg
             except Exception as e:
