@@ -1853,6 +1853,23 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     _mcp_tools = _sage_mcp_all_tools()
     if _mcp_tools:
         create_kwargs["tools"] = _mcp_tools
+        # Work around NRP vLLM serving config for GLM-5.1: with --tool-call-parser
+        # glm47 (mismatched with the GLM-5.1 model), streaming responses with
+        # >~3 tools in context silently lose all content + tool_calls. The
+        # non-streaming code path doesn't go through the broken streaming
+        # parser, so disabling LLM-level streaming recovers correctness.
+        # Verified 2026-06-09 via direct openai-python tests against NRP.
+        # Trade-off: cell renders the full agent response when each LLM call
+        # completes, rather than token-by-token. UX is less progressive but
+        # tool calls actually work.
+        try:
+            model.streaming = False
+        except Exception:
+            pass
+        try:
+            model.disable_streaming = True
+        except Exception:
+            pass
     agent = create_deep_agent(model, **create_kwargs)
 
     config = {"metadata": {"assistant_id": "sage"}}
@@ -2544,81 +2561,6 @@ def _sage_interpolate_mcp_env(s):
         return val
 
     return _re.sub(r"\$\{(\w+)\}|\$(\w+)", _repl, s)
-
-
-def _sage_patch_empty_params_mcp_tools(tools):
-    """Work around NRP vLLM NVFP4 GLM-5 streaming bug (verified 2026-06-09).
-
-    vLLM's NVFP4 GLM-5 endpoint silently drops tool_call deltas during
-    streaming when a tool's JSON schema has empty properties
-    (``{"type": "object", "properties": {}}``). The tool_call JSON is
-    generated server-side but never reaches the client stream — the cell
-    looks silent even though the model emitted the call. Non-empty
-    properties (any single field) lets the tool_call through cleanly.
-
-    Workaround: for each MCP tool whose args schema has zero fields, return
-    a wrapper StructuredTool whose schema presents one optional placeholder
-    field. The vLLM streaming serializer is happy with a non-empty schema;
-    the placeholder is stripped before the underlying tool's ``ainvoke`` is
-    called, so the MCP server protocol stays clean.
-
-    Safe for non-NRP models: the placeholder is optional, ignored by the
-    underlying tool, and never leaves ARGUS. ZAI GLM-5, OpenAI, Anthropic
-    all tolerate the optional field — they may set it to empty string or
-    omit it, either way our wrapper strips it before invocation.
-    """
-    from langchain_core.tools import StructuredTool
-    from pydantic import BaseModel, Field
-
-    class _ArgusEmptyParamsPlaceholder(BaseModel):
-        sage_placeholder: str = Field(
-            default="",
-            description="Unused; ignored by the tool. Leave empty.",
-        )
-
-    def _schema_is_empty(schema):
-        """Detect 'empty parameters' across the two shapes langchain accepts.
-
-        langchain-mcp-adapters stores args_schema as the raw JSON Schema dict
-        ({"type": "object", "properties": {...}}). Other langchain integrations
-        store it as a pydantic BaseModel subclass with .model_fields. We need
-        to handle both — empty in either form triggers the vLLM bug.
-        """
-        if schema is None:
-            return True
-        # Pydantic v2 model class
-        if hasattr(schema, "model_fields"):
-            return not schema.model_fields
-        # Raw JSON Schema dict
-        if isinstance(schema, dict):
-            return not schema.get("properties")
-        # Unknown shape — conservative: don't patch (avoids breaking working tools)
-        return False
-
-    patched = []
-    for tool in tools:
-        schema = getattr(tool, "args_schema", None)
-        if not _schema_is_empty(schema):
-            patched.append(tool)
-            continue
-
-        # Bind tool reference at iteration time via default-arg trick to
-        # avoid the classic Python closure-over-loop-variable pitfall.
-        async def _arun(sage_placeholder="", _orig=tool, **_kw):
-            return await _orig.ainvoke(_kw)
-
-        def _run(sage_placeholder="", _orig=tool, **_kw):
-            return _orig.invoke(_kw)
-
-        patched.append(StructuredTool(
-            name=tool.name,
-            description=tool.description,
-            args_schema=_ArgusEmptyParamsPlaceholder,
-            coroutine=_arun,
-            func=_run,
-        ))
-
-    return patched
 
 
 def _sage_normalize_mcp_config(raw):
@@ -3800,10 +3742,6 @@ try:
             try:
                 _client = MultiServerMCPClient({name: server_cfg})
                 _tools = _loop.run_until_complete(_client.get_tools())
-                # Wrap any zero-parameter tools to dodge the NRP vLLM
-                # NVFP4 GLM-5 streaming bug. See helper docstring for the
-                # full diagnosis. No-op for tools with non-empty schemas.
-                _tools = _sage_patch_empty_params_mcp_tools(_tools)
                 loaded_tools_by_server[name] = _tools
                 loaded_servers[name] = server_cfg
             except Exception as e:
