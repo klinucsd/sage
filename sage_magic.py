@@ -2000,6 +2000,52 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
         repeat_pos = final.find(marker, half - 5)
         if repeat_pos > 0:
             final = final[:repeat_pos].strip()
+
+    # Empty-final-assistant defensive detection. Two failure modes both produce
+    # silent cells (no rendered output) and confuse users:
+    #
+    #   1. Model returns empty completion with NO tool calls. Seen with GLM-5 on
+    #      certain prompts after a successful prior turn — model decides "I
+    #      already answered this" and emits nothing. Tools never invoked.
+    #
+    #   2. Model invokes tool(s), receives empty/error tool result, then produces
+    #      no synthesis. Seen with GPT-5.5 when an MCP tool execution returns
+    #      empty data (e.g., auth-failure with a fake token, server rate-limit,
+    #      query returning no rows). Tools display in the cell but no summary
+    #      follows.
+    #
+    # Both cases fingerprint as "final == empty". Show a yellow warning banner
+    # so the user knows the cell did run and what to try, instead of staring
+    # at an empty cell wondering whether ARGUS hung.
+    if not final:
+        from IPython.display import display, HTML
+        if tool_counts:
+            tools_label = ", ".join(f"{n}×{c}" if c > 1 else n
+                                    for n, c in tool_counts.items())
+            msg = (
+                f"<b>Agent ran tool(s) but produced no summary.</b><br>"
+                f"Tools called: <code>{tools_label}</code><br>"
+                f"Common causes: tool returned an error or empty data, "
+                f"missing or invalid credentials, server rate-limit, "
+                f"or the query matched no rows. Check the tool inputs "
+                f"shown above for hints."
+            )
+        else:
+            msg = (
+                "<b>Model returned no output and called no tools.</b><br>"
+                "Common causes: model decided the question was already "
+                "answered in conversation memory, or returned an empty "
+                "completion (intermittent model quirk). Try "
+                "<code>%reset</code> to clear conversation memory and "
+                "re-run, or rephrase the prompt to be more concrete."
+            )
+        display(HTML(
+            f"<div style='color:#8a6d00; background:#fff8e1; "
+            f"padding:6px 10px; border-left:3px solid #f0b400; "
+            f"margin:8px 0; font-family:-apple-system,sans-serif; "
+            f"font-size:13px'>⚠ {msg}</div>"
+        ))
+
     return final, tool_counts
 
 
@@ -3145,6 +3191,7 @@ try:
             "elapsed_sec": _elapsed,
             "tool_calls": tool_counts,
             "total_tool_calls": sum(tool_counts.values()),
+            "empty_final": not (final_text or "").strip(),
         }
         with open(_log_path, "a", encoding="utf-8") as _lf:
             _lf.write(json.dumps(_log_entry) + "\n")
