@@ -2013,22 +2013,26 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
         if repeat_pos > 0:
             final = final[:repeat_pos].strip()
 
-    # Empty-final-assistant defensive detection. Two failure modes both produce
-    # silent cells (no rendered output) and confuse users:
+    # Empty-final-assistant defensive detection. Three failure modes fingerprint
+    # as "final assistant text is empty"; each has different actionable advice.
     #
-    #   1. Model returns empty completion with NO tool calls. Seen with GLM-5 on
-    #      certain prompts after a successful prior turn — model decides "I
-    #      already answered this" and emits nothing. Tools never invoked.
+    #   Path A: tools ran but no synthesis.
+    #     Model invoked tool(s), received the results, then chose not to
+    #     summarize. Usually means the tool itself returned empty/error data
+    #     (auth fail, rate limit, query matched nothing). The user should
+    #     check the tool inputs shown above in the cell.
     #
-    #   2. Model invokes tool(s), receives empty/error tool result, then produces
-    #      no synthesis. Seen with GPT-5.5 when an MCP tool execution returns
-    #      empty data (e.g., auth-failure with a fake token, server rate-limit,
-    #      query returning no rows). Tools display in the cell but no summary
-    #      follows.
+    #   Path B: empty MCP registry AND no tools called AND empty content.
+    #     If the prompt expects MCP tools but no %%mcp cell ran this session,
+    #     register MCP first. Otherwise the model just returned empty for
+    #     other reasons.
     #
-    # Both cases fingerprint as "final == empty". Show a yellow warning banner
-    # so the user knows the cell did run and what to try, instead of staring
-    # at an empty cell wondering whether ARGUS hung.
+    #   Path C: MCP registry populated but model called no tool AND empty
+    #     content. The model failed to pick a tool from an otherwise relevant
+    #     toolset. Observed consistently with NRP GLM-5 (NVFP4 quantized) on
+    #     specific prompt phrasings — "call the tool X" mechanical language is
+    #     a known trigger. Natural-language rephrasing or a different model
+    #     provider usually recovers.
     if not final:
         from IPython.display import display, HTML
         if tool_counts:
@@ -2037,25 +2041,51 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
             msg = (
                 f"<b>Agent ran tool(s) but produced no summary.</b><br>"
                 f"Tools called: <code>{tools_label}</code><br>"
-                f"Common causes: tool returned an error or empty data, "
-                f"missing or invalid credentials, server rate-limit, "
-                f"or the query matched no rows. Check the tool inputs "
-                f"shown above for hints."
+                f"The tools executed but the model didn't summarize the "
+                f"results. Likely causes: tool returned empty data or an "
+                f"error in its payload, missing or invalid credentials, "
+                f"server rate-limit. Inspect the tool inputs shown above "
+                f"for hints."
+            )
+        elif _SAGE_MCP_TOOLS_BY_SERVER:
+            _n_tools = sum(len(t) for t in _SAGE_MCP_TOOLS_BY_SERVER.values())
+            _n_servers = len(_SAGE_MCP_TOOLS_BY_SERVER)
+            _servers = ", ".join(_SAGE_MCP_TOOLS_BY_SERVER.keys())
+            msg = (
+                f"<b>Model returned no output and called no tools.</b><br>"
+                f"MCP registry: {_n_tools} tools across {_n_servers} "
+                f"server(s) (<code>{_servers}</code>) were available.<br>"
+                f"The model produced an empty completion despite having "
+                f"relevant tools — a known intermittent failure with "
+                f"quantized model endpoints (e.g., NRP GLM-5 NVFP4) on "
+                f"specific prompt phrasings. Workarounds:"
+                f"<ul style='margin:4px 0 0 18px;padding:0'>"
+                f"<li>Rephrase as a natural task (\"show me all Sage "
+                f"nodes\"), not as a tool-call directive (\"call the "
+                f"tool list_all_nodes\")</li>"
+                f"<li>Switch model in <code>~/.deepagents/config.toml</code> "
+                f"to OpenAI or Anthropic — they handle tool-calling more "
+                f"reliably than NRP's quantized GLM-5</li>"
+                f"<li>Inspect <code>SAGE_MESSAGES[-1]</code> in a Python "
+                f"cell to confirm the model returned empty content</li>"
+                f"</ul>"
             )
         else:
             msg = (
-                "<b>Model returned no output and called no tools.</b><br>"
-                "Common causes: model decided the question was already "
-                "answered in conversation memory, or returned an empty "
-                "completion (intermittent model quirk). Try "
-                "<code>%reset</code> to clear conversation memory and "
-                "re-run, or rephrase the prompt to be more concrete."
+                f"<b>Agent returned no output.</b><br>"
+                f"MCP registry: empty (no <code>%%mcp</code> cells run "
+                f"this kernel session).<br>"
+                f"If your prompt requires an MCP tool, register the server "
+                f"first with a <code>%%mcp</code> cell. Otherwise the model "
+                f"produced an empty completion — try <code>%reset</code> "
+                f"to clear conversation memory and re-run, or rephrase the "
+                f"prompt."
             )
         display(HTML(
             f"<div style='color:#8a6d00; background:#fff8e1; "
-            f"padding:6px 10px; border-left:3px solid #f0b400; "
+            f"padding:8px 12px; border-left:3px solid #f0b400; "
             f"margin:8px 0; font-family:-apple-system,sans-serif; "
-            f"font-size:13px'>⚠ {msg}</div>"
+            f"font-size:13px; line-height:1.4'>⚠ {msg}</div>"
         ))
 
     return final, tool_counts
