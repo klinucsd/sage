@@ -1892,6 +1892,12 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
         [{"role": m["role"], "content": m["content"]} for m in SAGE_MESSAGES]
         + [{"role": "user", "content": prompt}]
     )
+    # Diagnostic: capture every chunk so we can introspect what the model
+    # actually sent back. Saved to user_ns at end of cell so empty-final
+    # failures are inspectable post-hoc. Includes raw AIMessage / ToolMessage
+    # objects so tool_calls, additional_kwargs (reasoning content),
+    # response_metadata (finish_reason), and usage_metadata are all visible.
+    _diag_chunks: list = []
     async for chunk in agent.astream(
         {"messages": initial_messages},
         stream_mode="messages",
@@ -1900,6 +1906,7 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
         if not isinstance(chunk, tuple) or len(chunk) < 2:
             continue
         message_obj, metadata = chunk[0], chunk[1]
+        _diag_chunks.append((message_obj, metadata))
 
         if isinstance(message_obj, ToolMessage):
             _flush_text()
@@ -2000,6 +2007,16 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
             _flush_text()
             _display_tool_call(buf["name"], parsed_args)
             tool_counts[buf["name"]] = tool_counts.get(buf["name"], 0) + 1
+
+    # Expose the raw streamed chunks to user_ns so users can introspect what
+    # the model actually returned — especially for empty-final failures where
+    # the simplified SAGE_MESSAGES view doesn't show tool_calls,
+    # additional_kwargs (reasoning), response_metadata (finish_reason), or
+    # usage_metadata (token counts).
+    try:
+        get_ipython().user_ns["_SAGE_LAST_RUN_CHUNKS"] = _diag_chunks  # noqa: F821
+    except Exception:
+        pass
 
     # Content-based fallback: if the same message was emitted twice with the same
     # msg_id (msg_id dedup can't catch it), the buffer contains identical duplicated
