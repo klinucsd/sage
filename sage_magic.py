@@ -2129,8 +2129,30 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
 # API key check
 # ---------------------------------------------------------------------------
 
+_SUPPORTED_API_KEY_VARS = (
+    "NRP_API_KEY",        # NRP-hosted GLM models
+    "OPENAI_API_KEY",     # OpenAI GPT models
+    "ANTHROPIC_API_KEY",  # Anthropic Claude models
+    "GOOGLE_API_KEY",     # Google Gemini models
+    "GOOGLE_CLOUD_PROJECT",  # Vertex AI (project id, not a key, but it's how the
+                             # provider is configured)
+)
+
+
 def _resolve_api_key() -> str | None:
-    return os.environ.get("NRP_API_KEY")
+    """Return any one of the supported LLM provider API keys, or None.
+
+    Pre-flight check before the agent starts up — deepagents-code's
+    create_model() picks the actual provider based on ~/.deepagents/config.toml,
+    so any single key is sufficient for ARGUS to start. This function exists
+    to give a fast, clear error message when the user has no key set anywhere,
+    instead of letting them hit a deeper create_model failure later.
+    """
+    for var in _SUPPORTED_API_KEY_VARS:
+        v = os.environ.get(var)
+        if v:
+            return v
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2685,11 +2707,16 @@ try:
 
         if not _resolve_api_key():
             print(
-                "Error: NRP_API_KEY not found.\n"
-                "Set it in one of these locations:\n"
-                "  1. /home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env\n"
-                "  2. .env in the current working directory\n"
-                "  3. os.environ['NRP_API_KEY'] = 'your_key'"
+                "Error: no LLM provider API key found in the environment.\n"
+                "Set ONE of these (whichever matches your model in "
+                "~/.deepagents/config.toml):\n"
+                "  NRP_API_KEY        (NRP-hosted GLM models)\n"
+                "  OPENAI_API_KEY     (OpenAI GPT models)\n"
+                "  ANTHROPIC_API_KEY  (Anthropic Claude models)\n"
+                "  GOOGLE_API_KEY     (Google Gemini models)\n"
+                "Sources checked: env vars, .env in CWD"
+                ", and (on NRP) "
+                "/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env"
             )
             return
 
