@@ -38,6 +38,7 @@ What the installer adds to your config automatically:
     block, your values win — we don't override.
 """
 
+import json
 import os
 import pathlib
 import subprocess
@@ -49,6 +50,21 @@ try:
     import tomllib  # Python 3.11+ stdlib
 except ImportError:
     import tomli as tomllib  # type: ignore[no-redef]
+
+# Core skills installed automatically on bootstrap (~/.deepagents/agent/skills/).
+# Mirrors what the Docker image bakes in, minus:
+#   - ndp-projects, ndp-workspaces (need Keycloak — only available on NDP JupyterHub)
+#   - wildfire-* (private skills, not publicly distributed)
+# Users can opt out by setting SKIP_CORE_SKILLS = True before running this installer.
+_CORE_SKILLS = (
+    "ndp-search",
+    "sage-bbox-map",
+    "sage-dropdown",
+    "sage-metrics",
+    "skillsmp",
+    "us-counties",
+    "us-states",
+)
 
 print("ARGUS bootstrap starting...")
 
@@ -302,6 +318,65 @@ for _fname in ("sage_magic.py", "sage_kernel_backend.py"):
 if "/content" not in sys.path:
     sys.path.insert(0, "/content")
 print(f"  ✓ Downloaded sage_magic.py + sage_kernel_backend.py from {_ARGUS_REF}")
+
+# ---------------------------------------------------------------------------
+# Step 4b: Install core skills into ~/.deepagents/agent/skills/
+# ---------------------------------------------------------------------------
+# Mirrors what the Docker image bakes in by default. Skipped per-skill if the
+# user already has it (e.g. via a prior %%skill cell). User can disable
+# entirely with SKIP_CORE_SKILLS = True before running this installer.
+if globals().get("SKIP_CORE_SKILLS"):
+    print("  · Skipping core-skill install (SKIP_CORE_SKILLS=True)")
+else:
+    _skills_dir = pathlib.Path("~/.deepagents/agent/skills").expanduser()
+    _skills_dir.mkdir(parents=True, exist_ok=True)
+    # One GitHub tree call enumerates every file in the sage repo at this ref —
+    # avoids N per-skill API calls and stays well under the unauth rate limit.
+    _tree_url = (
+        f"https://api.github.com/repos/klinucsd/sage/git/trees/{_ARGUS_REF}"
+        f"?recursive=1"
+    )
+    try:
+        with urllib.request.urlopen(_tree_url, timeout=15) as _resp:
+            _tree = json.loads(_resp.read().decode()).get("tree", [])
+    except Exception as _e:
+        print(f"  ⚠ Could not list sage repo tree for core skills: {_e}")
+        _tree = []
+
+    _installed_core = []
+    _skipped_core = []
+    for _skill_name in _CORE_SKILLS:
+        _skill_dir = _skills_dir / _skill_name
+        if _skill_dir.exists():
+            _skipped_core.append(_skill_name)
+            continue
+        _prefix = f"sage_skills/{_skill_name}/"
+        _files_for_skill = [
+            e for e in _tree
+            if e.get("type") == "blob" and e.get("path", "").startswith(_prefix)
+        ]
+        if not _files_for_skill:
+            continue
+        for _entry in _files_for_skill:
+            _rel = _entry["path"][len(_prefix):]
+            _local = _skill_dir / _rel
+            _local.parent.mkdir(parents=True, exist_ok=True)
+            _raw_url = (
+                f"https://raw.githubusercontent.com/klinucsd/sage/"
+                f"{_ARGUS_REF}/{_entry['path']}"
+            )
+            urllib.request.urlretrieve(_raw_url, str(_local))
+        _installed_core.append(_skill_name)
+    if _installed_core:
+        print(
+            f"  ✓ Installed {len(_installed_core)} core skill(s) into "
+            f"{_skills_dir}: {', '.join(_installed_core)}"
+        )
+    if _skipped_core:
+        print(
+            f"  · Skipped {len(_skipped_core)} core skill(s) (already present): "
+            f"{', '.join(_skipped_core)}"
+        )
 
 # ---------------------------------------------------------------------------
 # Step 5: Load ARGUS into the calling notebook's globals

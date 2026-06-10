@@ -140,13 +140,15 @@ max_retries = 10
 
 ## What the installer does
 
-The `install.py` linked above performs five steps when you run it:
+The `install.py` linked above performs six steps when you run it:
 
 1. Reads your `LLM` dict (or `LLM_CONFIG` TOML string) and writes the result to `~/.deepagents/config.toml`. For every `langchain_openai:ChatOpenAI` provider without its own `[params]` block, the installer appends sensible defaults: `temperature = 0`, `stream_chunk_timeout = 1200.0`, `max_retries = 6`. These work better for agentic flows than langchain's defaults. If you write your own `[params]` block, the installer leaves it alone.
 2. Parses the config to find which `api_key_env` your provider expects
 3. Loads that Colab Secret into `os.environ`
 4. Installs ARGUS's Python dependencies via pip
-5. Downloads `sage_magic.py` from this repo's `main` branch and registers the `%%ask` / `%%mcp` / `%%skill` magics into the running kernel
+5. Downloads `sage_magic.py` from this repo's `main` branch
+6. Installs the **core skills** (`ndp-search`, `sage-bbox-map`, `sage-dropdown`, `sage-metrics`, `skillsmp`, `us-counties`, `us-states`) into `~/.deepagents/agent/skills/`. These mirror what the Docker image bakes in for JupyterHub users, minus the NDP-JupyterHub-only ones (`ndp-projects`, `ndp-workspaces`) which require a Keycloak token that's not available outside NDP. Skip per-skill if you already installed it via an earlier `%%skill` cell. To skip ALL core-skill install, set `SKIP_CORE_SKILLS = True` before running the installer.
+7. Registers the `%%ask` / `%%mcp` / `%%skill` magics into the running kernel.
 
 If anything fails, the installer prints a clear, specific error message naming exactly what's wrong (missing key, missing config, missing field, etc.).
 
