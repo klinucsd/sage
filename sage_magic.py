@@ -1831,9 +1831,15 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     model = result.model
     result.apply_to_settings()
 
-    # Discover installed skills
+    # Discover installed skills.
+    # IMPORTANT: deepagents 0.6.8's SkillsMiddleware expects `skills=` to be
+    # a list of PARENT directories — it calls backend.ls(source) and treats
+    # each is_dir entry as a skill. Passing individual skill subdirectories
+    # results in ls() finding only SKILL.md (a file, not a dir), so no skills
+    # register at all. The fix is to pass the single parent directory; the
+    # middleware then iterates its contents.
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
-    skills_paths = sorted([str(d) for d in skills_dir.iterdir() if d.is_dir()]) if skills_dir.exists() else []
+    skills_paths = [str(skills_dir)] if skills_dir.exists() else []
 
     # No checkpointer — cross-cell memory is carried via SAGE_MESSAGES.
     # Pass system_prompt at construction time so the new deepagents 0.6.8
