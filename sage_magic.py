@@ -2149,26 +2149,64 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
 # API key check
 # ---------------------------------------------------------------------------
 
-_SUPPORTED_API_KEY_VARS = (
-    "NRP_API_KEY",        # NRP-hosted GLM models
-    "OPENAI_API_KEY",     # OpenAI GPT models
-    "ANTHROPIC_API_KEY",  # Anthropic Claude models
-    "GOOGLE_API_KEY",     # Google Gemini models
-    "GOOGLE_CLOUD_PROJECT",  # Vertex AI (project id, not a key, but it's how the
-                             # provider is configured)
-)
+def _resolve_required_api_key_env() -> str | None:
+    """Determine which env var the user's config.toml requires.
+
+    Reads ``~/.deepagents/config.toml``, finds the default provider, and
+    returns that provider's ``api_key_env`` value. Returns ``None`` if the
+    config is missing, malformed, or doesn't specify an api_key_env.
+
+    Used by the pre-flight check to validate the user's environment against
+    THEIR chosen provider — not a hardcoded list. Works for OpenAI, Anthropic,
+    NRP, ZAI, OpenRouter, Nvidia, Mistral, Groq, or anything else the user
+    configures.
+    """
+    try:
+        import tomllib  # Python 3.11+ stdlib
+    except ImportError:  # pragma: no cover — pre-3.11 fallback
+        try:
+            import tomli as tomllib  # type: ignore[no-redef]
+        except ImportError:
+            return None
+
+    config_path = Path.home() / ".deepagents" / "config.toml"
+    if not config_path.exists():
+        return None
+    try:
+        with open(config_path, "rb") as f:
+            config = tomllib.load(f)
+    except Exception:
+        return None
+
+    # Default model is formatted "provider:model" — extract the provider half.
+    default_model = config.get("models", {}).get("default", "")
+    if ":" not in default_model:
+        return None
+    provider_name = default_model.split(":", 1)[0]
+
+    provider_config = (
+        config.get("models", {}).get("providers", {}).get(provider_name, {})
+    )
+    api_key_env = provider_config.get("api_key_env")
+    return api_key_env if isinstance(api_key_env, str) and api_key_env else None
 
 
 def _resolve_api_key() -> str | None:
-    """Return any one of the supported LLM provider API keys, or None.
+    """Return the value of the configured-provider's API key env var, or None.
 
-    Pre-flight check before the agent starts up — deepagents-code's
-    create_model() picks the actual provider based on ~/.deepagents/config.toml,
-    so any single key is sufficient for ARGUS to start. This function exists
-    to give a fast, clear error message when the user has no key set anywhere,
-    instead of letting them hit a deeper create_model failure later.
+    Pre-flight check before the agent starts up — gives a fast, clear error
+    if the user's chosen provider doesn't have its credential set, instead
+    of letting them hit a deeper create_model failure later. Does NOT enforce
+    a hardcoded provider list; reads ``config.toml`` so any provider the user
+    configures works.
     """
-    for var in _SUPPORTED_API_KEY_VARS:
+    required_env = _resolve_required_api_key_env()
+    if required_env:
+        return os.environ.get(required_env)
+    # Config missing or malformed — fall back to checking a few common env
+    # vars so the user gets a non-empty result if they happen to have any
+    # standard key set. Used only when we can't read config.toml.
+    for var in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "NRP_API_KEY"):
         v = os.environ.get(var)
         if v:
             return v
@@ -2726,18 +2764,25 @@ try:
             pass
 
         if not _resolve_api_key():
-            print(
-                "Error: no LLM provider API key found in the environment.\n"
-                "Set ONE of these (whichever matches your model in "
-                "~/.deepagents/config.toml):\n"
-                "  NRP_API_KEY        (NRP-hosted GLM models)\n"
-                "  OPENAI_API_KEY     (OpenAI GPT models)\n"
-                "  ANTHROPIC_API_KEY  (Anthropic Claude models)\n"
-                "  GOOGLE_API_KEY     (Google Gemini models)\n"
-                "Sources checked: env vars, .env in CWD"
-                ", and (on NRP) "
-                "/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env"
-            )
+            required_env = _resolve_required_api_key_env()
+            if required_env:
+                print(
+                    f"Error: {required_env} is not set in the environment.\n"
+                    f"Your ~/.deepagents/config.toml requires it for the "
+                    f"default provider. Set it via .env in CWD, the shell "
+                    f"environment, or (on NRP) "
+                    f"/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env"
+                )
+            else:
+                print(
+                    "Error: no LLM provider API key found and no default "
+                    "model configured in ~/.deepagents/config.toml.\n"
+                    "Either: (a) write a config.toml with a default model "
+                    "and its api_key_env; or (b) set one of the common "
+                    "env vars: OPENAI_API_KEY, ANTHROPIC_API_KEY, NRP_API_KEY.\n"
+                    "Sources checked: env vars, .env in CWD, and (on NRP) "
+                    "/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env"
+                )
             return
 
         # Orphan-file cleanup for any %%ask cell that didn't finish normally.
