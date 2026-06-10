@@ -2,17 +2,14 @@
 
 Usage from inside a Colab notebook:
 
-    # Cell 1 — declare your LLM provider (one of the templates from
-    # argus_colab/README.md, or your own custom block).
-    LLM_CONFIG = '''
-    [models]
-    default = "openai:gpt-4o-mini"
-
-    [models.providers.openai]
-    class_path = "langchain_openai:ChatOpenAI"
-    models = ["gpt-4o-mini"]
-    api_key_env = "OPENAI_API_KEY"
-    '''
+    # Cell 1 — declare your LLM (simplest form: a Python dict)
+    LLM = {
+        "model": "gpt-4o-mini",
+        "api_key_env": "OPENAI_API_KEY",
+        # "url": "https://api.z.ai/api/coding/paas/v4",  # optional, for
+        #     OpenAI-compatible third-party hosts (ZAI, NRP, OpenRouter, Groq, ...)
+        # "flavor": "openai" | "anthropic" | "gemini",   # optional, defaults to "openai"
+    }
 
     # Cell 2 — universal install (same line for every provider).
     exec(__import__('urllib.request').urlopen(
@@ -22,10 +19,15 @@ Usage from inside a Colab notebook:
 After cell 2 completes, %%ask, %%mcp, %%skill are all registered and ARGUS
 is ready.
 
-ARGUS does NOT enumerate or gatekeep LLM providers — your LLM_CONFIG
-declares whatever you want, and the installer derives the API key env var
-from your config. Works for OpenAI, Anthropic, NRP, ZAI, OpenRouter,
-Nvidia, Mistral, Groq, or any other provider, present or future.
+ARGUS does NOT enumerate or gatekeep LLM providers — your LLM dict declares
+whatever you want, and the installer derives the API key env var from it.
+Works for OpenAI, Anthropic, Google Gemini, NRP, ZAI, OpenRouter, Nvidia,
+Mistral, Groq, or any other provider, present or future.
+
+For advanced setups (multi-provider configs, custom params, etc.), you can
+also pass the full deepagents config as a TOML string in `LLM_CONFIG`. The
+LLM dict and LLM_CONFIG paths produce equivalent on-disk config; the dict
+is just the easy entry point.
 
 What the installer adds to your config automatically:
   - For every langchain_openai:ChatOpenAI provider WITHOUT a [params] block,
@@ -50,24 +52,111 @@ except ImportError:
 print("ARGUS bootstrap starting...")
 
 # ---------------------------------------------------------------------------
-# Step 1: Parse the user's LLM_CONFIG, augment with ChatOpenAI defaults,
-# write to ~/.deepagents/config.toml
+# Step 1: Resolve the user's LLM config (dict OR TOML string), augment with
+# ChatOpenAI defaults, write to ~/.deepagents/config.toml
 # ---------------------------------------------------------------------------
 _deepagents_dir = pathlib.Path("~/.deepagents").expanduser()
 _config_path = _deepagents_dir / "config.toml"
 _deepagents_dir.mkdir(parents=True, exist_ok=True)
 (_deepagents_dir / "agent" / "skills").mkdir(parents=True, exist_ok=True)
 
-# Accept LLM_CONFIG (preferred) or fall back to ARGUS_CONFIG for backward compat.
-_llm_config = globals().get("LLM_CONFIG") or globals().get("ARGUS_CONFIG")
+# Three accepted user-facing shapes, in priority order:
+#   1. LLM = {"model": "...", "url": "...", "api_key_env": "...",
+#             "flavor": "openai" | "anthropic" | "gemini"}  (preferred — simplest)
+#   2. LLM_CONFIG = '''<TOML string>'''  (advanced — full deepagents config)
+#   3. ARGUS_CONFIG = '''<TOML string>'''  (deprecated alias for LLM_CONFIG)
+_FLAVOR_TO_CLASS_PATH = {
+    "openai": "langchain_openai:ChatOpenAI",
+    "anthropic": "langchain_anthropic:ChatAnthropic",
+    "gemini": "langchain_google_genai:ChatGoogleGenerativeAI",
+}
+
+
+def _llm_dict_to_toml(d):
+    """Translate the simple LLM dict into a deepagents config.toml fragment.
+
+    Required keys:
+      - model       (str) the model id, e.g. "gpt-4o-mini", "glm-5"
+      - api_key_env (str) the env var holding the API key, e.g. "OPENAI_API_KEY"
+
+    Optional keys:
+      - url         (str) the API base URL. Omit to use the langchain default
+                          for the chosen flavor (api.openai.com, api.anthropic.com,
+                          etc.). Set this for OpenAI-compatible third-party hosts
+                          like ZAI, NRP, OpenRouter, Groq, Together, etc.
+      - flavor      (str) one of "openai", "anthropic", "gemini". Defaults to
+                          "openai", which works for OpenAI itself plus any
+                          OpenAI-compatible endpoint.
+    """
+    if not isinstance(d, dict):
+        raise RuntimeError(f"LLM must be a dict, got {type(d).__name__}")
+    flavor = d.get("flavor", "openai")
+    if flavor not in _FLAVOR_TO_CLASS_PATH:
+        raise RuntimeError(
+            f"LLM['flavor'] must be one of {sorted(_FLAVOR_TO_CLASS_PATH)}; "
+            f"got {flavor!r}"
+        )
+    model = d.get("model")
+    if not isinstance(model, str) or not model:
+        raise RuntimeError(
+            "LLM dict must include 'model' (e.g., 'gpt-4o-mini', 'glm-5')"
+        )
+    api_key_env = d.get("api_key_env")
+    if not isinstance(api_key_env, str) or not api_key_env:
+        raise RuntimeError(
+            "LLM dict must include 'api_key_env' (e.g., 'OPENAI_API_KEY', "
+            "'ZAI_API_KEY'). This names the Colab Secret holding your key."
+        )
+    url = d.get("url")
+    class_path = _FLAVOR_TO_CLASS_PATH[flavor]
+
+    # Provider name in the generated TOML is mostly a label, BUT — for the
+    # 'openai' flavor — using the literal name "openai" makes langchain-openai
+    # route through the OpenAI Responses API (api.openai.com/v1/responses).
+    # That's correct for actual OpenAI, but breaks third-party OpenAI-compatible
+    # endpoints (ZAI, NRP, OpenRouter, Groq, etc.) which only support the
+    # chat-completions path. Heuristic: if the user gave us a custom URL,
+    # assume third-party compat endpoint and use a neutral provider name.
+    if flavor == "openai" and isinstance(url, str) and url:
+        provider_name = "llm"
+    else:
+        provider_name = flavor
+
+    lines = [
+        "[models]",
+        f'default = "{provider_name}:{model}"',
+        "",
+        f"[models.providers.{provider_name}]",
+        f'class_path = "{class_path}"',
+        f'models = ["{model}"]',
+        f'api_key_env = "{api_key_env}"',
+    ]
+    if isinstance(url, str) and url:
+        lines.append(f'base_url = "{url}"')
+    return "\n".join(lines)
+
+
+_llm_dict = globals().get("LLM")
+_llm_toml_str = globals().get("LLM_CONFIG") or globals().get("ARGUS_CONFIG")
+
+if _llm_dict is not None:
+    _user_toml = _llm_dict_to_toml(_llm_dict).strip()
+    _llm_config = _user_toml  # nonempty marker for the if-tree below
+    _source_label = "LLM dict"
+elif _llm_toml_str:
+    _user_toml = _llm_toml_str.strip()
+    _llm_config = _user_toml
+    _source_label = "LLM_CONFIG TOML"
+else:
+    _llm_config = None
+    _source_label = None
 
 if _llm_config:
-    _user_toml = _llm_config.strip()
     try:
         _parsed = tomllib.loads(_user_toml)
     except Exception as e:
         raise RuntimeError(
-            f"Could not parse LLM_CONFIG as TOML: {e}\n"
+            f"Could not parse {_source_label} as TOML: {e}\n"
             f"Check that your config has [models] and [models.providers.<name>] "
             f"blocks. See argus_colab/README.md for working templates."
         ) from None
@@ -108,20 +197,23 @@ elif _config_path.exists():
     print(f"  ✓ Using existing config at {_config_path}")
 else:
     raise RuntimeError(
-        "No LLM_CONFIG provided and no existing ~/.deepagents/config.toml.\n\n"
-        "Before running this installer, declare your LLM provider in a "
-        "separate cell. Minimal OpenAI example:\n\n"
-        "    LLM_CONFIG = '''\n"
-        '    [models]\n'
-        '    default = "openai:gpt-4o-mini"\n\n'
-        "    [models.providers.openai]\n"
-        '    class_path = "langchain_openai:ChatOpenAI"\n'
-        '    models = ["gpt-4o-mini"]\n'
-        '    api_key_env = "OPENAI_API_KEY"\n'
-        "    '''\n\n"
+        "No LLM config provided, and no existing ~/.deepagents/config.toml.\n\n"
+        "Before running this installer, declare your LLM in a separate cell.\n"
+        "Simplest form (Python dict):\n\n"
+        "    LLM = {\n"
+        '        "model": "gpt-4o-mini",\n'
+        '        "api_key_env": "OPENAI_API_KEY",\n'
+        "    }\n\n"
+        "For OpenAI-compatible third-party endpoints (ZAI, NRP, OpenRouter, "
+        "Groq, etc.), also include the 'url':\n\n"
+        "    LLM = {\n"
+        '        "model": "glm-5",\n'
+        '        "url": "https://api.z.ai/api/coding/paas/v4",\n'
+        '        "api_key_env": "ZAI_API_KEY",\n'
+        "    }\n\n"
         "See https://github.com/klinucsd/sage/blob/main/argus_colab/README.md "
-        "for templates covering OpenAI, Anthropic, ZAI, OpenRouter, NRP, and "
-        "other providers."
+        "for templates covering OpenAI, Anthropic, ZAI, OpenRouter, NRP, Gemini, "
+        "and other providers."
     )
 
 # ---------------------------------------------------------------------------
