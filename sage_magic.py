@@ -1943,8 +1943,21 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
             continue
 
         # --- Text content ---
-        content = getattr(message_obj, "content", "")
-        if content and isinstance(content, str):
+        # Newer OpenAI / Anthropic models stream content as a LIST of typed
+        # parts ([{"type": "text", "text": "..."}]) rather than a plain
+        # string. Normalize both shapes here so the buffer always sees a str.
+        raw_content = getattr(message_obj, "content", "")
+        if isinstance(raw_content, str):
+            content = raw_content
+        elif isinstance(raw_content, list):
+            content = "".join(
+                p.get("text", "") for p in raw_content
+                if isinstance(p, dict) and p.get("type") == "text"
+                   and isinstance(p.get("text"), str)
+            )
+        else:
+            content = ""
+        if content:
             msg_id = getattr(message_obj, "id", None)
             if msg_id is not None:
                 if msg_id == _skip_msg_id[0]:
