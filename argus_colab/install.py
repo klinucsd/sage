@@ -11,8 +11,9 @@ Usage from inside a Colab notebook:
         # "flavor": "openai" | "anthropic" | "gemini",   # optional, defaults to "openai"
     }
 
-    # Cell 2 — universal install (same line for every provider).
-    exec(__import__('urllib.request').urlopen(
+    # Cell 2 — universal install (same lines for every provider).
+    import urllib.request
+    exec(urllib.request.urlopen(
         'https://raw.githubusercontent.com/klinucsd/sage/main/argus_colab/install.py'
     ).read().decode(), globals())
 

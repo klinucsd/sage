@@ -15,7 +15,8 @@ Pick one of the templates from **[Provider templates](#provider-templates)** bel
 Paste this exact line in the second cell. It's identical for every provider:
 
 ```python
-exec(__import__('urllib.request').urlopen(
+import urllib.request
+exec(urllib.request.urlopen(
     'https://raw.githubusercontent.com/klinucsd/sage/main/argus_colab/install.py'
 ).read().decode(), globals())
 ```
@@ -164,7 +165,8 @@ If anything fails, the installer prints a clear, specific error message naming e
 The installer pulls from the `main` branch by default. Once we cut a formal release tag (e.g. `v1.4.3`), you can pin by editing the install line:
 
 ```python
-exec(__import__('urllib.request').urlopen(
+import urllib.request
+exec(urllib.request.urlopen(
     'https://raw.githubusercontent.com/klinucsd/sage/v1.4.3/argus_colab/install.py'
 ).read().decode(), globals())
 ```
