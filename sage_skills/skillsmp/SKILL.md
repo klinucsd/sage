@@ -1,6 +1,6 @@
 ---
 name: skillsmp
-description: Use for ALL skill marketplace operations on skillsmp.com. Triggers: "search marketplace", "search skill marketplace", "find skills for X", "browse marketplace", "install skill X", "show details of skill X", "list installed skills", "what skills are available". Always calls the SkillsMP API — never reads local skill files for marketplace searches.
+description: 'Use for ALL skill marketplace operations on skillsmp.com. Triggers: "search marketplace", "search skill marketplace", "find skills for X", "browse marketplace", "install skill X", "show details of skill X", "list installed skills", "what skills are available". Always calls the SkillsMP API — never reads local skill files for marketplace searches.'
 ---
 
 # SkillsMP Skill Marketplace
