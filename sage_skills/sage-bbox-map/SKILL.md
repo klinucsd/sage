@@ -16,11 +16,14 @@ station locations, etc.) for visual context while drawing.
 ## Importing the helper
 
 The skill ships a Python module `sage_bbox_map.py` next to this file. From an
-agent-generated script, add the skill directory to `sys.path` and import:
+agent-generated script, add the skill directory to `sys.path` and import. Use
+`os.path.expanduser("~/...")` so the path resolves correctly on any host
+(NRP JupyterHub uses `/home/jovyan/`, Google Colab uses `/root/`, localhost
+varies):
 
 ```python
-import sys
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-bbox-map")
+import os, sys
+sys.path.insert(0, os.path.expanduser("~/.deepagents/agent/skills/sage-bbox-map"))
 from sage_bbox_map import show_bbox_map
 ```
 
@@ -80,8 +83,8 @@ bounding box selection tool."
 After the data skill (`sdge-goes-fire`) saves `fires.geojson`, the agent calls:
 
 ```python
-import sys
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-bbox-map")
+import os, sys
+sys.path.insert(0, os.path.expanduser("~/.deepagents/agent/skills/sage-bbox-map"))
 from sage_bbox_map import show_bbox_map
 
 show_bbox_map(
@@ -137,10 +140,11 @@ data skill can stay UI-free.**
 **Canonical recipe (substitute the data skill's path and module name):**
 
 ```python
-import sys
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-bbox-map")
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-dropdown")
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/MY-DATA-SKILL")
+import os, sys
+SKILLS = os.path.expanduser("~/.deepagents/agent/skills")
+sys.path.insert(0, f"{SKILLS}/sage-bbox-map")
+sys.path.insert(0, f"{SKILLS}/sage-dropdown")
+sys.path.insert(0, f"{SKILLS}/MY-DATA-SKILL")
 
 from sage_bbox_map import show_bbox_map
 from sage_dropdown import show_dropdown

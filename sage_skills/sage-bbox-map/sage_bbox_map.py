@@ -12,8 +12,8 @@ EPSG:4326, AND registered in the cross-cell kernel-variables registry.
 
 Example call from an agent-generated script:
 
-    import sys
-    sys.path.insert(0, '/home/jovyan/.deepagents/agent/skills/sage-bbox-map')
+    import os, sys
+    sys.path.insert(0, os.path.expanduser('~/.deepagents/agent/skills/sage-bbox-map'))
     from sage_bbox_map import show_bbox_map
 
     show_bbox_map(
