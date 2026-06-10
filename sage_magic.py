@@ -2107,13 +2107,14 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
         else:
             msg = (
                 f"<b>Agent returned no output.</b><br>"
-                f"MCP registry: empty (no <code>%%mcp</code> cells run "
-                f"this kernel session).<br>"
-                f"If your prompt requires an MCP tool, register the server "
-                f"first with a <code>%%mcp</code> cell. Otherwise the model "
-                f"produced an empty completion — try <code>%reset</code> "
-                f"to clear conversation memory and re-run, or rephrase the "
-                f"prompt."
+                f"The model produced an empty completion and called no tools. "
+                f"Try <code>%reset</code> to clear conversation memory and "
+                f"re-run, or rephrase the prompt.<br>"
+                f"<span style='color:#888;font-size:12px'>"
+                f"(If you intended this prompt to use MCP tools, the "
+                f"registry is empty — register a server first with "
+                f"<code>%%mcp</code>.)"
+                f"</span>"
             )
         display(HTML(
             f"<div style='color:#8a6d00; background:#fff8e1; "
