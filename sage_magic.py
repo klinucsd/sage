@@ -1005,11 +1005,12 @@ def _kernel_vars_registry_prompt() -> str:
         )
     lines.append(
         "In agent scripts run as subprocesses (`python /path/to/script.py`), "
-        "`globals()` does NOT see kernel state — use the VALUE shown above "
-        "directly in your script (e.g. `bbox = (-122.71, 43.52, -122.56, 43.63)`). "
-        "The registry file `.sage_kernel_vars.json` holds only metadata "
-        "(descriptions), not values; do not try to read it from a script. "
-        "Always refer to the exact value shown above; do not invent or guess."
+        "`globals()` does NOT see kernel state — copy each variable's literal "
+        "VALUE from the list above directly into the script. The registry file "
+        "`.sage_kernel_vars.json` holds only metadata (descriptions), not "
+        "values; do not try to read it from a script. Always copy the exact "
+        "value shown above; do not invent, substitute, or use any example "
+        "values from this system prompt as a real value."
     )
     return "\n".join(lines) + "\n\n"
 
