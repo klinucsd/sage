@@ -50,15 +50,13 @@ Find all states and their geometries needs to add the following filter into the 
 
 ### Step 2: Send the SPARQL query to the FRINK endpoint
 
-Use the library `sparql_dataframe`. Install it with ARGUS's kernel-aware
-`_sage_pip_install` helper rather than calling `pip` from a subprocess —
-the helper sets sys.path correctly so the package is importable from any
-script you write next (Colab, NRP JupyterHub, and localhost all behave
-the same):
+Use the library `sparql_dataframe`:
+
+```
+pip install sparql_dataframe
+```
 
 ```python
-_sage_pip_install("sparql_dataframe")
-
 import sparql_dataframe
 endpoint_url = "https://frink.apps.renci.org/federation/sparql"
 df = sparql_dataframe.get(endpoint_url, query)
