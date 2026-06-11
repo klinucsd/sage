@@ -1,17 +1,17 @@
 # =============================================================================
-# Sage Docker Image - NRP JupyterHub Deployment
+# ARGUS Docker Image - NRP JupyterHub Deployment
 # =============================================================================
 #
 # Build:
-#   docker build -t sage:jupyterhub .
+#   docker build -t argus:jupyterhub .
 #
 # Tag and push (dev iterations):
-#   docker tag sage:jupyterhub kaiucsd/sage-dev:v1.0.1
-#   docker push kaiucsd/sage-dev:v1.0.1
+#   docker tag argus:jupyterhub kaiucsd/argus-dev:v1.4.3
+#   docker push kaiucsd/argus-dev:v1.4.3
 #
 # Formal release:
-#   docker tag sage:jupyterhub kaiucsd/sage:v1.0
-#   docker push kaiucsd/sage:v1.0
+#   docker tag argus:jupyterhub kaiucsd/argus:v1.4
+#   docker push kaiucsd/argus:v1.4
 #
 # NRP_API_KEY is loaded at runtime from:
 #   1. /home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env
