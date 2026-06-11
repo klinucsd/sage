@@ -1004,10 +1004,12 @@ def _kernel_vars_registry_prompt() -> str:
             f"- `{var_name}` ({type_}) = {cur} — {desc} [set by {set_by}]"
         )
     lines.append(
-        "Read these via `globals().get(\"VAR_NAME\")` in scripts. The value shown "
-        "above is the CURRENT value — when narrating, refer to that exact value, "
-        "do not invent or guess. Do NOT redefine or hardcode values for variables "
-        "already in this list."
+        "In agent scripts run as subprocesses (`python /path/to/script.py`), "
+        "`globals()` does NOT see kernel state — use the VALUE shown above "
+        "directly in your script (e.g. `bbox = (-122.71, 43.52, -122.56, 43.63)`). "
+        "The registry file `.sage_kernel_vars.json` holds only metadata "
+        "(descriptions), not values; do not try to read it from a script. "
+        "Always refer to the exact value shown above; do not invent or guess."
     )
     return "\n".join(lines) + "\n\n"
 
