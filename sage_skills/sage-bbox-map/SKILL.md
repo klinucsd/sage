@@ -1,6 +1,6 @@
 ---
 name: sage-bbox-map
-description: "Generic bounding-box selection map. Use whenever the user asks to: draw a rectangle, pick an area, select a region on a map, set a spatial filter, or interactively choose a bounding box. Works with any geographic dataset — fires, weather, satellite, sensors, anything. The agent decides the kernel variable name to receive the drawn bbox (e.g., USER_BBOX, FIRE_BBOX, STORM_BBOX) based on the cell's task and the data domain."
+description: "Generic bounding-box selection map. Use whenever the user asks to: draw a rectangle, pick an area, select a region on a map, set a spatial filter, or interactively choose a bounding box. Works with any geographic dataset — fires, weather, satellite, sensors, anything."
 ---
 
 # sage-bbox-map — Generic Bounding-Box Selection Map
