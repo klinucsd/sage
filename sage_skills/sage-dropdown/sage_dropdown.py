@@ -89,8 +89,14 @@ def _subscribe_var_change(user_ns, var_name, callback, cell_id):
 def _register_kernel_vars(cell_id, user_ns, type_specs, set_by):
     """Persist registered variables to .sage_kernel_vars.json under the current cell_id."""
     output_dir = user_ns.get("SAGE_OUTPUT_DIR")
-    if not output_dir or not cell_id:
+    if not output_dir:
         return
+    # On hosts without cellId metadata in parent_header (e.g. Colab),
+    # fall back to a synthetic key derived from the registered var
+    # names so registration still happens. See note in
+    # sage_bbox_map.py:_register_kernel_var for the trade-off.
+    if not cell_id:
+        cell_id = "_vars:" + ",".join(sorted(type_specs.keys()))
     p = Path(output_dir) / ".sage_kernel_vars.json"
     try:
         registry = json.loads(p.read_text()) if p.exists() else {}

@@ -96,8 +96,16 @@ def _slim_geojson(geo, ndigits=5, keep_props=("_color",)):
 def _register_kernel_var(cell_id, user_ns, var_name, type_str, description, set_by):
     """Persist a single registered variable to .sage_kernel_vars.json under cell_id."""
     output_dir = user_ns.get("SAGE_OUTPUT_DIR")
-    if not output_dir or not cell_id:
+    if not output_dir:
         return
+    # On hosts without cellId metadata in parent_header (e.g. Colab),
+    # fall back to a synthetic key derived from the var name so the
+    # registration still happens. Trade-off: cleanup-on-rerun won't
+    # match by cell_id, but the EXISTING KERNEL VARIABLES prompt block
+    # stays populated and overwriting works fine since the var name
+    # is the same across re-renders.
+    if not cell_id:
+        cell_id = f"_var:{var_name}"
     p = Path(output_dir) / ".sage_kernel_vars.json"
     try:
         registry = json.loads(p.read_text()) if p.exists() else {}
