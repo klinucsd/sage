@@ -3553,8 +3553,25 @@ try:
             pass
 
         from IPython.display import display, Markdown, HTML
-        display(Markdown("**Sage reset.** Output folder cleared, history cleared."))
-        display(HTML("""
+
+        # On Colab, the cell-output iframe is at colab.googleusercontent.com
+        # and the notebook menubar is at colab.research.google.com. Same-Origin
+        # Policy blocks kernel-side JS from reaching the menubar, so we ask the
+        # user for one click. On JupyterLab (NRP JupyterHub etc.), Lumino lives
+        # in the same document and the DOM-simulation block below clears cell
+        # outputs automatically.
+        import sys as _sys
+        _is_colab = "google.colab" in _sys.modules or os.path.exists("/content")
+
+        if _is_colab:
+            display(Markdown(
+                "**Sage reset.** Output folder cleared, history cleared.\n\n"
+                "_To also clear cell outputs: click **Edit → Clear all outputs** "
+                "(in the Colab menu bar)._"
+            ))
+        else:
+            display(Markdown("**Sage reset.** Output folder cleared, history cleared."))
+            display(HTML("""
 <script>
 (function() {
     setTimeout(function() {
