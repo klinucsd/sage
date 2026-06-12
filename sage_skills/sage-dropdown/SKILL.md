@@ -18,8 +18,8 @@ The skill ships a Python module `sage_dropdown.py` next to this file. From an
 agent-generated script, add the skill directory to `sys.path` and import:
 
 ```python
-import sys
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-dropdown")
+import os, sys
+sys.path.insert(0, os.path.expanduser("~/.deepagents/agent/skills/sage-dropdown"))
 from sage_dropdown import show_dropdown
 ```
 
@@ -132,8 +132,8 @@ than re-prompting the user or hardcoding values.
 ## Full example
 
 ```python
-import sys
-sys.path.insert(0, "/home/jovyan/.deepagents/agent/skills/sage-dropdown")
+import os, sys
+sys.path.insert(0, os.path.expanduser("~/.deepagents/agent/skills/sage-dropdown"))
 from sage_dropdown import show_dropdown
 
 # `planets` was fetched by the exoplanet-transits data skill earlier in this script
