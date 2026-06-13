@@ -119,6 +119,7 @@ See ARGUS in action across multiple scientific domains:
 | [skills_manage.ipynb](examples/skills_manage.ipynb) | SkillsMP marketplace search → live skill installation → hurricane emergency response planning | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/skills_manage.ipynb) |
 | [usgs_3dep.ipynb](examples/usgs_3dep.ipynb) | USGS 3DEP airborne LiDAR: interactive coverage map with reactive bbox → dataset dropdown linkage (`sage-bbox-map` + `sage-dropdown`) → Entwine Point Tile download → 3D preview → 1-meter DEM with `gdaldem` hillshade | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/usgs_3dep.ipynb) |
 | [vegetation_activities.ipynb](examples/vegetation_activities.ipynb) | California vegetation treatment tracking: Interagency Tracking System (ITS V2.0) ArcGIS Feature Service → prescribed fire and mechanical fuels reduction activities → year-over-year comparison by county | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/vegetation_activities.ipynb) |
+| [wells_in_po_river_basin.ipynb](examples/wells_in_po_river_basin.ipynb) | Po River basin groundwater research tour: 794 wells across Lombardy, Piedmont, and Emilia-Romagna; 10-section narrative integrating well-construction registry → time-averaged WTD summaries → 109-well decade time series (968,862 obs, 2012–2023) → seasonal drivers, the 2022–2023 drought, and per-claim source-file traceability | [▶ nbviewer](https://nbviewer.org/github/klinucsd/sage/blob/main/examples/wells_in_po_river_basin.ipynb) |
 
 ---
 
