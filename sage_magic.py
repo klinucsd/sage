@@ -2627,6 +2627,11 @@ except Exception:
 def _sage_interpolate_mcp_env(s):
     """Replace $VARNAME or ${VARNAME} in s with values from os.environ.
 
+    On Colab, falls back to google.colab.userdata (Colab Secrets) when a
+    variable isn't in os.environ. Found values are cached into os.environ
+    so subsequent interpolations don't re-trigger Colab's secret-access
+    dialog.
+
     Raises ValueError if a referenced variable is unset, so the user gets a
     clear error rather than a silently-empty token in the MCP request.
     """
@@ -2637,7 +2642,28 @@ def _sage_interpolate_mcp_env(s):
     def _repl(m):
         var = m.group(1) or m.group(2)
         val = os.environ.get(var)
+        on_colab = False
         if val is None:
+            try:
+                from google.colab import userdata  # type: ignore[import-not-found]
+                on_colab = True
+                val = userdata.get(var)
+                if val:
+                    os.environ[var] = val
+            except ImportError:
+                pass
+            except Exception:
+                # userdata.get raises SecretNotFoundError / NotebookAccessError
+                # when the secret doesn't exist or notebook access is off.
+                val = None
+        if val is None:
+            if on_colab:
+                raise ValueError(
+                    f"Environment variable ${var} is referenced in %%mcp config but not set.\n"
+                    f"Open the 🔑 sidebar in Colab → 'Add new secret' → "
+                    f"Name: {var}, Value: your secret, toggle 'Notebook access' "
+                    f"on, then re-run this cell."
+                )
             raise ValueError(
                 f"Environment variable ${var} is referenced in %%mcp config but not set"
             )
