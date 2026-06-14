@@ -105,7 +105,7 @@ ARGUS works with any LangChain-compatible LLM endpoint. Configure your preferred
 
 See ARGUS in action across multiple scientific domains. Each notebook in `examples/` is the JupyterHub source; the Colab badges open a Colab-ready variant from [`examples/colab/`](examples/colab/) that includes the install bootstrap.
 
-| Notebook | Description | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; View &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; |
+| Notebook | Description | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;View&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; |
 |---|---|---|
 | [clm_mcp.ipynb](examples/clm_mcp.ipynb) | MCP integration demo: `%%mcp` registers a California Landscape Metrics server → zonal statistics for carbon turnover time and annual burn probability across California counties | [![Open in Colab](https://raw.githubusercontent.com/klinucsd/sage/main/assets/colab-badge-large.svg)](https://colab.research.google.com/github/klinucsd/sage/blob/main/examples/colab/clm_mcp_colab.ipynb) |
 | [earthquake_gnss.ipynb](examples/earthquake_gnss.ipynb) | USGS earthquake discovery → GNSS station search → time-series displacement analysis → null coseismic result interpretation | [![Open in Colab](https://raw.githubusercontent.com/klinucsd/sage/main/assets/colab-badge-large.svg)](https://colab.research.google.com/github/klinucsd/sage/blob/main/examples/colab/earthquake_gnss_colab.ipynb) |
