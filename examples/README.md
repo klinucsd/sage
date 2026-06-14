@@ -2,7 +2,7 @@
 
 These notebooks demonstrate ARGUS across multiple scientific domains. Each `.ipynb` in this folder is the JupyterHub source; the Colab badges open a Colab-ready variant in [`examples/colab/`](colab/) that includes the install bootstrap, so the recipient can just hit *Run all*.
 
-| Notebook | Description | View |
+| Notebook | Description | &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;View&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; |
 |----------|-------------|------|
 | [clm_mcp.ipynb](clm_mcp.ipynb) | MCP integration: `%%mcp` registers a California Landscape Metrics server, zonal statistics for carbon turnover time and annual burn probability across California counties | [![Open in Colab](https://raw.githubusercontent.com/klinucsd/sage/main/assets/colab-badge-large.svg)](https://colab.research.google.com/github/klinucsd/sage/blob/main/examples/colab/clm_mcp_colab.ipynb) |
 | [earthquake_gnss.ipynb](earthquake_gnss.ipynb) | Multi-step geophysical reasoning: USGS earthquake retrieval, GNSS station discovery, time-series displacement analysis | [![Open in Colab](https://raw.githubusercontent.com/klinucsd/sage/main/assets/colab-badge-large.svg)](https://colab.research.google.com/github/klinucsd/sage/blob/main/examples/colab/earthquake_gnss_colab.ipynb) |
