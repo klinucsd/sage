@@ -1,16 +1,9 @@
 ---
 name: arcgis-feature-skill-builder
 description: >-
-  Build a new ARGUS skill for an ArcGIS Feature Service from its URL alone.
-  Use whenever the user asks to "build", "create", or "generate" a skill
-  from a URL that looks like an ArcGIS Feature Service
-  (path contains /FeatureServer/<n> or /MapServer/<n>). The agent fetches
-  the service's metadata, infers field meanings and code dictionaries,
-  generates a complete SKILL.md (including a tested get_features loader),
-  saves it under _skills_/<skill-name>/SKILL.md next to the notebook, and
-  installs it so it is usable in the next %%ask cell. The user issues the
-  request once and gets a working, queryable skill in return — no
-  follow-up cells required.
+  Build an ARGUS skill from an ArcGIS Feature Service or MapService URL.
+  Use when the user asks to build, create, or generate a skill for a
+  URL whose path contains /FeatureServer or /MapServer.
 ---
 
 # ArcGIS Feature Skill Builder
