@@ -334,9 +334,60 @@ def get_features(where="1=1", bbox=None, target_crs="EPSG:4326",
 Assemble the generated content in this order:
 
 1. **Frontmatter** — `name` (the kebab-case name from Step 2) and
-   `description` (one or two sentences summarizing what the data
-   represents and when to use the skill; this is what the *agent*
-   reads to decide if the skill applies to a query).
+   `description` (this is what the *agent* reads to decide if the
+   skill applies to a future user query — be deliberate here).
+
+   The description must satisfy three things:
+
+   a. **Explicitly name the entity each row represents.** Use a short
+      noun phrase a domain user would actually say, not a paraphrase
+      of the service title. For each row, ask: "if a scientist
+      pointed at one row and said 'this is a …', what would the word
+      be?" The answer is the entity name. Examples:
+
+      - `coal-mines` → "Each row is a U.S. coal mine."
+      - `hospitals` → "Each row is a U.S. hospital."
+      - `ca-wildfire-perimeters` → "Each row is a California
+        wildfire (one perimeter polygon per fire)."
+      - `po-wells` → "Each row is a Po basin groundwater well."
+
+      State this entity in the description. Users will refer to the
+      entity by name in their queries ("show me California
+      wildfires", "list hospitals with helipads"), and the agent
+      needs to recognize the match.
+
+   b. **Include common synonyms and user-natural phrasings.** A
+      wildfire is also a "fire", a "blaze", a "fire incident". A
+      well is also a "monitoring station", a "borehole". Don't
+      enumerate every possible synonym — pick 2–3 of the most
+      likely terms a user would use. This protects against the case
+      where the user phrases the query in a different vocabulary
+      than the service publisher's field names.
+
+   c. **State the trigger conditions for the skill.** Use the
+      phrasing "Use when the user asks about <entity> — by
+      <attribute1>, by <attribute2>, in <spatial region>, …".
+      List the 3–6 most query-worthy attributes. These are the
+      keywords the agent matches against future user queries.
+
+   Keep the total description under 100 words. Body sections do not
+   affect routing — only the frontmatter description does. Spend the
+   words on the entity name, the synonyms, and the trigger
+   attributes; do not waste them on implementation detail (loader
+   name, output type, file location). See
+   `[[skill-descriptions]]` for the convention.
+
+   Example (for ca-wildfire-perimeters):
+
+   ```yaml
+   description: >-
+     Each row is a California wildfire (one perimeter polygon per
+     fire). Use when the user asks about California wildfires,
+     fires, fire perimeters, or fire incidents — by incident name,
+     by active/inactive status, by source (FIRIS, CAL FIRE, NIFC,
+     USFS, WFIGS), by discovery date, by acreage, or within a
+     spatial region.
+   ```
 2. **# `<Skill Title>` Skill** — H1 header.
 3. **## Description** — 1–2 paragraphs. What the dataset is, who
    publishes it, what each row represents, the typical scale.
@@ -407,6 +458,15 @@ Before reporting success, verify your generated SKILL.md:
 
 - [ ] Skill name is lowercase kebab-case (no uppercase, no underscores, no spaces).
 - [ ] Frontmatter has both `name` and `description` populated.
+- [ ] The description **explicitly names the entity** each row
+      represents in plain language ("Each row is a …"), uses 2–3
+      user-natural synonyms, and lists the most query-worthy
+      attributes. Re-read the description and ask: "if a future user
+      typed '<plausible query>', would the LLM match my description?"
+      If unsure, the entity name probably isn't crisp enough.
+- [ ] The description is under 100 words and contains zero
+      implementation detail (no mention of `get_features`, no
+      mention of `_skills_/`, no mention of pagination, etc.).
 - [ ] At least one example in the Examples section references a real
       categorical code from the Field Value Dictionaries section. (The
       single best test of skill quality is whether a worked example uses
@@ -438,11 +498,10 @@ https://services2.arcgis.com/FiaPA4ga0iQKduv3/arcgis/rest/services/Surface_and_U
 ---
 name: coal-mines
 description: >-
-  Retrieve U.S. surface and underground coal mines as a GeoPandas
-  GeoDataFrame in EPSG:4326. Use whenever the user asks about coal
-  mines — by name, by state, by mine type, by production volume, or
-  within a spatial region. Loads point geometries with MSHA ID, mine
-  name, state, county, production volume, and refuse-site flag.
+  Each row is a U.S. coal mine (surface or underground). Use when the
+  user asks about coal mines, mines, mining operations — by mine name,
+  by mine type (surface or underground), by state, by production
+  volume, by refuse-site flag, or within a spatial region.
 ---
 
 # Coal Mines Skill
