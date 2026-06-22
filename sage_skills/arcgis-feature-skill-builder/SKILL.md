@@ -423,15 +423,46 @@ Assemble the generated content in this order:
 
 ### Step 9 — Write the SKILL.md to disk and stop
 
-Save the assembled markdown to:
+Save the assembled markdown to the `_skills_/<skill-name>/SKILL.md`
+folder **next to the user's notebook**.
+
+**Computing the right path — this matters.** The `_skills_/` folder
+must be a sibling of the user's notebook `.ipynb` file. It must NOT
+go inside the per-cell output folder (`SAGE_OUTPUT_DIR`, whose name
+is `_<notebook-stem>_sage_/`). Many path-handling helpers in this
+environment default relative paths to `SAGE_OUTPUT_DIR`, so writing
+to the bare relative path `_skills_/<name>/` lands the skill in the
+output folder by accident — that is wrong.
+
+Construct an explicit absolute path using
+`Path(SAGE_OUTPUT_DIR).parent`, which by construction is the
+notebook's directory:
+
+```python
+from pathlib import Path
+import os
+
+notebook_dir = Path(os.environ.get("SAGE_OUTPUT_DIR") or "").parent
+skill_dir = notebook_dir / "_skills_" / "<skill-name>"
+skill_dir.mkdir(parents=True, exist_ok=True)
+(skill_dir / "SKILL.md").write_text(skill_md_content)
+```
+
+(`SAGE_OUTPUT_DIR` is also available as a Python variable in the
+kernel namespace; either source works.)
+
+Layout verification — after the write, the filesystem should look
+like this, with `_skills_/` AT THE SAME LEVEL AS the notebook file
+and the `_<notebook-stem>_sage_/` output folder:
 
 ```
-_skills_/<skill-name>/SKILL.md
+<notebook-directory>/
+├── my_notebook.ipynb
+├── _my_notebook_sage_/           ← SAGE_OUTPUT_DIR (per-cell scratch)
+└── _skills_/                     ← generated skills live here
+    └── <skill-name>/
+        └── SKILL.md
 ```
-
-Where `_skills_/` is a directory in the current working directory of
-the notebook. Create both `_skills_/` and `_skills_/<skill-name>/` if
-they do not already exist.
 
 If a skill of the same name already exists at that path, **do not
 overwrite without confirmation**. Tell the user there's a conflict and
@@ -441,9 +472,9 @@ ask whether to overwrite or pick a new name.
 (`~/.deepagents/agent/skills/`). Do not copy the directory there, do
 not call any internal install helper, do not invoke `%%skill` on the
 local path. The freshly-written skill in `_skills_/` is automatically
-picked up by the next `%%ask` cell: the agent's skill loader scans both
-the global registry AND `<cwd>/_skills_/` on every cell, so the new
-skill is available immediately.
+picked up by the next `%%ask` cell: the agent's skill loader scans
+both the global registry AND `<notebook-dir>/_skills_/` on every cell,
+so the new skill is available immediately.
 
 Why this matters: the global registry is curated and shared across
 notebooks; auto-publishing every generated skill into it would pollute
