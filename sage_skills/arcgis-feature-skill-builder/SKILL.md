@@ -172,7 +172,65 @@ file is the source of truth for the rest of the build. Re-probing
 after the first batched pass is a build failure: stop and ask the
 user if anything is unclear.
 
-The probe query for each field uses the service's statistics
+Use the following canonical probe-script template **verbatim**,
+substituting `<SERVICE_URL>`, `<OID_FIELD>` (usually `OBJECTID` or
+`FID`), and `<CANDIDATE_FIELDS>` (the list of string fields that
+passed Rules A and B). Critically, every HTTP request **must** have
+`timeout=60` — without a timeout, a single slow or stalled response
+hangs the script indefinitely (observed on Colab 2026-06-23).
+`flush=True` on the progress prints ensures stdout reaches the agent
+even if the script is killed mid-run.
+
+```python
+import os, json, requests
+from pathlib import Path
+
+SERVICE_URL = "<SERVICE_URL>"
+OID_FIELD = "<OID_FIELD>"
+CANDIDATE_FIELDS = <CANDIDATE_FIELDS>   # e.g. ["source", "displayStatus", ...]
+
+output_dir = Path(os.environ["SAGE_OUTPUT_DIR"])
+query_url = SERVICE_URL.rstrip("/") + "/query"
+results = {}
+
+for field in CANDIDATE_FIELDS:
+    print(f"Probing {field}...", flush=True)
+    params = {
+        "where": "1=1",
+        "groupByFieldsForStatistics": field,
+        "outStatistics": json.dumps([{
+            "statisticType": "count",
+            "onStatisticField": OID_FIELD,
+            "outStatisticFieldName": "n",
+        }]),
+        "f": "json",
+    }
+    try:
+        r = requests.get(query_url, params=params, timeout=60)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        results[field] = {"error": f"{type(e).__name__}: {e}"}
+        continue
+    if "error" in data:
+        results[field] = {"error": str(data["error"])}
+        continue
+    values = [
+        {"value": f["attributes"].get(field),
+         "count": f["attributes"].get("n", 0)}
+        for f in data.get("features", [])
+    ]
+    values.sort(key=lambda v: -v["count"])
+    results[field] = {"distinct_count": len(values), "values": values}
+
+(output_dir / "probe_results.json").write_text(
+    json.dumps(results, indent=2, default=str)
+)
+print(f"\n✓ Wrote {len(results)} field probes to probe_results.json",
+      flush=True)
+```
+
+The underlying query each call makes hits the service's statistics
 endpoint:
 
 ```
