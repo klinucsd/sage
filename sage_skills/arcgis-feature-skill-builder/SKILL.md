@@ -423,45 +423,33 @@ Assemble the generated content in this order:
 
 ### Step 9 — Write the SKILL.md to disk and stop
 
-Save the assembled markdown to the `_skills_/<skill-name>/SKILL.md`
-folder **next to the user's notebook**.
-
-**Computing the right path — this matters.** The `_skills_/` folder
-must be a sibling of the user's notebook `.ipynb` file. It must NOT
-go inside the per-cell output folder (`SAGE_OUTPUT_DIR`, whose name
-is `_<notebook-stem>_sage_/`). Many path-handling helpers in this
-environment default relative paths to `SAGE_OUTPUT_DIR`, so writing
-to the bare relative path `_skills_/<name>/` lands the skill in the
-output folder by accident — that is wrong.
-
-Construct an explicit absolute path using
-`Path(SAGE_OUTPUT_DIR).parent`, which by construction is the
-notebook's directory:
+Save the assembled markdown to `_skills_/<skill-name>/SKILL.md`
+inside the notebook's `SAGE_OUTPUT_DIR`. Each notebook has its own
+`SAGE_OUTPUT_DIR` (named `_<notebook-stem>_sage_/`), so each notebook
+gets its own private `_skills_/` scope — two notebooks in the same
+directory do NOT share skills.
 
 ```python
 from pathlib import Path
 import os
 
-notebook_dir = Path(os.environ.get("SAGE_OUTPUT_DIR") or "").parent
-skill_dir = notebook_dir / "_skills_" / "<skill-name>"
+skill_dir = Path(os.environ["SAGE_OUTPUT_DIR"]) / "_skills_" / "<skill-name>"
 skill_dir.mkdir(parents=True, exist_ok=True)
 (skill_dir / "SKILL.md").write_text(skill_md_content)
 ```
 
-(`SAGE_OUTPUT_DIR` is also available as a Python variable in the
-kernel namespace; either source works.)
-
-Layout verification — after the write, the filesystem should look
-like this, with `_skills_/` AT THE SAME LEVEL AS the notebook file
-and the `_<notebook-stem>_sage_/` output folder:
+Layout — after the write, the filesystem looks like this. The
+`_skills_/` folder is INSIDE the notebook's per-notebook output
+folder, not next to the notebook itself:
 
 ```
 <notebook-directory>/
 ├── my_notebook.ipynb
-├── _my_notebook_sage_/           ← SAGE_OUTPUT_DIR (per-cell scratch)
-└── _skills_/                     ← generated skills live here
-    └── <skill-name>/
-        └── SKILL.md
+└── _my_notebook_sage_/           ← SAGE_OUTPUT_DIR
+    ├── (per-cell scratch files)
+    └── _skills_/                 ← generated skills live here
+        └── <skill-name>/
+            └── SKILL.md
 ```
 
 If a skill of the same name already exists at that path, **do not

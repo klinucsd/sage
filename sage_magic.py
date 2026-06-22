@@ -1845,21 +1845,14 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     # Two skill roots are scanned every cell:
     #   1. ~/.deepagents/agent/skills/ — the global registry, populated by
     #      the Docker image (core skills) and by explicit %%skill cells.
-    #   2. <notebook-dir>/_skills_/ — notebook-local skills, populated by
-    #      %%skill-build and freely editable by the user. Auto-included
-    #      when present so a freshly-built local skill is usable in the
-    #      next %%ask cell with no extra install step. Portable: a
-    #      notebook author can zip notebook + _skills_/ and ship; the
-    #      recipient sees the same skills.
-    #
-    # Resolve the notebook directory as Path(SAGE_OUTPUT_DIR).parent
-    # rather than Path.cwd(): SAGE_OUTPUT_DIR is always
-    # <notebook-dir>/_<notebook>_sage_/ by construction, so its parent
-    # is always the notebook's directory. Path.cwd() can drift if any
-    # cell calls os.chdir() and is fragile.
+    #   2. SAGE_OUTPUT_DIR/_skills_/ — per-notebook local skills,
+    #      populated by %%skill-build and freely editable by the user.
+    #      SAGE_OUTPUT_DIR is <notebook-dir>/_<notebook-stem>_sage_/ by
+    #      construction, so each notebook gets its own _skills_/ scope
+    #      and notebooks in the same directory do NOT share skills.
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
     skills_paths = [str(skills_dir)] if skills_dir.exists() else []
-    local_skills_dir = Path(SAGE_OUTPUT_DIR).parent / "_skills_"
+    local_skills_dir = Path(SAGE_OUTPUT_DIR) / "_skills_"
     if local_skills_dir.exists() and local_skills_dir.is_dir():
         skills_paths.append(str(local_skills_dir))
 
