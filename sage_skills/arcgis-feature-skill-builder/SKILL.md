@@ -452,13 +452,43 @@ registry deliberately, by issuing an explicit `%%skill _skills_/<name>`
 cell when they decide to. Until then, the skill lives in the
 notebook's directory where it belongs.
 
-Confirm the build to the user:
+Confirm the build to the user in a message that follows this shape:
+
+1. **One-line confirmation** stating the skill name and where it was saved.
+2. **One short sentence naming the entity** in user-natural language —
+   the same entity name used in the SKILL.md frontmatter description
+   (e.g., "Each row is a California wildfire"). Avoid jargon
+   ("perimeter polygon", "feature record", "vector geometry") in this
+   sentence — those terms describe the storage format, not the
+   thing. Users searching for the thing in natural language won't use
+   them.
+3. **2–3 example natural-language queries** the user can run in the
+   next `%%ask` cell. Use the entity name and synonyms from the
+   description. Pick attributes the user is most likely to want to
+   filter on — typically status, magnitude/size, source/region, and
+   spatial. The queries serve two purposes: they show the user what
+   the skill enables, and they demonstrate the vocabulary the agent
+   will recognize so the user does not have to guess.
+
+Concrete template, applied to the wildfire example:
 
 ```
-✓ Built skill 'ca-wildfire-perimeters' (45 fields, 6 categorical) at
+✓ Built skill 'ca-wildfire-perimeters' at
   _skills_/ca-wildfire-perimeters/SKILL.md.
-  Available in the next %%ask cell.
+
+Each row is a California wildfire. Try queries like:
+  - "show me all active California wildfires"
+  - "find California wildfires larger than 1000 acres"
+  - "list FIRIS-sourced wildfires in Southern California"
+
+The skill is available in the next %%ask cell.
 ```
+
+Optionally also report counts (fields, categorical dictionaries,
+features at build time) as a one-line aside, but do not let those
+numbers crowd out the entity name or the example queries. The
+queries are the most valuable part of the completion message — they
+unblock the user.
 
 ## Skill Quality Checklist
 
