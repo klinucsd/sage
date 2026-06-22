@@ -421,7 +421,7 @@ Assemble the generated content in this order:
    correct. Include comments showing what the user might want to
    do next with the returned GeoDataFrame.
 
-### Step 9 — Write the SKILL.md to disk
+### Step 9 — Write the SKILL.md to disk and stop
 
 Save the assembled markdown to:
 
@@ -437,19 +437,27 @@ If a skill of the same name already exists at that path, **do not
 overwrite without confirmation**. Tell the user there's a conflict and
 ask whether to overwrite or pick a new name.
 
-### Step 10 — Install the skill
+**Do not install the skill into the global skill registry**
+(`~/.deepagents/agent/skills/`). Do not copy the directory there, do
+not call any internal install helper, do not invoke `%%skill` on the
+local path. The freshly-written skill in `_skills_/` is automatically
+picked up by the next `%%ask` cell: the agent's skill loader scans both
+the global registry AND `<cwd>/_skills_/` on every cell, so the new
+skill is available immediately.
 
-After writing the file, install the skill into the current session by
-loading it. The standard mechanism is a `%%skill` cell pointing at the
-local path; you can simulate this internally by calling the existing
-skill-install code with the path `_skills_/<skill-name>`.
+Why this matters: the global registry is curated and shared across
+notebooks; auto-publishing every generated skill into it would pollute
+that space. The user can promote a generated skill into the global
+registry deliberately, by issuing an explicit `%%skill _skills_/<name>`
+cell when they decide to. Until then, the skill lives in the
+notebook's directory where it belongs.
 
-Confirm the install to the user:
+Confirm the build to the user:
 
 ```
-✓ Built skill 'ca-wildfire-perimeters' (45 fields, 6 categorical) and
-  installed from _skills_/ca-wildfire-perimeters/SKILL.md.
-  The skill is available in the next %%ask cell.
+✓ Built skill 'ca-wildfire-perimeters' (45 fields, 6 categorical) at
+  _skills_/ca-wildfire-perimeters/SKILL.md.
+  Available in the next %%ask cell.
 ```
 
 ## Skill Quality Checklist

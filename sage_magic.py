@@ -1841,8 +1841,21 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     # results in ls() finding only SKILL.md (a file, not a dir), so no skills
     # register at all. The fix is to pass the single parent directory; the
     # middleware then iterates its contents.
+    #
+    # Two skill roots are scanned every cell:
+    #   1. ~/.deepagents/agent/skills/ — the global registry, populated by
+    #      the Docker image (core skills) and by explicit %%skill cells.
+    #   2. <cwd>/_skills_/ — notebook-local skills, populated by
+    #      %%skill-build and freely editable by the user. Auto-included
+    #      when present so a freshly-built local skill is usable in the
+    #      next %%ask cell with no extra install step. Portable: a
+    #      notebook author can zip notebook + _skills_/ and ship; the
+    #      recipient sees the same skills.
     skills_dir = Path.home() / ".deepagents" / "agent" / "skills"
     skills_paths = [str(skills_dir)] if skills_dir.exists() else []
+    local_skills_dir = Path.cwd() / "_skills_"
+    if local_skills_dir.exists() and local_skills_dir.is_dir():
+        skills_paths.append(str(local_skills_dir))
 
     # No checkpointer — cross-cell memory is carried via SAGE_MESSAGES.
     # Pass system_prompt at construction time so the new deepagents 0.6.8
@@ -4089,10 +4102,11 @@ try:
                 "the `arcgis-feature-skill-builder` skill.\n\n"
                 f"{url_list}\n\n"
                 "Save the generated SKILL.md to `_skills_/<skill-name>/` "
-                "in the current working directory and install it so it "
-                "is usable in the next %%ask cell. If no built-in "
-                "skill-builder meta-skill matches the URL's type, "
-                "report the unsupported URL type clearly without "
+                "in the current working directory. Do not copy it to "
+                "the global skill registry; the next %%ask cell will "
+                "pick it up from `_skills_/` automatically. If no "
+                "built-in skill-builder meta-skill matches the URL's "
+                "type, report the unsupported URL type clearly without "
                 "attempting an improvised build."
             )
         else:
@@ -4106,9 +4120,12 @@ try:
                 f"{url_list}\n\n"
                 "Save each generated SKILL.md to "
                 "`_skills_/<skill-name>/` in the current working "
-                "directory and install it. If a URL's type does not "
-                "match any built-in skill-builder meta-skill, report it "
-                "as unsupported and continue with the remaining URLs."
+                "directory. Do not copy any of the generated skills to "
+                "the global skill registry; the next %%ask cell picks "
+                "them up from `_skills_/` automatically. If a URL's "
+                "type does not match any built-in skill-builder "
+                "meta-skill, report it as unsupported and continue with "
+                "the remaining URLs."
             )
 
         # Dispatch through the standard %%ask agent loop. This re-uses
