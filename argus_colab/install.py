@@ -57,6 +57,7 @@ except ImportError:
 #   - wildfire-* (private skills, not publicly distributed)
 # Users can opt out by setting SKIP_CORE_SKILLS = True before running this installer.
 _CORE_SKILLS = (
+    "arcgis-feature-skill-builder",
     "ndp-search",
     "sage-bbox-map",
     "sage-dropdown",
