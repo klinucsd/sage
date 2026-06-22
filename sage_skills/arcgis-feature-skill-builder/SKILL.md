@@ -158,8 +158,22 @@ Also skip ID fields by these patterns:
 `STATE_NAME` may be categorical, `MINE_NAME` is not. Rely on the
 distinct-value probe below to distinguish.
 
-**Rule C — Distinct-value probe.** For each string field that passed
-Rules A and B, run one query to count + sample distinct values:
+**Rule C — Distinct-value probe.** Run ONE script that probes EVERY
+string field that passed Rules A and B in a single batched pass. Do
+not run one probe per field — that wastes service calls and fills your
+own context with redundant data. Write the full probe results to a
+single JSON file under `SAGE_OUTPUT_DIR` (e.g., `probe_results.json`),
+keyed by field name, with the distinct values and their counts. From
+that point on, **read from the JSON file** when composing the field
+table, the code dictionaries, and the examples. Do NOT re-issue
+service queries to recover information you already collected — even
+"just to verify a count" or "just to confirm the top value." The JSON
+file is the source of truth for the rest of the build. Re-probing
+after the first batched pass is a build failure: stop and ask the
+user if anything is unclear.
+
+The probe query for each field uses the service's statistics
+endpoint:
 
 ```
 GET <service_url>/query
