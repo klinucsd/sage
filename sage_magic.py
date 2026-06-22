@@ -4022,6 +4022,103 @@ try:
 
     del mcp  # keep IPython namespace clean
 
+    # -----------------------------------------------------------------------
+    # %%skill-build — build a skill from a data-source URL via the
+    # appropriate built-in skill-builder meta-skill
+    # -----------------------------------------------------------------------
+    @register_cell_magic("skill-build")
+    def skill_build(line, cell):
+        """Build an ARGUS skill from a data-source URL.
+
+        Usage:
+            %%skill-build
+            https://services1.arcgis.com/.../FeatureServer/0
+            # blank lines and comments are ignored
+            # additional URLs on their own lines build additional skills
+
+        Each URL must point at a supported data source. Currently:
+
+          - ArcGIS Feature Service / MapService URLs (path contains
+            /FeatureServer/<n> or /MapServer/<n>) are dispatched to the
+            built-in ``arcgis-feature-skill-builder`` meta-skill.
+
+        For each URL the agent uses the matching skill-builder meta-skill
+        to fetch the source's metadata, generate a complete SKILL.md
+        (with field table, code dictionaries, canonical loader, and
+        worked examples), save it to ``_skills_/<skill-name>/`` next to
+        the notebook, and install it. The generated skill is available
+        in the next %%ask cell.
+
+        Internally this magic constructs a structured prompt and
+        dispatches it through the standard %%ask agent loop, so it
+        inherits the same API-key handling, streaming display, and
+        cross-cell memory.
+        """
+        from IPython.display import display, HTML
+
+        # Parse URLs from the cell body. Same conventions as %%skill:
+        # one URL per line, blank lines and # comments ignored.
+        urls = []
+        for raw in (cell or "").splitlines():
+            s = raw.strip()
+            if not s or s.startswith("#"):
+                continue
+            urls.append(s)
+
+        if not urls:
+            display(HTML(
+                "<div style='color:#888'>%%skill-build: nothing to build "
+                "(empty cell). List one URL per line.</div>"
+            ))
+            return
+
+        # Construct a structured prompt asking the agent to dispatch to
+        # the appropriate built-in skill-builder meta-skill for each
+        # URL. We deliberately do NOT enumerate the URL types or pick
+        # the meta-skill here — the meta-skills' own frontmatter
+        # descriptions handle routing. When a new skill-builder
+        # meta-skill ships (e.g. csv-skill-builder), this magic needs
+        # zero changes.
+        url_list = "\n".join(urls)
+        if len(urls) == 1:
+            prompt = (
+                "Build an ARGUS skill for the URL below. Use the "
+                "appropriate built-in skill-builder meta-skill — match "
+                "the URL's type against the available meta-skills' "
+                "descriptions. For ArcGIS Feature Service URLs, that is "
+                "the `arcgis-feature-skill-builder` skill.\n\n"
+                f"{url_list}\n\n"
+                "Save the generated SKILL.md to `_skills_/<skill-name>/` "
+                "in the current working directory and install it so it "
+                "is usable in the next %%ask cell. If no built-in "
+                "skill-builder meta-skill matches the URL's type, "
+                "report the unsupported URL type clearly without "
+                "attempting an improvised build."
+            )
+        else:
+            prompt = (
+                "Build ARGUS skills for the URLs below, one skill per "
+                "URL, using the appropriate built-in skill-builder "
+                "meta-skill for each. Match each URL's type against the "
+                "available meta-skills' descriptions; for ArcGIS Feature "
+                "Service URLs, use the `arcgis-feature-skill-builder` "
+                "skill.\n\n"
+                f"{url_list}\n\n"
+                "Save each generated SKILL.md to "
+                "`_skills_/<skill-name>/` in the current working "
+                "directory and install it. If a URL's type does not "
+                "match any built-in skill-builder meta-skill, report it "
+                "as unsupported and continue with the remaining URLs."
+            )
+
+        # Dispatch through the standard %%ask agent loop. This re-uses
+        # the API-key check, orphan-file cleanup, agent invocation,
+        # streaming tool display, and SAGE_MESSAGES persistence —
+        # nothing here duplicates that logic.
+        return ask("", prompt)
+
+    del skill_build  # keep IPython namespace clean
+
 except Exception as exc:
     warnings.warn(
         f"Sage magic commands could not be registered: {exc}", stacklevel=1
