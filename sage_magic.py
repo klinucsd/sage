@@ -3357,7 +3357,10 @@ try:
             msg = str(context.get("message", "")) + str(context.get("exception", ""))
             if "cannot enter context" in msg:
                 return
-            (_orig_exc_handler or loop.default_exception_handler)(loop, context)
+            if _orig_exc_handler is not None:
+                _orig_exc_handler(loop, context)
+            else:
+                loop.default_exception_handler(context)
         _loop.set_exception_handler(_suppress_context_errors)
         try:
             final_text, tool_counts = _loop.run_until_complete(
