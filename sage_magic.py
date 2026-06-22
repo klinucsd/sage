@@ -4115,7 +4115,21 @@ try:
         # the API-key check, orphan-file cleanup, agent invocation,
         # streaming tool display, and SAGE_MESSAGES persistence —
         # nothing here duplicates that logic.
-        return ask("", prompt)
+        #
+        # Note: the Python-level `ask` name is deleted from the module
+        # namespace right after IPython registers it as a magic
+        # (`del ask` near the end of that block, mirroring the cleanup
+        # this magic and %%skill / %%mcp also do). So we cannot call
+        # `ask(...)` directly; we go through IPython's magic dispatch
+        # by name.
+        ip = get_ipython()
+        if ip is None:
+            display(HTML(
+                "<div style='color:#a00'>%%skill-build: not running in an "
+                "IPython kernel; cannot dispatch to %%ask.</div>"
+            ))
+            return
+        return ip.run_cell_magic("ask", "", prompt)
 
     del skill_build  # keep IPython namespace clean
 
