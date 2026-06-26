@@ -59,6 +59,7 @@ except ImportError:
 _CORE_SKILLS = (
     "arcgis-feature-skill-builder",
     "ndp-search",
+    "repo-skill-builder",
     "sage-bbox-map",
     "sage-dropdown",
     "sage-metrics",
