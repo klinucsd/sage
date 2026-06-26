@@ -203,6 +203,16 @@ for field in CANDIDATE_FIELDS:
             "onStatisticField": OID_FIELD,
             "outStatisticFieldName": "n",
         }]),
+        # Cap the response at the 51 highest-count values per field.
+        # Why 51 and not 50: if the server returns exactly 50 rows, we
+        # know there are ≤50 distinct values total (no truncation), so
+        # the field qualifies for full enumeration. If it returns 51
+        # rows, we know there are > 50 distinct values (top-20 band).
+        # Without this cap, a million-distinct-value column would dump
+        # the service's full maxRecordCount payload (1000–2000 rows)
+        # into the response and then into the agent's context.
+        "orderByFields": "n DESC",
+        "resultRecordCount": 51,
         "f": "json",
     }
     try:
@@ -245,15 +255,18 @@ Where `<oid_field>` is the ObjectID field (typically `OBJECTID` or
 `FID`; fall back to `"objectid"` if uncertain — most services accept
 it case-insensitively).
 
-The response is a list of records, one per distinct value, with a count.
-Apply thresholds:
+The response is a list of records, one per distinct value, with a
+count. Because the probe template caps `resultRecordCount=51` and
+orders by count descending, the response is bounded — at most 51
+rows per field, with the highest-frequency values first.
 
-| Distinct value count | Treatment |
+Apply thresholds based on the number of rows the probe returned:
+
+| Rows returned | Treatment |
 |---|---|
 | 0–1 | Skip — constant or empty. Note in field table. |
-| 2–50 | Full enumeration in the code dictionary. |
-| 51–500 | Show top 20 by frequency + "more values exist". |
-| > 500 (or response capped at maxRecordCount) | Skip — high cardinality. Mark in a "fields with high cardinality" note. |
+| 2–50 | Full enumeration in the code dictionary (the cap was not hit; you have all distinct values). |
+| 51 | Show top 20 by frequency + a "more values exist" note. The probe cap was hit, so the true distinct count is somewhere ≥ 51 — could be 51, could be a million. We don't know, and that's fine: the treatment is the same. The user gets the most common values plus a hint that the field is high-cardinality. |
 
 **Rule D — Length sanity check.** Even if a field passes the count
 threshold, if the average distinct-value string length exceeds 80
