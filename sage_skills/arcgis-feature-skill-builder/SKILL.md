@@ -543,43 +543,106 @@ registry deliberately, by issuing an explicit `%%skill _skills_/<name>`
 cell when they decide to. Until then, the skill lives in the
 notebook's directory where it belongs.
 
-Confirm the build to the user in a message that follows this shape:
+Confirm the build to the user with a structured summary that shows
+the *shape of querying*, not just a few sample queries. The user
+needs to understand what dimensions are filterable so they can write
+their own questions, not just copy the ones you gave. The summary
+has these sections, in this order:
 
-1. **One-line confirmation** stating the skill name and where it was saved.
-2. **One short sentence naming the entity** in user-natural language —
-   the same entity name used in the SKILL.md frontmatter description
-   (e.g., "Each row is a California wildfire"). Avoid jargon
-   ("perimeter polygon", "feature record", "vector geometry") in this
-   sentence — those terms describe the storage format, not the
-   thing. Users searching for the thing in natural language won't use
-   them.
-3. **2–3 example natural-language queries** the user can run in the
-   next `%%ask` cell. Use the entity name and synonyms from the
-   description. Pick attributes the user is most likely to want to
-   filter on — typically status, magnitude/size, source/region, and
-   spatial. The queries serve two purposes: they show the user what
-   the skill enables, and they demonstrate the vocabulary the agent
-   will recognize so the user does not have to guess.
+1. **One-line confirmation** with the skill name and the path it was
+   saved to.
 
-Concrete template, applied to the wildfire example:
+2. **One short sentence naming the entity** in user-natural language,
+   matching the entity name in the SKILL.md frontmatter description
+   (e.g., "Each row is a California wildfire"). Optionally append a
+   parenthetical with the build-time count and a short qualifier
+   ("~437 units: parks, monuments, historic sites, …"). Avoid
+   storage-format jargon ("perimeter polygon", "feature record",
+   "vector geometry") — those describe the format, not the thing.
+   Also avoid phrasings like "in the dataset" or "in this catalog"
+   — skills are reusable building blocks, not standalone datasets.
+
+3. **"What you can filter on"** — a small table of query dimensions.
+   This is the most valuable section of the message because it
+   teaches the user the *shape* of querying, not just sample
+   queries. Columns:
+     - **Dimension**: plain-English label the user would use
+     - **Field**: the underlying field name(s) — show 1–2, not all
+     - **Example values**: 3–6 representative values pulled from the
+       Field Value Dictionaries built in Step 4 (use the codes /
+       short forms, not full descriptions)
+   Include only fields the user would realistically filter on. Skip
+   identifier fields, internal IDs, audit fields. If the service
+   has geometry, add a final row "Spatial area" with field "(bbox)"
+   and value "any rectangle in WGS84" — bbox filtering is always
+   available via the canonical loader.
+
+4. **"Example queries"** — natural-language queries grouped by the
+   dimensions in the table above. Use 3–5 groups, 1–2 queries per
+   group. Suggested grouping axes (pick the ones that apply to this
+   service):
+     - **By [type/category]** — designation, status, source, ...
+     - **By location** — state, region, named place
+     - **By specific entity** — look up by name or code
+     - **Combined / spatial** — multi-axis filter, or bbox query
+   Use natural-language verbs ("Show me…", "List…", "Find…", "What…"),
+   not SQL phrasing. Do not include the words "in the dataset" or
+   "in this catalog" anywhere.
+
+5. **Composition hint** — one line, mentioning what the skill returns
+   (GeoDataFrame for geometry-bearing services, DataFrame otherwise)
+   and that the user can combine it with other skills in the same
+   `%%ask` cell. This is what reframes the skill as a building
+   block rather than a standalone tool.
+
+6. **Note / caveat line** — optional. Include ONLY if there's a real
+   gotcha the user should know about up front. Examples that warrant
+   a note: `Shape__Area` is in square degrees for unprojected
+   services; a key field has many nulls; date columns use a
+   non-standard format. Skip this section entirely if nothing
+   applies. Do not invent caveats to fill space.
+
+Concrete template, applied to a hypothetical NPS units skill:
 
 ```
-✓ Built skill 'ca-wildfire-perimeters' at
-  _skills_/ca-wildfire-perimeters/SKILL.md.
+✓ Built skill nps-boundaries at _skills_/nps-boundaries/SKILL.md.
 
-Each row is a California wildfire. Try queries like:
-  - "show me all active California wildfires"
-  - "find California wildfires larger than 1000 acres"
-  - "list FIRIS-sourced wildfires in Southern California"
+Each row is one U.S. National Park System unit boundary
+(~437 units: parks, monuments, historic sites, preserves, …).
 
-The skill is available in the next %%ask cell.
+What you can filter on:
+  Dimension             Field         Example values
+  ──────────────────────────────────────────────────────────────
+  Designation type      UNIT_TYPE     National Park, National Monument,
+                                      National Historic Site, Preserve, …
+  Unit name / code      UNIT_NAME,    "Yosemite National Park", YOSE,
+                        UNIT_CODE     YELL, GRCA, ZION
+  State                 STATE         CA, AK, NY, DC, …
+  NPS region            REGION        PW, AK, SE, NC, … (7 regions)
+  Spatial area          (bbox)        any rectangle in WGS84
+
+Example queries:
+  By designation        "List every National Monument"
+                        "How many National Historic Sites are there?"
+  By location           "What NPS units are in California?"
+                        "Show units in the Alaska region"
+  By specific unit      "Get the boundary for Yellowstone"
+                        "Look up park code YOSE"
+  Combined / spatial    "National Monuments in the Southeast region"
+                        "NPS units around the Four Corners area"
+
+The skill returns a GeoDataFrame you can map, count, or combine
+with other skills (e.g., wildfire perimeters, public schools) in
+the same %%ask cell.
+
+Note: Shape__Area is in square degrees (native EPSG:4326). For
+acreage comparisons, reproject to an equal-area CRS first.
 ```
 
-Optionally also report counts (fields, categorical dictionaries,
-features at build time) as a one-line aside, but do not let those
-numbers crowd out the entity name or the example queries. The
-queries are the most valuable part of the completion message — they
-unblock the user.
+The example queries are the visible payoff, but the **table is what
+makes the skill discoverable** — it tells the user "ask me about
+these things" in a single glance, so they can compose their own
+queries rather than just running yours.
 
 ## Skill Quality Checklist
 
