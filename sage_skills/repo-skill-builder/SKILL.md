@@ -63,23 +63,18 @@ proposal in Step 3.
 
 ## Steps to Build the Skills
 
-### Step 1 — Clone the repo into /tmp
+### Step 1 — Clone the repo into a scratch subfolder
 
-**Clone to `/tmp/repo-skills/<repo-name>` — never to SAGE_OUTPUT_DIR
-or anywhere under `~/work/`.** This is non-negotiable:
-
-- `/tmp` is ephemeral pod-local scratch. We use the repo as
-  throwaway input to produce Parquet caches; once those are
-  written we never read the clone again. Letting it expire on
-  pod restart is correct.
-- `SAGE_OUTPUT_DIR` lives on a persistent volume with a strict
-  quota (~10 GB shared across all of the user's notebook
-  outputs and skill caches). Cloning a repo there bloats that
-  quota with files the user doesn't need to keep.
+Clone into `<SAGE_OUTPUT_DIR>/_repo_clone/<repo-name>`. We clone
+into the notebook's working directory (not `/tmp`) because the
+system FILE ACCESS RULE restricts you to `SAGE_OUTPUT_DIR` and the
+skills directory. The clone is **temporary** — Step 9 deletes the
+`_repo_clone/` subfolder before reporting completion, so quota is
+only spent during the build itself.
 
 ```bash
-mkdir -p /tmp/repo-skills
-cd /tmp/repo-skills
+mkdir -p "$SAGE_OUTPUT_DIR/_repo_clone"
+cd "$SAGE_OUTPUT_DIR/_repo_clone"
 # --depth=1 skips history; we just need the latest snapshot.
 git clone --depth=1 https://github.com/<owner>/<repo>.git <repo-name>
 ```
@@ -87,9 +82,11 @@ git clone --depth=1 https://github.com/<owner>/<repo>.git <repo-name>
 If the clone fails (private repo, network error), report the
 error to the user and stop. Do not try to authenticate.
 
-If the repo is huge (>500 MB) consider asking the user whether
-to proceed before downloading — a quick `git ls-remote` or GitHub
-API call to estimate size is fine.
+If the repo is huge (>500 MB) **stop and ask the user** before
+downloading — a quick `git ls-remote` or GitHub API call to
+estimate size is fine. SAGE_OUTPUT_DIR has a ~10 GB shared quota
+and a 1 GB repo plus its Parquet derivatives could consume a
+significant fraction of it during the build phase.
 
 ### Step 2 — Enumerate the tabular data files
 
@@ -111,10 +108,10 @@ For each tabular file, capture:
   metadata or by sampling)
 - A 3-row sample of the data, so you can sanity-check types
 
-Save this catalog to `/tmp/repo-skills/<repo-name>/_inventory.json`
-so you can refer back to it without re-scanning. Same locality
-rule as the clone itself: this is build-time scratch, not a user
-artifact, so it belongs in `/tmp`.
+Save this catalog to
+`<SAGE_OUTPUT_DIR>/_repo_clone/<repo-name>/_inventory.json` so you
+can refer back to it without re-scanning. It will be deleted along
+with the clone in Step 9 — same scratch lifetime.
 
 A small Python helper using pandas/openpyxl is the easiest way.
 Do not load the full data here — only enough to learn the
@@ -190,8 +187,9 @@ Open questions (please confirm):
 Reply with "yes" to proceed as proposed, or with edits
 (e.g. "rename skill-2 to X", "drop skill-3", "merge 1 and 2").
 
-(Resume state on disk: /tmp/repo-skills/<repo-name>/ —
-the clone and _inventory.json are both there.)
+(Resume state on disk:
+SAGE_OUTPUT_DIR/_repo_clone/<repo-name>/ — the clone and
+_inventory.json are both there.)
 ```
 
 After the "Reply with yes…" line, add one **resume hint** line so
@@ -221,16 +219,16 @@ to re-orient cheaply. Specifically:
    — all of that is in your message history. Recall it. Do not
    re-enumerate the repo from scratch unless something is gone.
 2. **Then check the working directory.** Run a single `ls
-   /tmp/repo-skills/<repo-name>/` to confirm the clone is still
-   there, and an `ls /tmp/repo-skills/<repo-name>/_inventory.json`
-   to confirm the inventory is still there.
+   $SAGE_OUTPUT_DIR/_repo_clone/<repo-name>/` to confirm the
+   clone is still there, and `ls
+   $SAGE_OUTPUT_DIR/_repo_clone/<repo-name>/_inventory.json` to
+   confirm the inventory is still there.
 3. **Branch on what you find:**
    - Both present (the normal case) → load `_inventory.json` and
      go straight to Step 5. Do not re-run schema probes, do not
      re-read CSVs to "double-check" anything you already saw in
      Step 2.
-   - Clone missing → `/tmp` got cleared (rare; pod recycle
-     between cells). Re-clone with the same command from Step 1,
+   - Clone missing → re-clone with the same command from Step 1,
      then continue. Do not re-enumerate everything; the schema
      fingerprints are in your message history.
    - Inventory file missing but clone present → re-run the
@@ -395,8 +393,21 @@ structure (same conventions as `arcgis-feature-skill-builder`):
 
 ### Step 9 — Confirm with a structured completion message
 
-After all SKILL.md files and Parquet caches are written, emit one
-final summary message to the user, using the same shape as the
+Before the summary, delete the scratch clone to release the
+quota you used during the build:
+
+```bash
+rm -rf "$SAGE_OUTPUT_DIR/_repo_clone"
+```
+
+Then verify the Parquet caches and SKILL.md files still exist
+under `_skills_/<skill-name>/` — those are the user's keepers.
+If the `rm -rf` somehow took those with it, restore from the
+Parquet you built in Step 5; never report success without the
+skill files on disk.
+
+After the cleanup and verification, emit one final summary message
+to the user, using the same shape as the
 `arcgis-feature-skill-builder` completion message:
 
 For each skill, in order, output:
@@ -430,14 +441,18 @@ CRS confidence, missing values in a key field, non-standard
 units. Skip otherwise.]
 ```
 
-Then a closing line:
-```
-To make the skill(s) available across notebooks, run:
-  %%skill _skills_/<skill-name>
-```
+Do not add a closing line about installing the skill or making
+it "available". The skill is already available in this notebook:
+the agent's setup auto-scans `<SAGE_OUTPUT_DIR>/_skills_/` on
+every `%%ask` cell, so the freshly-built skill is loaded on the
+user's next turn without any additional command. Adding a "to
+make the skill available, run %%skill…" line is misleading — it
+implies the user must do something they don't.
 
-Do not auto-install into the global registry. Promotion is the
-user's deliberate step.
+Do not auto-install into the global registry. If the user later
+wants the skill in other notebooks too, that's their explicit
+follow-up — they already know how to invoke `%%skill`, and
+suggesting it unprompted is noise.
 
 ## Quality Checklist
 
