@@ -65,10 +65,22 @@ proposal in Step 3.
 
 ### Step 1 — Clone the repo into /tmp
 
+**Clone to `/tmp/repo-skills/<repo-name>` — never to SAGE_OUTPUT_DIR
+or anywhere under `~/work/`.** This is non-negotiable:
+
+- `/tmp` is ephemeral pod-local scratch. We use the repo as
+  throwaway input to produce Parquet caches; once those are
+  written we never read the clone again. Letting it expire on
+  pod restart is correct.
+- `SAGE_OUTPUT_DIR` lives on a persistent volume with a strict
+  quota (~10 GB shared across all of the user's notebook
+  outputs and skill caches). Cloning a repo there bloats that
+  quota with files the user doesn't need to keep.
+
 ```bash
 mkdir -p /tmp/repo-skills
 cd /tmp/repo-skills
-# Use --depth=1 to skip history; we just need the latest snapshot.
+# --depth=1 skips history; we just need the latest snapshot.
 git clone --depth=1 https://github.com/<owner>/<repo>.git <repo-name>
 ```
 
@@ -99,8 +111,10 @@ For each tabular file, capture:
   metadata or by sampling)
 - A 3-row sample of the data, so you can sanity-check types
 
-Save this catalog to `<SAGE_OUTPUT_DIR>/repo_inventory.json` so
-you can refer back to it without re-scanning.
+Save this catalog to `/tmp/repo-skills/<repo-name>/_inventory.json`
+so you can refer back to it without re-scanning. Same locality
+rule as the clone itself: this is build-time scratch, not a user
+artifact, so it belongs in `/tmp`.
 
 A small Python helper using pandas/openpyxl is the easiest way.
 Do not load the full data here — only enough to learn the
@@ -175,6 +189,17 @@ Open questions (please confirm):
 
 Reply with "yes" to proceed as proposed, or with edits
 (e.g. "rename skill-2 to X", "drop skill-3", "merge 1 and 2").
+
+(Resume state on disk: /tmp/repo-skills/<repo-name>/ —
+the clone and _inventory.json are both there.)
+```
+
+After the "Reply with yes…" line, add one **resume hint** line so
+your next-cell self knows where the build state lives:
+
+```
+(Resume state on disk: /tmp/repo-skills/<repo-name>/ —
+the clone and the inventory file are both there.)
 ```
 
 Then **stop**. The user reads the proposal and writes a new
@@ -184,6 +209,38 @@ the proposal in your conversation history — pick up at Step 5.
 If the user's reply is unclear ("looks okay?" "let me think"),
 ask one clarifying question and stop again. Do not start
 building on ambiguous approval.
+
+### Step 4b — Resuming after the STOP gate
+
+When the user's "yes" / "edit" / "no" reply arrives in the next
+`%%ask` cell, your first move is **not** to start working — it's
+to re-orient cheaply. Specifically:
+
+1. **Read your own conversation history.** The proposal you made,
+   the file inventory, the schema groupings, the open questions
+   — all of that is in your message history. Recall it. Do not
+   re-enumerate the repo from scratch unless something is gone.
+2. **Then check the working directory.** Run a single `ls
+   /tmp/repo-skills/<repo-name>/` to confirm the clone is still
+   there, and an `ls /tmp/repo-skills/<repo-name>/_inventory.json`
+   to confirm the inventory is still there.
+3. **Branch on what you find:**
+   - Both present (the normal case) → load `_inventory.json` and
+     go straight to Step 5. Do not re-run schema probes, do not
+     re-read CSVs to "double-check" anything you already saw in
+     Step 2.
+   - Clone missing → `/tmp` got cleared (rare; pod recycle
+     between cells). Re-clone with the same command from Step 1,
+     then continue. Do not re-enumerate everything; the schema
+     fingerprints are in your message history.
+   - Inventory file missing but clone present → re-run the
+     enumerate-and-save step only. Skip the README/processing-
+     script reading you already did.
+
+Trusting your own conversation history is the discipline here.
+The user will see every redundant `ls`, every re-read of a file
+you already read, every re-clone. Those are wasted turns. Make
+the cheapest possible re-orientation that's correct, then build.
 
 ### Step 5 — Merge each skill's files into one Parquet
 
