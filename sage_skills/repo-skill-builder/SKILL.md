@@ -259,12 +259,106 @@ For each approved skill, write a Python script that:
 6. Writes to
    `<SAGE_OUTPUT_DIR>/_skills_/<skill-name>/data/<skill-name>.parquet`.
 
-If pyarrow isn't installed:
+**SAGE_OUTPUT_DIR caveat for build scripts.** `SAGE_OUTPUT_DIR`
+is injected into the *kernel* namespace but is **not** set in the
+subprocess environment when you run `python script.py` via the
+execute tool. Calling `os.environ["SAGE_OUTPUT_DIR"]` in a build
+script will raise `KeyError`. Instead, take the literal path from
+your system prompt's working-directory instruction and hardcode
+it at the top of the script:
+
+```python
+OUT_DIR = Path("/home/jovyan/work/<your-notebook-dir>/_<notebook-stem>_sage_")
 ```
-pip install --user pyarrow
+
+(The exact prefix is per-deployment — read it from the prompt, do
+not copy a literal from this skill.)
+
+**Parquet I/O — work around pandas 3.x bug.** Do **not** use
+`pd.read_parquet()` or `df.to_parquet()` without specifying
+`engine='fastparquet'`. Pandas 3.x ships with `future.infer_string=True`,
+which makes `pd.read_parquet()` (both pyarrow and fastparquet
+engines, via pandas) attempt to create ArrowExtensionArray for
+string columns and crash with `ArrowKeyError: A type extension
+with name pandas.period already defined`. The error is in pandas's
+own extension-type loading path, not your code.
+
+Use these patterns instead:
+
+```python
+# WRITE — fastparquet engine bypasses the pandas extension loader.
+df.to_parquet(out_path, engine="fastparquet", index=False)
+
+# READ — use pyarrow.parquet directly, then strip any Arrow-backed string dtypes.
+import pyarrow.parquet as pq
+df = pq.read_table(parquet_path).to_pandas()
+for c in df.columns:
+    dt = str(df[c].dtype).lower()
+    if "string" in dt or "arrow" in dt:
+        df[c] = df[c].astype("object")
+```
+
+This same pattern must appear in the `load_data()` helper inside
+every generated SKILL.md — see Step 8.
+
+If pyarrow / fastparquet isn't installed:
+```
+pip install --user pyarrow fastparquet
 ```
 (Always `--user`; never `pip install` without it. ARGUS's system
 prompt enforces this.)
+
+**Performance — vectorize, never iterrows() on >100K rows.** For
+any source with >100,000 rows (timeseries, sensor data, large
+catalogs), an `iterrows()` loop will exceed the execute tool's
+120-second timeout. Read each source with `pd.read_csv(usecols=[…])`,
+convert with `pd.to_datetime` / `pd.to_numeric` in bulk, `.dropna()`,
+and `pd.concat` the per-file frames. A vectorized merge of ~1M
+rows finishes in ~15 seconds; the iterrows version times out.
+
+**Variable name from filename, not internal column.** If multiple
+source files have an internal `variable` (or `parameter`, `field`,
+`type`) column that *labels what they hold*, do not trust that
+column as the canonical name — files can mislabel each other (e.g.
+`pet_sum.csv` may contain `variable='pet'` internally and silently
+collide with the separate `pet.csv` on merge). Derive the
+canonical variable name from the filename
+(`f.stem.split(".")[0]`) and assign it as a new column,
+overwriting the internal one. Same principle for region/source
+discriminators derived from parent directory.
+
+**Canonicalize identifiers across files.** If a shared identifier
+column (site name, well ID, station code) appears in multiple
+source files, do not assume formatting is consistent. The same
+site may be `"Barro Colorado Island"` in one file,
+`"Barro.Colorado.Island"` in another, `"Barro_Colorado_Island"`
+in a third, and `"Barro Colorado Island (BCI)"` in a fourth — a
+simple `.replace("_"," ")` is not enough because R-mangled names
+can lose parentheses and commas irreversibly. Build an explicit
+`CANONICAL` dict mapping every observed variant to the
+authoritative form (look for a sibling registry file in the repo,
+or use the most common form across all files). Apply it to every
+skill that uses this identifier, not just the one where you first
+notice the problem.
+
+**Post-merge verification.** After every merge, before declaring
+success and writing Parquet, run these checks and print the
+results:
+
+```python
+print(f"  rows={len(df):,}  cols={len(df.columns)}")
+print(f"  unique {ID_COL}: {df[ID_COL].nunique()}")
+print(f"  duplicates on {ID_COL}: {df[ID_COL].duplicated().sum()}")
+if "lat" in df.columns:
+    print(f"  lat/lon non-null: {df['lat'].notna().sum()}/{len(df)}"
+          f" ({100*df['lat'].notna().mean():.1f}%)")
+```
+
+If duplicates exceed your expectation, that's a silent data
+collision (often a file's content doesn't match its name — see
+"Variable name from filename" above). If lat/lon non-null drops
+below ~95% on a join-by-identifier coordinate attach, the
+identifier canonicalization is incomplete.
 
 Print a one-line summary of the resulting Parquet — row count,
 column count, output path. So the user can sanity-check.
@@ -284,10 +378,39 @@ incorporate them into the Parquet as standardized columns:
   are usually a projected CRS that requires the `.prj`).
 
 Always reproject to **EPSG:4326** and store as `lat` and `lon`
-float columns in the Parquet. Sanity-check: the reprojected
-coordinates should land in a plausible region for the dataset
-(if the dataset is Italian wells, expect lat in ~36–47 and lon
-in ~6–18).
+float columns in the Parquet.
+
+**Sanity-check coordinates after every reprojection.** Don't trust
+that they landed correctly. Define a plausible bounding box for
+the dataset's region (e.g. lat 36–47, lon 6–18 for Italy; lat
+-10–25, lon -110–-30 for the Neotropics) and count how many
+points fall outside it:
+
+```python
+out_of_box = ((df["lat"] < LAT_MIN) | (df["lat"] > LAT_MAX) |
+              (df["lon"] < LON_MIN) | (df["lon"] > LON_MAX))
+print(f"  out-of-box: {out_of_box.sum()}/{len(df)}")
+```
+
+If more than a couple of percent fall outside, *something is
+silently wrong* and you must investigate before continuing.
+Common silent failures observed in real builds:
+
+- **Column-name CRS claims are unreliable.** A column named
+  `X_WGS84` may actually contain UTM-projected easting/northing
+  values (e.g. 500,000–700,000 instead of decimal degrees). The
+  name is publisher convention, not contract. Validate against
+  the bounding box, not against the column label.
+- **Truncated digits in projected coordinates.** Some catalogs
+  store UTM northing with a leading "4" stripped (e.g. `952907`
+  instead of `4952907`), which lands points in the wrong
+  hemisphere when reprojected. If a CRS is known projected but
+  values look small, try adding the missing leading digit and
+  re-checking the bbox.
+- **Swapped LAT/LON columns.** A "LAT" column can contain
+  longitudes if the source file was authored carelessly. Detect
+  by checking both axes: if `LAT` values fall in the expected
+  `LON` range *and* vice versa, swap them.
 
 If you can't recover the CRS confidently, mention it in your
 completion message as a caveat. Don't silently produce garbage
@@ -367,18 +490,35 @@ structure (same conventions as `arcgis-feature-skill-builder`):
 
 8. **## How to Use** — a `load_data()` helper that reads the
    Parquet and returns a DataFrame (or GeoDataFrame, if there
-   are `lat`/`lon` columns):
+   are `lat`/`lon` columns). **Use `pyarrow.parquet` directly,
+   not `pd.read_parquet`** — the latter crashes on pandas 3.x
+   with `future.infer_string=True` (the JupyterHub default
+   environment) inside its own extension-type loading path.
 
    ```python
-   import os, pandas as pd
+   import pandas as pd
    from pathlib import Path
 
    def load_data(skill_dir=None):
+       """Load the cached skill data.
+
+       Returns a DataFrame, or a GeoDataFrame if lat/lon columns
+       are present. Uses pyarrow.parquet directly to avoid a
+       pandas 3.x bug in pd.read_parquet's extension-type loader.
+       """
        if skill_dir is None:
            skill_dir = Path(__file__).parent
        p = Path(skill_dir) / "data" / "<skill-name>.parquet"
-       df = pd.read_parquet(p)
-       # if lat/lon columns exist, convert to GeoDataFrame
+
+       import pyarrow.parquet as pq
+       df = pq.read_table(p).to_pandas()
+
+       # Strip Arrow-backed string dtypes for downstream compatibility.
+       for c in df.columns:
+           dt = str(df[c].dtype).lower()
+           if "string" in dt or "arrow" in dt:
+               df[c] = df[c].astype("object")
+
        if {"lat", "lon"}.issubset(df.columns):
            import geopandas as gpd
            df = gpd.GeoDataFrame(
