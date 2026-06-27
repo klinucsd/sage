@@ -408,38 +408,62 @@ overall message is getting long. The user opened a one-cell
 operation and wants to learn what each skill is, separately. A
 two-line filter table on the third skill teaches less than a
 five-line table on the first one — that asymmetry is a quality
-defect. Treat each skill as if it were the only one in the build:
+defect. Treat each skill as if it were the only one in the build.
 
-For each skill, in order, output:
+**Compression at any skill is a defect, not a courtesy.** If your
+overall message is getting long, the right response is to cut prose
+elsewhere — the intro sentence, the closing paragraph — not to
+shrink later skills' tables or queries. Every skill in the build
+must meet the table-sizing and query-quality minimums below; a
+"summary" version of a skill that falls short of those minimums is
+shipped broken. This rule applies whether you have 2 skills or 12.
+If a skill's data shape genuinely cannot support 7 queries (e.g.
+the source has 3 columns and 12 rows), state that explicitly in
+the one-line caveat ("only 4 query axes are meaningful given the
+3-column schema") rather than producing a quietly thin section.
 
-```
-✓ Built skill <skill-name> at _skills_/<skill-name>/SKILL.md.
+**Use Markdown pipe tables, not code-block ASCII tables.** Render
+the filter table as `| Dimension | Field | Example values |` with
+a `|---|---|---|` separator row. Pipe tables render reliably in
+Jupyter, GitHub previews, and nbviewer; ASCII tables with `─`
+separators render unevenly across these surfaces and look unpolished
+in saved notebooks. The template below shows the correct format.
+
+For each skill, in order, output (rendered as Markdown — the table
+must use pipe syntax, not code-block ASCII):
+
+```markdown
+✓ Built skill **<skill-name>** at `_skills_/<skill-name>/SKILL.md`.
 
 Each row is <one-sentence entity description>
 (<count> <units>, <high-level qualifier>).
 
-What you can filter on:
-  Dimension          Field          Example values
-  ─────────────────────────────────────────────────────────────
-  <dim1>             <col1>         <4–6 sample values>
-  <dim2>             <col2>         <4–6 sample values>
-  <dim3>             <col3>         <4–6 sample values>
-  …
-  Spatial area       (lat, lon)     any rectangle in WGS84
-                                    (omit row if not spatial)
+**What you can filter on:**
 
-Example queries:
-  By <axis1>         "<filter query>"
-                     "<aggregate or compare query on same axis>"
-  By <axis2>         "<filter query>"
-                     "<aggregate or compare query on same axis>"
-  By location        "<spatial filter>"
-                     "<spatial + attribute combined>"
-  Across skills      "<query that joins to another skill in this build>"
+| Dimension | Field | Example values |
+|---|---|---|
+| <dim1> | `<col1>` | <4–6 sample values> |
+| <dim2> | `<col2>` | <4–6 sample values> |
+| <dim3> | `<col3>` | <4–6 sample values> |
+| <dim4> | `<col4>` | <4–6 sample values> |
+| <dim5> | `<col5>` | <4–6 sample values> |
+| Spatial area | (`lat`, `lon`) | any rectangle in WGS84 |
 
-The skill returns a <DataFrame/GeoDataFrame> you can join with
-other skills (e.g., <plausible companion skills>) in the same
-%%ask cell.
+(Omit the Spatial area row if the skill has no geometry.)
+
+**Example queries:**
+
+- **By <axis1>** — "<filter query>"
+- **By <axis1>** — "<aggregate or compare query on same axis>"
+- **By <axis2>** — "<filter query>"
+- **By <axis2>** — "<aggregate or compare query on same axis>"
+- **By location** — "<spatial filter>"
+- **Combined** — "<multi-axis or spatial + attribute query>"
+- **Cross-skill** — "<query that joins to another skill in this build>"
+
+The skill returns a `<DataFrame>` / `<GeoDataFrame>` you can join with
+other skills (e.g., `<plausible companion skill>`) in the same
+`%%ask` cell.
 
 [Optional one-line caveat — only if you know of a real gotcha:
 CRS confidence, missing values in a key field, non-standard
@@ -447,16 +471,27 @@ units. Skip otherwise.]
 ```
 
 **Table sizing rules:**
-- Include at least 5 dimensions in the filter table for any
-  non-trivial spatial dataset (typically: region/source,
-  a primary categorical, a secondary categorical, a numeric
-  range, identifier, spatial). If the skill has joined attributes
-  from a registry (e.g. a timeseries skill that inherits well_type
-  / province from the well registry), show those joined dimensions
+- Include at least **5 dimensions** in the filter table. Typical
+  pattern: region/source, a primary categorical, a secondary
+  categorical, a numeric range, identifier, spatial (if
+  geometry-bearing). If the skill has joined attributes from a
+  registry (e.g. a timeseries skill that inherits `well_type` /
+  `province` from the well registry), show those joined dimensions
   too — the user can filter on them just as easily as on the
   native ones, but only if you tell them.
-- For each dimension, show 4–6 example values pulled from the
-  Field Value Dictionaries. Use the codes / short forms.
+- For each dimension, show **4–6 concrete example values** pulled
+  from the Field Value Dictionaries. Use the codes / short forms
+  the user would type, not abstract field-set descriptions. A row
+  like `Temperature vars | 11 BIO cols | BIO1, BIO5, BIO12, …` is
+  wrong — that's meta-description, not example values. The right
+  form is `Bioclim variable | bio_var | BIO1 (annual mean temp),
+  BIO5 (max temp warmest month), BIO12 (annual precip), BIO15
+  (precip seasonality)`. The user must come away knowing what
+  specific values to put in their query.
+- For wide schemas (50+ summary-stat columns, etc.), pick the
+  4–6 most query-worthy column groups and list them by name. Do
+  not write `~50 columns` and a vague "etc." — that hides the
+  schema. Concrete examples beat counts.
 
 **Query quality rules:**
 - Produce **at least 7 example queries per skill**, spread across
