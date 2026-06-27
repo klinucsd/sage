@@ -400,7 +400,15 @@ After all SKILL.md files and Parquet caches are written, emit one
 final summary message to the user, using the same shape as the
 `arcgis-feature-skill-builder` completion message. The /tmp clone
 will be reclaimed automatically on pod recycle — no explicit
-cleanup needed:
+cleanup needed.
+
+**When you have built multiple skills, give every skill the same
+level of detail.** Do not compress later skills just because the
+overall message is getting long. The user opened a one-cell
+operation and wants to learn what each skill is, separately. A
+two-line filter table on the third skill teaches less than a
+five-line table on the first one — that asymmetry is a quality
+defect. Treat each skill as if it were the only one in the build:
 
 For each skill, in order, output:
 
@@ -413,16 +421,21 @@ Each row is <one-sentence entity description>
 What you can filter on:
   Dimension          Field          Example values
   ─────────────────────────────────────────────────────────────
-  <dim1>             <col1>         <3–6 sample values>
-  <dim2>             <col2>         …
+  <dim1>             <col1>         <4–6 sample values>
+  <dim2>             <col2>         <4–6 sample values>
+  <dim3>             <col3>         <4–6 sample values>
+  …
   Spatial area       (lat, lon)     any rectangle in WGS84
                                     (omit row if not spatial)
 
 Example queries:
-  By <axis1>         "<query>"
-                     "<query>"
-  By location        "<query>"
-  Combined           "<query>"
+  By <axis1>         "<filter query>"
+                     "<aggregate or compare query on same axis>"
+  By <axis2>         "<filter query>"
+                     "<aggregate or compare query on same axis>"
+  By location        "<spatial filter>"
+                     "<spatial + attribute combined>"
+  Across skills      "<query that joins to another skill in this build>"
 
 The skill returns a <DataFrame/GeoDataFrame> you can join with
 other skills (e.g., <plausible companion skills>) in the same
@@ -432,6 +445,38 @@ other skills (e.g., <plausible companion skills>) in the same
 CRS confidence, missing values in a key field, non-standard
 units. Skip otherwise.]
 ```
+
+**Table sizing rules:**
+- Include at least 5 dimensions in the filter table for any
+  non-trivial spatial dataset (typically: region/source,
+  a primary categorical, a secondary categorical, a numeric
+  range, identifier, spatial). If the skill has joined attributes
+  from a registry (e.g. a timeseries skill that inherits well_type
+  / province from the well registry), show those joined dimensions
+  too — the user can filter on them just as easily as on the
+  native ones, but only if you tell them.
+- For each dimension, show 4–6 example values pulled from the
+  Field Value Dictionaries. Use the codes / short forms.
+
+**Query quality rules:**
+- Produce **at least 7 example queries per skill**, spread across
+  the dimensions in the table. One query per axis is not enough
+  — pair a filter with an aggregate or compare on the same axis,
+  so the user sees both shapes (e.g. "drinking-water wells in
+  Lombardia" + "average depth of drinking-water wells by region").
+- Write queries in **domain language**, not column names. A
+  scientist will ask "wells near Bologna", not "wells where
+  municipality == 'Bologna'". The agent will translate.
+- When skills in this build can join to each other, **include at
+  least one cross-skill query per skill** that demonstrates the
+  join. This is the most valuable kind of example because skills
+  rarely live alone — the composition cue makes the build feel
+  whole.
+- Mix three query shapes: **filter** ("show me X where Y"),
+  **aggregate** ("how many / mean / max of X by Y"), and
+  **compare** ("X versus Y"). A 7-query list with only filter
+  queries is undercooked; the user can't tell what the skill is
+  capable of beyond `df.query()`.
 
 Do not add a closing line about installing the skill or making
 it "available". The skill is already available in this notebook:
