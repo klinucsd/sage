@@ -63,18 +63,25 @@ proposal in Step 3.
 
 ## Steps to Build the Skills
 
-### Step 1 — Clone the repo into a scratch subfolder
+### Step 1 — Clone the repo into /tmp
 
-Clone into `<SAGE_OUTPUT_DIR>/_repo_clone/<repo-name>`. We clone
-into the notebook's working directory (not `/tmp`) because the
-system FILE ACCESS RULE restricts you to `SAGE_OUTPUT_DIR` and the
-skills directory. The clone is **temporary** — Step 9 deletes the
-`_repo_clone/` subfolder before reporting completion, so quota is
-only spent during the build itself.
+**Clone to `/tmp/repo-skills/<repo-name>` — never to SAGE_OUTPUT_DIR
+or anywhere under `~/work/`.** This is non-negotiable. The clone is
+throwaway scratch input; once the Parquet caches are written we
+never read it again. /tmp is ephemeral pod-local storage that
+disappears on pod recycle, which is the correct lifetime for build
+scratch. SAGE_OUTPUT_DIR lives on a persistent volume with a strict
+quota (~10 GB shared across the user's notebook outputs and skill
+caches) and putting throwaway data there bloats that quota.
+
+The system prompt elsewhere restricts file *reading* and *writing*
+to SAGE_OUTPUT_DIR plus the skills directory, but `git clone` is a
+shell-level operation that materializes a directory tree — and for
+this skill specifically, /tmp is the correct staging area. Use it.
 
 ```bash
-mkdir -p "$SAGE_OUTPUT_DIR/_repo_clone"
-cd "$SAGE_OUTPUT_DIR/_repo_clone"
+mkdir -p /tmp/repo-skills
+cd /tmp/repo-skills
 # --depth=1 skips history; we just need the latest snapshot.
 git clone --depth=1 https://github.com/<owner>/<repo>.git <repo-name>
 ```
@@ -84,9 +91,7 @@ error to the user and stop. Do not try to authenticate.
 
 If the repo is huge (>500 MB) **stop and ask the user** before
 downloading — a quick `git ls-remote` or GitHub API call to
-estimate size is fine. SAGE_OUTPUT_DIR has a ~10 GB shared quota
-and a 1 GB repo plus its Parquet derivatives could consume a
-significant fraction of it during the build phase.
+estimate size is fine.
 
 ### Step 2 — Enumerate the tabular data files
 
@@ -108,10 +113,9 @@ For each tabular file, capture:
   metadata or by sampling)
 - A 3-row sample of the data, so you can sanity-check types
 
-Save this catalog to
-`<SAGE_OUTPUT_DIR>/_repo_clone/<repo-name>/_inventory.json` so you
-can refer back to it without re-scanning. It will be deleted along
-with the clone in Step 9 — same scratch lifetime.
+Save this catalog to `/tmp/repo-skills/<repo-name>/_inventory.json`
+so you can refer back to it without re-scanning. Same scratch
+lifetime as the clone itself.
 
 A small Python helper using pandas/openpyxl is the easiest way.
 Do not load the full data here — only enough to learn the
@@ -187,9 +191,8 @@ Open questions (please confirm):
 Reply with "yes" to proceed as proposed, or with edits
 (e.g. "rename skill-2 to X", "drop skill-3", "merge 1 and 2").
 
-(Resume state on disk:
-SAGE_OUTPUT_DIR/_repo_clone/<repo-name>/ — the clone and
-_inventory.json are both there.)
+(Resume state on disk: /tmp/repo-skills/<repo-name>/ —
+the clone and _inventory.json are both there.)
 ```
 
 After the "Reply with yes…" line, add one **resume hint** line so
@@ -219,16 +222,16 @@ to re-orient cheaply. Specifically:
    — all of that is in your message history. Recall it. Do not
    re-enumerate the repo from scratch unless something is gone.
 2. **Then check the working directory.** Run a single `ls
-   $SAGE_OUTPUT_DIR/_repo_clone/<repo-name>/` to confirm the
-   clone is still there, and `ls
-   $SAGE_OUTPUT_DIR/_repo_clone/<repo-name>/_inventory.json` to
-   confirm the inventory is still there.
+   /tmp/repo-skills/<repo-name>/` to confirm the clone is still
+   there, and `ls /tmp/repo-skills/<repo-name>/_inventory.json`
+   to confirm the inventory is still there.
 3. **Branch on what you find:**
    - Both present (the normal case) → load `_inventory.json` and
      go straight to Step 5. Do not re-run schema probes, do not
      re-read CSVs to "double-check" anything you already saw in
      Step 2.
-   - Clone missing → re-clone with the same command from Step 1,
+   - Clone missing → `/tmp` got cleared (rare; pod recycle
+     between cells). Re-clone with the same command from Step 1,
      then continue. Do not re-enumerate everything; the schema
      fingerprints are in your message history.
    - Inventory file missing but clone present → re-run the
@@ -393,22 +396,11 @@ structure (same conventions as `arcgis-feature-skill-builder`):
 
 ### Step 9 — Confirm with a structured completion message
 
-Before the summary, delete the scratch clone to release the
-quota you used during the build:
-
-```bash
-rm -rf "$SAGE_OUTPUT_DIR/_repo_clone"
-```
-
-Then verify the Parquet caches and SKILL.md files still exist
-under `_skills_/<skill-name>/` — those are the user's keepers.
-If the `rm -rf` somehow took those with it, restore from the
-Parquet you built in Step 5; never report success without the
-skill files on disk.
-
-After the cleanup and verification, emit one final summary message
-to the user, using the same shape as the
-`arcgis-feature-skill-builder` completion message:
+After all SKILL.md files and Parquet caches are written, emit one
+final summary message to the user, using the same shape as the
+`arcgis-feature-skill-builder` completion message. The /tmp clone
+will be reclaimed automatically on pod recycle — no explicit
+cleanup needed:
 
 For each skill, in order, output:
 
