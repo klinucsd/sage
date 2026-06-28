@@ -95,6 +95,22 @@ estimate size is fine.
 
 ### Step 2 — Enumerate the tabular data files
 
+**Your very next action after the clone is to write and run
+`inventory.py`. Do not explore the directory structure with
+shell first — no `ls`, no `wc -l`, no `find | grep`, no
+"just a quick look" with command-line tools.** The inventory
+script itself produces your first picture of the repo: file
+tree, sizes, schemas, samples — all of it in one structured
+JSON file you can read and re-read. Anything you'd learn from
+`ls` or `find` is also in the inventory output, faster and
+more reliably.
+
+The single exception: you MAY read `README.md` (and any
+top-level `TABLE_OF_CONTENTS.md` / `MANIFEST.md` / similar)
+*before* the inventory, to orient yourself on the project's
+intent. That's a focused two-call action. Do not let it expand
+into directory listings.
+
 Walk the repo tree and collect every `.csv`, `.tsv`, `.xlsx`,
 `.xls`, and `.parquet` file. Skip anything obviously not data:
 
