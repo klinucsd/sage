@@ -145,6 +145,39 @@ edit the script and re-run. Do not add shell pipelines to
 Do not load the full data in this step — only enough to learn
 the schema (column names, dtypes, row count, 3-row sample).
 
+**The same rule applies to any follow-up exploration after the
+inventory.** If you need deeper context — reading the
+subdirectory READMEs, sampling more rows from a few key files,
+checking which sites appear in which files — write a *second*
+Python script that batches the work. Do not switch into
+per-file `ls` / `head` / `grep` / `sed` exploration. A
+20-line Python script that opens every subdirectory's README and
+prints them, or samples the first 10 rows of each schema-distinct
+file, is **one tool call**. The shell-by-shell equivalent is 20+
+tool calls and gives you the same information slower, less
+reliably, and with no persistent artifact you can re-read.
+
+Per-file shell exploration is the same antipattern as the
+pagination loop, just in a different disguise — both substitute
+many small tool calls for one comprehensive script. If you find
+yourself about to run `ls <subdir>` after already having an
+inventory, stop and write a script that lists *every* subdir's
+contents in one pass instead.
+
+Concretely, after `inventory.py` you may want a follow-up script
+like `explore_context.py` that:
+
+- Reads every `README.md` / `README.txt` / `*.txt` documentation
+  file under the repo and prints (relpath, first 500 chars) for
+  each.
+- For each schema-distinct file group, opens one representative
+  file and prints (filename, columns, first 10 rows).
+- Optionally checks identifier overlap between candidate-skill
+  groups so you can flag join keys.
+
+One script, one run, complete picture. Then you can group, propose,
+and STOP.
+
 ### Step 3 — Group files into skill candidates
 
 Group the files by **schema fingerprint** (their sorted column
