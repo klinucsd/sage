@@ -117,9 +117,33 @@ Save this catalog to `/tmp/repo-skills/<repo-name>/_inventory.json`
 so you can refer back to it without re-scanning. Same scratch
 lifetime as the clone itself.
 
-A small Python helper using pandas/openpyxl is the easiest way.
-Do not load the full data here — only enough to learn the
-schema.
+**Always write a single Python inventory script — do not assemble
+the inventory from shell pipelines.** Shell tools (`find`, `sort`,
+`awk`, `sed`, `wc`) are fine for one-line checks ("does X exist",
+"how big is the repo", "list top-level directories"), but for
+walking many files and capturing schemas they degrade into
+pagination loops. The agent ends up running variations of
+`find ... | sort | awk 'NR>=N'` ten different ways trying to get
+a coherent picture, wasting tool calls and never converging on a
+usable inventory. The script-driven path is one tool call instead
+of dozens, produces a clean JSON artifact you can re-read, and
+doesn't strand the agent in shell-pipe-paginate behavior.
+
+Write an `inventory.py` that:
+
+- Uses `pathlib.Path.rglob` to find tabular files (not subprocess
+  `find`).
+- For each file: opens it with pandas / openpyxl / pyarrow,
+  captures path / size / column names / dtypes / row count / 3-row
+  sample.
+- Writes the result as JSON to the path above.
+
+Run it once. If you missed a category (e.g. you forgot `.parquet`),
+edit the script and re-run. Do not add shell pipelines to
+"supplement" the inventory.
+
+Do not load the full data in this step — only enough to learn
+the schema (column names, dtypes, row count, 3-row sample).
 
 ### Step 3 — Group files into skill candidates
 
