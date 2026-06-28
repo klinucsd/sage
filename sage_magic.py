@@ -1874,15 +1874,32 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     _mcp_tools = _sage_mcp_all_tools()
     if _mcp_tools:
         create_kwargs["tools"] = _mcp_tools
-        # Work around NRP vLLM serving config for GLM-5.1: with --tool-call-parser
-        # glm47 (mismatched with the GLM-5.1 model), streaming responses with
-        # >~3 tools in context silently lose all content + tool_calls. The
-        # non-streaming code path doesn't go through the broken streaming
-        # parser, so disabling LLM-level streaming recovers correctness.
-        # Verified 2026-06-09 via direct openai-python tests against NRP.
-        # Trade-off: cell renders the full agent response when each LLM call
-        # completes, rather than token-by-token. UX is less progressive but
-        # tool calls actually work.
+
+    # Detect NRP provider by base_url. NRP's vLLM serving (any model: GLM-5,
+    # minimax-m2, etc.) emits streaming chunks that langchain_openai's
+    # AIMessageChunk parser handles inconsistently — sometimes fine, sometimes
+    # hangs waiting indefinitely for chunks that never arrive. The non-stream
+    # code path is atomic (single OpenAI response object, no per-chunk parsing)
+    # and was verified to handle the same agentic conversations cleanly in
+    # direct probes (2026-06-28: glm-5 returned 4 tool calls in 13s, minimax-m2
+    # in 3s, with 13K-token context + 6 tools).
+    _base_url = str(
+        getattr(model, "openai_api_base", None)
+        or getattr(model, "base_url", None)
+        or ""
+    )
+    _provider_is_nrp = "nrp-nautilus.io" in _base_url
+
+    # Disable streaming when EITHER condition holds:
+    #  - MCP tools registered (the original glm47-parser tool-count bug from
+    #    2026-06-09 — still applies)
+    #  - NRP provider (the broader langchain-parser hang from 2026-06-28,
+    #    applies regardless of tool count or model — affects all NRP models)
+    # Both bypass the langchain_openai streaming parser entirely.
+    # Trade-off: cell renders the full agent response per LLM-call boundary
+    # rather than token-by-token within a call. Tool calls still display
+    # individually as they fire. UX is less progressive but doesn't hang.
+    if _mcp_tools or _provider_is_nrp:
         try:
             model.streaming = False
         except Exception:
