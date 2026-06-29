@@ -12,6 +12,43 @@ description: >-
 
 # Repo Skill Builder
 
+## ⚠️ MANDATORY PRE-FLIGHT RULES — read these first
+
+These rules are violated most often in the field. They are
+non-negotiable. Read them carefully **before** doing anything else.
+Detailed rationale for each is in the steps below; this section is
+the binding contract.
+
+1. **Your FIRST tool call after the clone is `write_file inventory.py`.**
+   Not `ls`. Not `wc -l`. Not `head`. Not `find | grep`. Not "let me
+   just take a quick look at the directory." The inventory script
+   is the *first* picture you get of the repo — by design. The
+   only allowed pre-inventory action is reading the repo's top-level
+   `README.md` (one tool call, optional).
+
+2. **One Python script file per phase, never `python -c` per file.**
+   For enumeration, exploration, building, probing — write the
+   script to a file with `write_file`, then `execute` it once.
+   Never run `python -c "<one-off>"` to check individual files.
+   That's the same antipattern as `ls`-per-directory, in different
+   clothing.
+
+3. **`inventory.py`'s stdout must be a brief summary (under ~1 KB).**
+   Per-file detail goes to `_inventory.json`, not stdout. Long
+   stdout makes the next LLM call slow on shared-GPU endpoints.
+   Read the JSON in Step 3 when you need per-file specifics.
+
+4. **After all skills are built and verified, delete the cloned repo.**
+   Step 9b is mandatory. Leftover clone files compete with the
+   skill's Parquet caches in future `%%ask` cells and destroy the
+   user's trust in the skill as the authoritative interface.
+
+If your next action would violate any of these, **stop and re-plan**
+before taking it. The rest of this document elaborates on why; the
+rules above are the contract.
+
+---
+
 ## When to Use
 
 Trigger this skill when the user says any of:
