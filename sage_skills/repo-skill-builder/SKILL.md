@@ -177,33 +177,50 @@ Save this catalog to `/tmp/repo-skills/<repo-name>/_inventory.json`
 so you can refer back to it without re-scanning. Same scratch
 lifetime as the clone itself.
 
-**Always write a single Python inventory script — do not assemble
-the inventory from shell pipelines.** Shell tools (`find`, `sort`,
-`awk`, `sed`, `wc`) are fine for one-line checks ("does X exist",
-"how big is the repo", "list top-level directories"), but for
-walking many files and capturing schemas they degrade into
-pagination loops. The agent ends up running variations of
-`find ... | sort | awk 'NR>=N'` ten different ways trying to get
-a coherent picture, wasting tool calls and never converging on a
-usable inventory. The script-driven path is one tool call instead
-of dozens, produces a clean JSON artifact you can re-read, and
-doesn't strand the agent in shell-pipe-paginate behavior.
+**Use the canonical `inventory.py` bundled with this meta-skill.
+Do not write your own.** A canonical script is shipped alongside
+this `SKILL.md` at:
 
-Write an `inventory.py` that:
+```
+~/.deepagents/agent/skills/repo-skill-builder/inventory.py
+```
 
-- Uses `pathlib.Path.rglob` to find tabular files (not subprocess
-  `find`).
-- For each file: opens it with pandas / openpyxl / pyarrow,
-  captures path / size / column names / dtypes / row count / 3-row
-  sample.
-- Writes the result as JSON to the path above.
+That script handles all the things agent-written inventories have
+historically gotten wrong: per-pandas-version `read_csv` arg bugs,
+encoding fallbacks (utf-8 → latin-1), Excel sheet enumeration,
+parquet schema reads, error isolation (one bad file doesn't crash
+the rest), schema fingerprint grouping, and the correct compact
+stdout summary format. It also writes the full inventory to JSON
+at `<repo-dir>/_inventory.json` for reference.
 
-Run it once. If you missed a category (e.g. you forgot `.parquet`),
-edit the script and re-run. Do not add shell pipelines to
-"supplement" the inventory.
+Run it like this:
 
-Do not load the full data in this step — only enough to learn
-the schema (column names, dtypes, row count, 3-row sample).
+```bash
+python ~/.deepagents/agent/skills/repo-skill-builder/inventory.py \
+       /tmp/repo-skills/<repo-name>
+```
+
+No editing, no copying, no rewriting. If the bundled script
+errors on a specific file, the error is captured per-file in the
+JSON output and the script continues; you don't need to fix the
+script. If a file format is genuinely missing (e.g. `.feather`),
+report it to the user — don't add to the canonical script
+in-place (it's read-only system code).
+
+**Why bundled, not agent-written:** every recent regression with
+NRP-served models has involved either (a) verbose per-file stdout
+that bloated the next LLM prompt, (b) missing schema grouping that
+forced the agent to paginate the JSON, or (c) per-pandas-version
+bugs the agent introduced when re-deriving the script. The
+canonical script eliminates all three.
+
+Shell tools (`find`, `sort`, `awk`, `sed`, `wc`) are still fine
+for one-line checks ("does X exist", "how big is the repo"), but
+**do not use them for enumeration** — that's what the bundled
+script is for.
+
+Do not load the full data in this step — `inventory.py` only
+inspects the first 5 rows of each file to learn the schema.
 
 **Keep the script's stdout minimal — write detail to the JSON, not
 to stdout.** This matters more than it sounds. Repos with hundreds
@@ -218,66 +235,18 @@ for 20+ minutes after the inventory step specifically, while every
 other step completes in seconds. The fix is to keep stdout to a
 short summary the LLM can absorb cheaply.
 
-**Critical: the script must also compute schema groupings in
-memory and print them as part of the stdout summary.** Don't
-leave that work for Step 3 — Step 3 will then have to read
-`_inventory.json`, which on real repos is 100-200 KB and dumps
-huge context bloat. The script already has every file's columns
-in memory; group by sorted-column-tuple and print the groups
-directly. Step 3 reads the stdout groups, not the JSON.
+The bundled script's stdout summary is what you use for the Step 3
+grouping decision. It already includes:
 
-What stdout should look like (good):
+- Total file count, extensions breakdown, top-level directory
+  breakdown.
+- A `Schema groups` section listing each unique column-set group:
+  file count, example files, column names (truncated at 8),
+  row-count range, sheet names for XLSX.
 
-```
-Inventory: 144 tabular files, 1 shapefile.
-By extension: 109 CSV, 35 XLSX
-By top-level dir: Piemonte (110), Lombardia (12), EmiliaRomagna (24), root (4)
-
-Schema groups (6 total, sorted by file count):
-
-  Group A (109 files, CSV) — Piemonte per-well time series
-    Columns: ['date', 'time', 'wtd']
-    Example files: Piemonte/00100410001.csv, Piemonte/00100410002.csv
-    Row counts: ~8000-9000 each
-
-  Group B (12 files, XLSX 'MISURE' sheet) — Lombardia per-province
-    Columns: ['DATA', 'PROVINCIA', 'COMUNE', 'CODICE PUNTO',
-              'X_WGS84', 'Y_WGS84', ...]
-    Example files: Lombardia/Dati quantitativi Bergamo_2000_2021.xlsx
-
-  Group C (9 files, XLSX) — EmiliaRomagna Anagrafica (well registry)
-    Columns: ['Codice', 'Comune', 'Provincia', 'X', 'Y',
-              'Profondita', ...]
-    Example files: EmiliaRomagna/Anagrafica2012.xlsx
-
-  ... (more groups)
-
-Full inventory saved to: <SAGE_OUTPUT_DIR or /tmp>/_inventory.json
-(Reference only — do NOT read this for Step 3 grouping; use the
-groups printed above.)
-```
-
-What stdout should NOT look like (bad — per-file dump):
-
-```
-Inventorying: Piemonte/00100410001.csv
-  size=12345 cols=3 rows=8912 sample=[...]
-Inventorying: Piemonte/00100410002.csv
-  ... (200+ more lines)
-```
-
-And also bad — minimal stdout that forces the agent to read the JSON:
-
-```
-Inventory complete: 153 files. See _inventory.json.
-```
-
-(The agent then paginates the JSON, which is the antipattern.)
-
-**In Step 3, propose skills from the stdout groups directly.**
-Only read `_inventory.json` later (Step 5+) when building specific
-scripts and you need a particular file path or row count. Never
-paginate through it with `read_file`.
+**Step 3 reads that stdout summary, not `_inventory.json`.** The
+JSON is a reference for Step 5+ when build scripts need specific
+file paths. Never paginate the JSON with `read_file`.
 
 **The same rule applies to any follow-up exploration after the
 inventory.** If you need deeper context — reading the
