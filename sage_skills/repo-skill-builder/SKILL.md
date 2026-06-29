@@ -50,6 +50,18 @@ the binding contract.
    skill's Parquet caches in future `%%ask` cells and destroy the
    user's trust in the skill as the authoritative interface.
 
+5. **Step 4 is a HARD STOP between inventory and build.** After
+   running `inventory.py` and grouping the files into skill
+   candidates, you write the proposal to the user and **end your
+   turn**. Do NOT continue to write build scripts, do NOT create
+   Parquet files, do NOT write any `SKILL.md`. The user replies
+   in a follow-up `%%ask` cell with "yes" or edits, and ONLY THEN
+   do you proceed to Steps 5–9. Building without explicit user
+   approval defeats the entire point of this skill — the user
+   can no longer redirect grouping decisions (e.g., "actually split
+   that into 3 skills, not 1"). Every build observed without this
+   stop has produced a skill the user then had to manually rebuild.
+
 If your next action would violate any of these, **stop and re-plan**
 before taking it. The rest of this document elaborates on why; the
 rules above are the contract.
