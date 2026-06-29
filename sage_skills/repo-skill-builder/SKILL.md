@@ -161,6 +161,45 @@ edit the script and re-run. Do not add shell pipelines to
 Do not load the full data in this step — only enough to learn
 the schema (column names, dtypes, row count, 3-row sample).
 
+**Keep the script's stdout minimal — write detail to the JSON, not
+to stdout.** This matters more than it sounds. Repos with hundreds
+of tabular files produce inventory scripts that, if they print one
+line per file (path, size, columns, sample), dump 30–60 KB of text
+to stdout. That entire dump becomes the tool result returned to the
+LLM, which means the *next* LLM call's prompt is much bigger than
+any other step in the build. On NRP and other shared-GPU vLLM
+endpoints, prompt length scales response time superlinearly under
+KV-cache pressure — observed in field testing as the agent hanging
+for 20+ minutes after the inventory step specifically, while every
+other step completes in seconds. The fix is to keep stdout to a
+short summary the LLM can absorb cheaply.
+
+What stdout should look like (good):
+
+```
+Inventory complete: 153 tabular files, 1 shapefile.
+By extension: 145 CSV, 8 XLSX
+By directory: Piemonte (109), Lombardia (12), EmiliaRomagna (24), root (8)
+Wrote details to /tmp/repo-skills/<repo-name>/_inventory.json
+(Read that JSON for per-file metadata when grouping in Step 3.)
+```
+
+What stdout should NOT look like (bad — current default):
+
+```
+Inventorying: Piemonte/00100410001.csv ...
+  size=12345 cols=3 rows=8912 sample=[...]
+Inventorying: Piemonte/00100410002.csv ...
+  size=12346 cols=3 rows=8945 sample=[...]
+... (200+ more lines)
+```
+
+In Step 3, when you need to inspect specific files for the
+schema-fingerprint grouping, **read `_inventory.json`** rather
+than re-running the script or asking for the inventory contents
+via stdout. The JSON is the source of truth; stdout was only a
+short status receipt.
+
 **The same rule applies to any follow-up exploration after the
 inventory.** If you need deeper context — reading the
 subdirectory READMEs, sampling more rows from a few key files,
