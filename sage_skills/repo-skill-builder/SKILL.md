@@ -607,13 +607,78 @@ structure (same conventions as `arcgis-feature-skill-builder`):
    real and correct. Include comments showing what the user
    might do next with the returned DataFrame.
 
-### Step 9 — Confirm with a structured completion message
+### Step 9 — Verify, clean up the clone, then summarize
 
-After all SKILL.md files and Parquet caches are written, emit one
-final summary message to the user, using the same shape as the
-`arcgis-feature-skill-builder` completion message. The /tmp clone
-will be reclaimed automatically on pod recycle — no explicit
-cleanup needed.
+**Before** emitting any summary, do these three things, in order:
+
+#### 9a. Verify every skill's outputs exist on disk
+
+For each skill in the build, confirm both of these:
+
+```
+<SAGE_OUTPUT_DIR>/_skills_/<skill-name>/SKILL.md       (exists, non-empty)
+<SAGE_OUTPUT_DIR>/_skills_/<skill-name>/data/<skill-name>.parquet  (exists, non-empty)
+```
+
+If any are missing, the build is incomplete — fix the missing
+outputs and re-verify. **Do NOT proceed to cleanup until every
+proposed skill has both files on disk.** The cleanup step deletes
+the clone, which is the only fallback if a Parquet write failed.
+
+#### 9b. Delete the cloned repo
+
+**After verification passes, delete the cloned repo.** This is
+mandatory, not optional. Models clone to different locations
+depending on how they interpret the FILE ACCESS RULE — some land
+the clone in `/tmp/repo-skills/`, others in `SAGE_OUTPUT_DIR/`
+or under `~/work/`. **Wherever you cloned, delete that directory
+now.**
+
+Two real problems if the clone is left in place:
+
+1. **It competes with the skill in future `%%ask` cells.** When a
+   future query asks something like "compare Lombardia and Piemonte
+   well counts", the agent may discover the raw CSV/XLSX files in
+   the clone directory and query them directly — bypassing the
+   skill's clean Parquet caches. The user can't tell whether they
+   got data from the skill or from the raw clone. The skill must
+   be the **only** authoritative path to its data. Two paths to
+   the same data is worse than one slow path, because the user
+   loses trust in which they're getting.
+
+2. **It bloats persistent quota.** If the clone landed in
+   `SAGE_OUTPUT_DIR` or anywhere under `~/work/`, it's on a
+   persistent volume with a ~10 GB shared quota. A 500 MB repo
+   eats 5% of the user's quota for no benefit; the Parquet
+   caches are what they actually use.
+
+Run exactly the path you cloned into, no parent. Examples:
+
+```bash
+# If you cloned to /tmp/repo-skills/<repo-name>/:
+rm -rf /tmp/repo-skills/<repo-name>
+
+# If you cloned to <SAGE_OUTPUT_DIR>/<repo-name>/:
+rm -rf "$SAGE_OUTPUT_DIR/<repo-name>"
+```
+
+**Safety rules — read these before running `rm -rf`:**
+
+- Never `rm -rf $SAGE_OUTPUT_DIR` itself, or `~/work`, or any
+  ancestor of where you cloned. You delete **only** the specific
+  subdirectory you created when cloning.
+- Verify the path you're about to delete contains a `.git/`
+  subdirectory (proof it's the clone, not user data) before
+  running `rm -rf`. A quick `ls <path>/.git` check is cheap.
+- If you're uncertain about the clone path, list the candidate
+  directories first (`ls /tmp/repo-skills/ 2>/dev/null` and
+  `ls "$SAGE_OUTPUT_DIR" 2>/dev/null`) and confirm.
+
+#### 9c. Emit the structured summary
+
+After verification + cleanup, emit one final summary message to
+the user, using the same shape as the `arcgis-feature-skill-builder`
+completion message.
 
 **When you have built multiple skills, give every skill the same
 level of detail.** Do not compress later skills just because the
