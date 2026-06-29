@@ -26,17 +26,24 @@ the binding contract.
    only allowed pre-inventory action is reading the repo's top-level
    `README.md` (one tool call, optional).
 
-2. **One Python script file per phase, never `python -c` per file.**
+2. **One Python script per phase, never per-file actions.** This
+   includes `python -c` per file, `ls` per directory, and
+   **paginated `read_file` calls through large data files**.
    For enumeration, exploration, building, probing — write the
    script to a file with `write_file`, then `execute` it once.
-   Never run `python -c "<one-off>"` to check individual files.
-   That's the same antipattern as `ls`-per-directory, in different
-   clothing.
+   To extract specific info from a large JSON/dataset, write a
+   script that reads it and prints only the summary you need.
+   Per-page `read_file` on `_inventory.json` is the same antipattern
+   as `ls` per directory, in different clothing.
 
-3. **`inventory.py`'s stdout must be a brief summary (under ~1 KB).**
-   Per-file detail goes to `_inventory.json`, not stdout. Long
-   stdout makes the next LLM call slow on shared-GPU endpoints.
-   Read the JSON in Step 3 when you need per-file specifics.
+3. **`inventory.py` must compute and print the schema grouping in
+   its stdout summary.** Don't make the agent read `_inventory.json`
+   to figure out what files share schemas — the script already has
+   that information in memory. Print the groupings directly. The
+   stdout summary is what you use for the Step 3 proposal; the JSON
+   is just a reference if you later need specific file paths or
+   row counts. Total stdout should be a few hundred bytes to maybe
+   2 KB — never enumerate individual files in stdout.
 
 4. **After all skills are built and verified, delete the cloned repo.**
    Step 9b is mandatory. Leftover clone files compete with the
@@ -211,31 +218,66 @@ for 20+ minutes after the inventory step specifically, while every
 other step completes in seconds. The fix is to keep stdout to a
 short summary the LLM can absorb cheaply.
 
+**Critical: the script must also compute schema groupings in
+memory and print them as part of the stdout summary.** Don't
+leave that work for Step 3 — Step 3 will then have to read
+`_inventory.json`, which on real repos is 100-200 KB and dumps
+huge context bloat. The script already has every file's columns
+in memory; group by sorted-column-tuple and print the groups
+directly. Step 3 reads the stdout groups, not the JSON.
+
 What stdout should look like (good):
 
 ```
-Inventory complete: 153 tabular files, 1 shapefile.
-By extension: 145 CSV, 8 XLSX
-By directory: Piemonte (109), Lombardia (12), EmiliaRomagna (24), root (8)
-Wrote details to /tmp/repo-skills/<repo-name>/_inventory.json
-(Read that JSON for per-file metadata when grouping in Step 3.)
+Inventory: 144 tabular files, 1 shapefile.
+By extension: 109 CSV, 35 XLSX
+By top-level dir: Piemonte (110), Lombardia (12), EmiliaRomagna (24), root (4)
+
+Schema groups (6 total, sorted by file count):
+
+  Group A (109 files, CSV) — Piemonte per-well time series
+    Columns: ['date', 'time', 'wtd']
+    Example files: Piemonte/00100410001.csv, Piemonte/00100410002.csv
+    Row counts: ~8000-9000 each
+
+  Group B (12 files, XLSX 'MISURE' sheet) — Lombardia per-province
+    Columns: ['DATA', 'PROVINCIA', 'COMUNE', 'CODICE PUNTO',
+              'X_WGS84', 'Y_WGS84', ...]
+    Example files: Lombardia/Dati quantitativi Bergamo_2000_2021.xlsx
+
+  Group C (9 files, XLSX) — EmiliaRomagna Anagrafica (well registry)
+    Columns: ['Codice', 'Comune', 'Provincia', 'X', 'Y',
+              'Profondita', ...]
+    Example files: EmiliaRomagna/Anagrafica2012.xlsx
+
+  ... (more groups)
+
+Full inventory saved to: <SAGE_OUTPUT_DIR or /tmp>/_inventory.json
+(Reference only — do NOT read this for Step 3 grouping; use the
+groups printed above.)
 ```
 
-What stdout should NOT look like (bad — current default):
+What stdout should NOT look like (bad — per-file dump):
 
 ```
-Inventorying: Piemonte/00100410001.csv ...
+Inventorying: Piemonte/00100410001.csv
   size=12345 cols=3 rows=8912 sample=[...]
-Inventorying: Piemonte/00100410002.csv ...
-  size=12346 cols=3 rows=8945 sample=[...]
-... (200+ more lines)
+Inventorying: Piemonte/00100410002.csv
+  ... (200+ more lines)
 ```
 
-In Step 3, when you need to inspect specific files for the
-schema-fingerprint grouping, **read `_inventory.json`** rather
-than re-running the script or asking for the inventory contents
-via stdout. The JSON is the source of truth; stdout was only a
-short status receipt.
+And also bad — minimal stdout that forces the agent to read the JSON:
+
+```
+Inventory complete: 153 files. See _inventory.json.
+```
+
+(The agent then paginates the JSON, which is the antipattern.)
+
+**In Step 3, propose skills from the stdout groups directly.**
+Only read `_inventory.json` later (Step 5+) when building specific
+scripts and you need a particular file path or row count. Never
+paginate through it with `read_file`.
 
 **The same rule applies to any follow-up exploration after the
 inventory.** If you need deeper context — reading the
@@ -271,6 +313,16 @@ One script, one run, complete picture. Then you can group, propose,
 and STOP.
 
 ### Step 3 — Group files into skill candidates
+
+**Use the schema groups printed by `inventory.py` in Step 2.** The
+script already grouped files by schema fingerprint and printed the
+result in its stdout summary. Read that stdout, not `_inventory.json`.
+Do NOT paginate through `_inventory.json` with `read_file` to
+"see all the files" — the JSON is a reference for later steps;
+loading it into your context now defeats the entire point of
+keeping the inventory compact. If the script's stdout summary is
+missing the groupings, edit and re-run the script rather than
+working around it by reading the JSON.
 
 Group the files by **schema fingerprint** (their sorted column
 names). Files in the same group can be merged into one skill;
