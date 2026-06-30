@@ -293,6 +293,58 @@ like `explore_context.py` that:
 One script, one run, complete picture. Then you can group, propose,
 and STOP.
 
+**Mandatory robustness rules for any post-inventory script — these
+are the recurring failure modes observed across many builds:**
+
+1. **`pd.read_csv` does NOT accept an `errors=` parameter.** That's
+   a kwarg of `open()`, not `read_csv`. The correct kwarg is
+   `encoding_errors="replace"`. Using `errors=` raises
+   `TypeError: got unexpected keyword argument 'errors'`.
+
+2. **Always try utf-8 first, fall back to latin-1** when reading
+   CSVs from European or government sources. The fallback pattern:
+
+   ```python
+   def safe_read_csv(path, **kw):
+       for enc in ("utf-8", "latin-1"):
+           try:
+               return pd.read_csv(path, encoding=enc, **kw)
+           except UnicodeDecodeError:
+               continue
+       # last resort: utf-8 with replacement
+       return pd.read_csv(path, encoding="utf-8",
+                          encoding_errors="replace", **kw)
+   ```
+
+   Same pattern for `pd.read_excel` (no encoding arg, but wrap
+   in try/except `ParserError` / `UnicodeDecodeError` per file).
+
+3. **Wrap every per-file read in try/except.** Some files in any
+   repo will be malformed, truncated, or non-tabular despite the
+   extension. One bad file should not crash the script — print
+   the error and continue. Pattern:
+
+   ```python
+   for f in files:
+       try:
+           df = safe_read_csv(f, nrows=5)
+           print(f"{f.name}: {list(df.columns)}")
+       except Exception as e:
+           print(f"{f.name}: ERROR: {type(e).__name__}: {e}")
+   ```
+
+4. **Bound the script's stdout.** Same discipline as `inventory.py`:
+   if you're going to print READMEs (each potentially several KB),
+   truncate per-file to ~500 chars. If you're sampling rows from
+   many files, truncate per-file to 3-5 rows. Total stdout should
+   stay under ~20 KB. Long stdout slows the next LLM call on
+   shared-GPU endpoints (NRP especially) and risks the same
+   prompt-bloat hang `inventory.py` was redesigned to avoid.
+
+The bundled `inventory.py` (run in the previous step) already
+applies these patterns — your post-inventory script must apply
+them too.
+
 ### Step 3 — Group files into skill candidates
 
 **Use the schema groups printed by `inventory.py` in Step 2.** The
