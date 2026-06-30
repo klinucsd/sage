@@ -205,6 +205,48 @@ the rest), schema fingerprint grouping, and the correct compact
 stdout summary format. It also writes the full inventory to JSON
 at `<repo-dir>/_inventory.json` for reference.
 
+**`_inventory.json` schema (exact field names — do not guess).**
+If a Step 5+ build script needs to read this JSON to look up file
+paths, use these field names verbatim:
+
+```json
+{
+  "records": [
+    {
+      "rel_path":     "Piemonte/00100410001.csv",   // path relative to repo root
+      "ext":          ".csv",
+      "size_bytes":   12345,
+      "n_columns_total": 16,                         // true column count
+      "columns":      ["col1", "col2", ...],         // capped at 50 for wide files
+      "columns_truncated": true,                     // present only if capped
+      "dtypes":       {"col1": "object", ...},       // same cap as columns
+      "row_count":    8912,
+      "sample_rows":  [{...}, {...}, {...}],         // omitted for >50-column files
+      "sample_rows_skipped": "omitted: ...",         // present only if skipped
+      "_fingerprint": "<40-char sha1 hex>",          // schema-group identifier
+      "sheets":       [...],                         // XLSX only
+      "delimiter":    ",",                           // CSV/TSV only
+      "encoding":     "utf-8",                       // CSV/TSV only
+      "error":        "ParserError: ..."             // present only on read failure
+    },
+    ...
+  ]
+}
+```
+
+Common hallucinations the agent has produced in field testing — do
+**not** use these:
+
+- `inv["files"]` — wrong, use `inv["records"]`
+- `record["relpath"]` — wrong, use `record["rel_path"]`
+- `record["schema_fingerprint"]` — wrong, use `record["_fingerprint"]`
+- `record["path"]` — wrong, use `record["rel_path"]`
+
+Note that `dict.get("wrong_key", [])` returns the default silently;
+your script will appear to succeed with empty results. Sanity-check
+your script's first iteration: if `len(inv["records"])` is 0 on a
+real repo, you're reading the wrong key.
+
 Run it like this:
 
 ```bash
