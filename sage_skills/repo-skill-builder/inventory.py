@@ -27,6 +27,15 @@ from pathlib import Path
 TABULAR_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".parquet"}
 SKIP_DIRS = {".git", ".github", "__pycache__", ".ipynb_checkpoints"}
 
+# Caps on what we store per record in _inventory.json. The schema
+# fingerprint (used for grouping) is always computed from the FULL
+# column list — only the per-record JSON payload is capped, to keep
+# the file small enough that any accidental agent-side read doesn't
+# blow up its context window.
+MAX_COLS_STORED = 50         # store at most this many column names per file
+MAX_CELL_CHARS = 200         # truncate long string values in sample_rows
+INCLUDE_SAMPLE_IF_COLS_LE = 50  # skip sample_rows entirely if columns > this
+
 
 # ---------------------------------------------------------------------------
 # Per-file inspection
@@ -125,6 +134,51 @@ def _schema_fingerprint(cols):
     return tuple(sorted(str(c).lower().strip() for c in cols))
 
 
+def _cap_payload(entry):
+    """Apply size caps to the per-record payload.
+
+    Mutates `entry` in place. The full column count and the schema
+    fingerprint (computed elsewhere) are unaffected — only the JSON
+    payload is shrunk, to keep _inventory.json from ballooning on
+    wide-format files (e.g. CRU TS with 1400+ date columns).
+    """
+    cols = entry.get("columns") or []
+    n_cols = len(cols)
+    entry["n_columns_total"] = n_cols
+
+    # Cap stored column list and dtype dict
+    if n_cols > MAX_COLS_STORED:
+        entry["columns"] = list(cols[:MAX_COLS_STORED])
+        entry["columns_truncated"] = True
+        if "dtypes" in entry and isinstance(entry["dtypes"], dict):
+            kept = list(entry["dtypes"].items())[:MAX_COLS_STORED]
+            entry["dtypes"] = dict(kept)
+
+    # Drop sample_rows for very wide tables, truncate string cells otherwise
+    if "sample_rows" in entry:
+        if n_cols > INCLUDE_SAMPLE_IF_COLS_LE:
+            entry.pop("sample_rows", None)
+            entry["sample_rows_skipped"] = (
+                f"omitted: {n_cols} columns exceeds limit "
+                f"({INCLUDE_SAMPLE_IF_COLS_LE})"
+            )
+        else:
+            capped = []
+            for row in entry["sample_rows"]:
+                if isinstance(row, dict):
+                    capped.append({
+                        k: (v[:MAX_CELL_CHARS] + "…"
+                            if isinstance(v, str) and len(v) > MAX_CELL_CHARS
+                            else v)
+                        for k, v in row.items()
+                    })
+                else:
+                    capped.append(row)
+            entry["sample_rows"] = capped
+
+    return entry
+
+
 # ---------------------------------------------------------------------------
 # Main inventory walk
 # ---------------------------------------------------------------------------
@@ -156,6 +210,30 @@ def inventory_repo(repo_dir):
                 entry.update(_inspect_parquet(fp))
         except Exception as e:
             entry["error"] = f"{type(e).__name__}: {e}"
+        # Compute the schema fingerprint from the FULL column list before
+        # capping (the cap is for storage only; the fingerprint is what
+        # the stdout grouping depends on). Store as a SHA1 hex of the
+        # joined fingerprint rather than the full tuple itself — for
+        # wide-format files (1000+ columns) the raw tuple would defeat
+        # the per-record storage cap.
+        full_cols = entry.get("columns") or []
+        if full_cols:
+            import hashlib
+            fp_tuple = _schema_fingerprint(full_cols)
+            fp_str = "\x1f".join(fp_tuple)
+            entry["_fingerprint"] = hashlib.sha1(fp_str.encode()).hexdigest()
+            # Stash the actual tuple on the in-memory record (NOT in JSON)
+            # so print_summary can show real column names for the group.
+            entry["__fp_tuple"] = fp_tuple
+        else:
+            entry["_fingerprint"] = None
+            entry["__fp_tuple"] = None
+        # Cap the per-record payload before storing (keeps _inventory.json
+        # small enough that an accidental agent-side read doesn't bloat
+        # the conversation context — the stdout summary already has the
+        # actionable groupings, and Step 5+ build scripts that DO need
+        # full column lists should read the source file directly).
+        _cap_payload(entry)
         records.append(entry)
     return records
 
@@ -176,13 +254,18 @@ def print_summary(records, repo_dir, out_json):
         for r in records
     )
 
-    # group by schema fingerprint (error-bucket separate)
+    # group by schema fingerprint (error-bucket separate). Use the
+    # pre-computed _fingerprint hash from inventory_repo, which was
+    # built from the full column list before the storage cap was applied.
+    # The __fp_tuple (real column tuple, in-memory only) is used for
+    # display so we can show real column names even when the per-record
+    # `columns` field is truncated.
     groups = defaultdict(list)
     for r in records:
-        if r.get("error") or not r.get("columns"):
-            key = ("__ERROR__",)
+        if r.get("error") or not r.get("_fingerprint"):
+            key = "__ERROR__"
         else:
-            key = _schema_fingerprint(r["columns"])
+            key = r["_fingerprint"]
         groups[key].append(r)
 
     print(f"Inventory: {total} tabular files under {repo_dir}")
@@ -196,19 +279,24 @@ def print_summary(records, repo_dir, out_json):
         label = _group_label(idx)
         ext_str = Counter(f["ext"] for f in files).most_common(1)[0][0]
 
-        if fingerprint == ("__ERROR__",):
+        if fingerprint == "__ERROR__":
             print(f"\n  {label} ({len(files)} files) — files that could not be read")
             errs = list({f.get("error", "?") for f in files})[:3]
             print(f"    Errors observed: {errs}")
         else:
-            cols = list(files[0].get("columns", []))
+            # Use entry["columns"] for ORIGINAL CASING (post-cap, so it's
+            # truncated to first MAX_COLS_STORED for wide files — but the
+            # first 8 we display will always be present). n_columns_total
+            # is the real width (set by _cap_payload).
+            cols = list(files[0].get("columns") or [])
+            n_cols = files[0].get("n_columns_total") or len(cols)
             head = cols[:8]
-            extra = len(cols) - 8
+            extra = n_cols - 8
             cols_str = ", ".join(repr(c) for c in head)
             if extra > 0:
                 cols_str += f", ... (+{extra} more)"
             print(f"\n  {label} ({len(files)} files, {ext_str}) — "
-                  f"{len(cols)} columns")
+                  f"{n_cols} columns")
             print(f"    Columns: [{cols_str}]")
 
         examples = [f["rel_path"] for f in files[:3]]
@@ -259,10 +347,16 @@ def main(argv):
         traceback.print_exc()
         sys.exit(1)
 
+    # Run print_summary BEFORE stripping the in-memory-only __fp_tuple
+    # field, since the summary uses it for display.
+    print_summary(records, repo_dir, out_json)
+
+    # Strip in-memory-only fields before JSON serialization.
+    for r in records:
+        r.pop("__fp_tuple", None)
+
     out_json.parent.mkdir(parents=True, exist_ok=True)
     out_json.write_text(json.dumps({"records": records}, default=str, indent=2))
-
-    print_summary(records, repo_dir, out_json)
 
 
 if __name__ == "__main__":
