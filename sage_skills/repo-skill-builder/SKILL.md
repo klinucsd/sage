@@ -190,12 +190,8 @@ so you can refer back to it without re-scanning. Same scratch
 lifetime as the clone itself.
 
 **Use the canonical `inventory.py` bundled with this meta-skill.
-Do not write your own.** A canonical script is shipped alongside
-this `SKILL.md` at:
-
-```
-~/.deepagents/agent/skills/repo-skill-builder/inventory.py
-```
+Do not write your own.** The skill ships `inventory.py` next to
+this `SKILL.md`.
 
 That script handles all the things agent-written inventories have
 historically gotten wrong: per-pandas-version `read_csv` arg bugs,
@@ -247,10 +243,11 @@ your script will appear to succeed with empty results. Sanity-check
 your script's first iteration: if `len(inv["records"])` is 0 on a
 real repo, you're reading the wrong key.
 
-Run it like this:
+Run it like this — replace `/absolute/path/to/this/skill/directory`
+with the directory you read this `SKILL.md` from:
 
 ```bash
-python ~/.deepagents/agent/skills/repo-skill-builder/inventory.py \
+python /absolute/path/to/this/skill/directory/inventory.py \
        /tmp/repo-skills/<repo-name>
 ```
 

@@ -327,8 +327,7 @@ def print_summary(records, repo_dir, out_json):
 
 def main(argv):
     if len(argv) < 2:
-        print("Usage: python inventory.py <repo-dir> [output-json-path]",
-              file=sys.stderr)
+        print("Usage: python inventory.py <repo-dir>", file=sys.stderr)
         sys.exit(2)
 
     repo_dir = Path(argv[1]).resolve()
@@ -336,10 +335,17 @@ def main(argv):
         print(f"Error: not a directory: {repo_dir}", file=sys.stderr)
         sys.exit(2)
 
-    if len(argv) >= 3:
-        out_json = Path(argv[2]).resolve()
-    else:
-        out_json = repo_dir / "_inventory.json"
+    # If extra positional args slipped in — e.g. from `python ... 2>&1` being
+    # misparsed by a kernel shim that doesn't recognize `>&` as a shell
+    # operator, so tokens '2', '>&', '1' land here as argv — warn but ignore
+    # rather than treating them as an output path. Previously the script
+    # honored argv[2] as a custom output path, which caused JSON to be
+    # written to a file literally named "2" in cwd.
+    if len(argv) > 2:
+        print(f"Warning: ignoring unexpected extra args: {argv[2:]}",
+              file=sys.stderr)
+
+    out_json = repo_dir / "_inventory.json"
 
     try:
         records = inventory_repo(repo_dir)
