@@ -287,12 +287,17 @@ class KernelShellBackend(LocalShellBackend):
 
             _orig_stdout = sys.stdout
             _orig_stderr = sys.stderr
-            # Also redirect sys.__stdout__ / sys.__stderr__ — agent scripts
-            # sometimes write `print(..., file=sys.__stdout__)` to bypass
-            # capture and stream "progress" to the cell. We don't want that:
-            # execute() output must stay hidden from the notebook UI.
-            _orig_real_stdout = sys.__stdout__
-            _orig_real_stderr = sys.__stderr__
+            # Do NOT redirect sys.__stdout__ / sys.__stderr__. Inside a Jupyter
+            # kernel those references point to ipykernel.iostream.OutStream —
+            # a threaded object with a background flush thread. Replacing them
+            # with StringIO caused pandas/openpyxl to deadlock indefinitely
+            # after ~30 pd.read_excel calls (confirmed by bisection: script
+            # completes in 13s with the redirect removed, hangs forever with
+            # it in place). Some code path in the read loop references the
+            # original OutStream (directly or via a callback) and blocks when
+            # the object type changes underneath it. The prior comment about
+            # blocking agent `print(..., file=sys.__stdout__)` calls is fine
+            # to lose — that path was an edge case; deadlock was much worse.
 
             global _ACTIVE_CAPTURE
             _prev_capture = _ACTIVE_CAPTURE
@@ -300,8 +305,6 @@ class KernelShellBackend(LocalShellBackend):
             if compiled is not None:
                 sys.stdout = _stdout_buf
                 sys.stderr = _stderr_buf
-                sys.__stdout__ = _stdout_buf
-                sys.__stderr__ = _stderr_buf
                 _ACTIVE_CAPTURE = _captured_objs
                 try:
                     exec(compiled, user_ns)  # noqa: S102
@@ -311,8 +314,6 @@ class KernelShellBackend(LocalShellBackend):
                 finally:
                     sys.stdout = _orig_stdout
                     sys.stderr = _orig_stderr
-                    sys.__stdout__ = _orig_real_stdout
-                    sys.__stderr__ = _orig_real_stderr
                     _ACTIVE_CAPTURE = _prev_capture
 
             _stdout_txt = _stdout_buf.getvalue()
