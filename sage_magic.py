@@ -399,6 +399,23 @@ except ImportError:
     )
 
 # ---------------------------------------------------------------------------
+# Harness profile — register a null-object profile for the "openai" provider
+# so deepagents doesn't warn about "No harness profile matched" for our
+# OpenAI-compatible endpoints (NRP glm-*, ZAI glm-*, kimi, minimax, real
+# OpenAI GPT — all instantiated as ChatOpenAI, all report provider="openai").
+# An empty HarnessProfile() is a no-op with respect to agent behavior;
+# it exists solely to satisfy the registry lookup at
+# deepagents.profiles.harness.harness_profiles._get_harness_profile("openai")
+# so the "no match" branch is not exercised. Wrapped in try/except so older
+# deepagents versions without the harness-profile API still import cleanly.
+# ---------------------------------------------------------------------------
+try:
+    from deepagents import HarnessProfile, register_harness_profile
+    register_harness_profile("openai", HarnessProfile())
+except Exception:
+    pass
+
+# ---------------------------------------------------------------------------
 # Python 3.13 + nest_asyncio + ipykernel produce unavoidable cleanup noise:
 #   "Exception in callback Task.__step() / RuntimeError: cannot enter context"
 #   "Task was destroyed but it is pending!"
