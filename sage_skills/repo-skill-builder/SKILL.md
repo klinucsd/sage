@@ -2,7 +2,8 @@
 name: repo-skill-builder
 description: >-
   Build one or more ARGUS skills from a GitHub repository containing
-  CSV or Excel data files. Use when the user provides a github.com
+  tabular or geospatial data files (CSV, TSV, Excel, Parquet, or
+  GeoPackage). Use when the user provides a github.com
   URL and asks to build, create, or generate skills from the data
   in the repo. Two-phase workflow: first you enumerate the data
   files and propose a skill plan, then you STOP for the user's
@@ -61,6 +62,64 @@ the binding contract.
    can no longer redirect grouping decisions (e.g., "actually split
    that into 3 skills, not 1"). Every build observed without this
    stop has produced a skill the user then had to manually rebuild.
+
+6. **At most ONE post-inventory exploration script.** After
+   `inventory.py`, if you want more context — subdirectory READMEs,
+   deeper schema samples, join-key analysis — you may write ONE
+   additional script (e.g. `explore_context.py`) that batches
+   everything into a single run. Do NOT write a second exploration
+   script. Do NOT write `explore_deep.py`, `explore_full.py`,
+   `explore_full2.py`, etc. — those iterations chase perfection
+   instead of proposing. If your one exploration script's output
+   isn't crystal-clear, PROPOSE ANYWAY based on what you know.
+   Grouping decisions can be refined in Phase 2 after user approval.
+   Writing a second `explore_*.py` file after the first is a
+   symptom that you should already be at Step 4, not continuing to
+   explore.
+
+7. **Phase 2: your NEXT `write_file` MUST be a build script. Do NOT
+   verify data files first.** After the user approves your Phase 1
+   proposal, you have exactly two inputs — `_inventory.json`
+   (schemas + 3-row samples for every file) and your Phase 1
+   proposal (the reconciliation plan). That IS the plan. Write the
+   build script now. Do not verify your Phase 1 assumptions before
+   the first build attempt.
+
+   The following actions in Phase 2, BEFORE your first build script
+   has run, are rule violations. This list is exhaustive — do not
+   invent a category not listed here and claim it doesn't count:
+
+   - `python -c "..."` opening ANY XLSX/CSV/parquet/shapefile to
+     inspect columns, values, coordinate ranges, unique IDs, or
+     anything else. Even one such call is a violation. `python -c`
+     across many files ("let me just check each one") is the most
+     common form of this violation and produced the worst Phase 2
+     runs on record.
+   - `cat`, `head`, `tail`, `awk`, `sed`, `wc`, or any shell tool
+     applied to a data file.
+   - `read_file` on any data file. The only files you may `read_file`
+     in Phase 2 are: this `SKILL.md`, `_inventory.json`, the repo's
+     top-level `README.md`. Every other read is a violation.
+   - `write_file` of any script whose purpose is verification.
+     Names like `check_*.py`, `verify_*.py`, `explore_*.py`,
+     `inspect_*.py`, `sample_*.py`, or any other name signaling
+     "let me look at the data" are all forbidden. Your first
+     `write_file` in Phase 2 must be a build script (e.g.
+     `build_<skill-name>.py`) — nothing else.
+
+   All of these are the same anti-pattern: stalling before building.
+   They are dressed up as "just being careful" or "confirming an
+   assumption first," but every past Phase 2 that used them wasted
+   30+ tool calls before writing any real build code. The correct
+   response to uncertainty is to WRITE THE BUILD SCRIPT with your
+   best assumption from the inventory + proposal, run it, and let
+   the error tell you what's actually wrong.
+
+   The ONE exception applies AFTER a real build script has run and
+   errored on a specific issue (e.g. `KeyError: 'ColumnX'`): THEN
+   you may write one minimal script that verifies just that one
+   column across just the relevant files, then fix the build script.
+   Not before the first build attempt. Never.
 
 If your next action would violate any of these, **stop and re-plan**
 before taking it. The rest of this document elaborates on why; the
@@ -168,22 +227,28 @@ intent. That's a focused two-call action. Do not let it expand
 into directory listings.
 
 Walk the repo tree and collect every `.csv`, `.tsv`, `.xlsx`,
-`.xls`, and `.parquet` file. Skip anything obviously not data:
+`.xls`, `.parquet`, and `.gpkg` file. Skip anything obviously not
+data:
 
 - README.md, LICENSE, CITATION.cff, .gitignore, .gitattributes
 - Notebooks, Python source, configuration files
 - Figures, images
 - Files inside `.git/` or hidden directories
 
-For each tabular file, capture:
+For each tabular / geospatial file, capture:
 
 - Relative path
 - Size on disk
 - For CSV/TSV: detected delimiter, encoding, header row
-- Column names (sorted) — this is the **schema fingerprint**
+- For GPKG: layer names (analogous to XLSX sheets), geometry type,
+  CRS (loaded via geopandas)
+- Column names (sorted) — this is the **schema fingerprint**;
+  for GPKG the geometry column is appended last
 - Approximate row count (for CSV: line count; for XLSX: from
-  metadata or by sampling)
+  metadata or by sampling; for GPKG: from pyogrio metadata)
 - A 3-row sample of the data, so you can sanity-check types
+  (geometry column is excluded from GPKG samples to keep the
+  payload small)
 
 Save this catalog to `/tmp/repo-skills/<repo-name>/_inventory.json`
 so you can refer back to it without re-scanning. Same scratch
@@ -196,7 +261,8 @@ this `SKILL.md`.
 That script handles all the things agent-written inventories have
 historically gotten wrong: per-pandas-version `read_csv` arg bugs,
 encoding fallbacks (utf-8 → latin-1), Excel sheet enumeration,
-parquet schema reads, error isolation (one bad file doesn't crash
+parquet schema reads, GPKG layer enumeration + CRS/geometry-type
+capture via geopandas, error isolation (one bad file doesn't crash
 the rest), schema fingerprint grouping, and the correct compact
 stdout summary format. It also writes the full inventory to JSON
 at `<repo-dir>/_inventory.json` for reference.
@@ -223,6 +289,9 @@ paths, use these field names verbatim:
       "sheets":       [...],                         // XLSX only
       "delimiter":    ",",                           // CSV/TSV only
       "encoding":     "utf-8",                       // CSV/TSV only
+      "layers":       ["layer_name", ...],           // GPKG only
+      "geometry_type":"MultiPolygon",                // GPKG only (Polygon/Point/LineString/etc.)
+      "crs":          "EPSG:4326",                   // GPKG only
       "error":        "ParserError: ..."             // present only on read failure
     },
     ...
@@ -243,13 +312,18 @@ your script will appear to succeed with empty results. Sanity-check
 your script's first iteration: if `len(inv["records"])` is 0 on a
 real repo, you're reading the wrong key.
 
-Run it like this — replace `/absolute/path/to/this/skill/directory`
-with the directory you read this `SKILL.md` from:
+Run it using the directory you just read this `SKILL.md` from —
+do not write your own script. Under the ARGUS install layout the
+command is:
 
 ```bash
-python /absolute/path/to/this/skill/directory/inventory.py \
+python /home/jovyan/.deepagents/agent/skills/repo-skill-builder/inventory.py \
        /tmp/repo-skills/<repo-name>
 ```
+
+If you read this `SKILL.md` from a different location (Claude
+Code, Codex, or another runtime), substitute your runtime's
+actual skill directory for the prefix.
 
 No editing, no copying, no rewriting. If the bundled script
 errors on a specific file, the error is captured per-file in the
@@ -442,7 +516,7 @@ Your proposal message should have this shape:
 I've inspected <repo-name>. Here's what I found and what I propose:
 
 Repo: <repo url>
-Files scanned: <N> CSV/Excel files, <total size>
+Files scanned: <N> data files, <total size> (breakdown: <N> CSV/TSV, <N> XLSX, <N> Parquet, <N> GPKG — omit categories with 0 files)
 
 Proposed skills:
 
@@ -580,6 +654,34 @@ pip install --user pyarrow fastparquet
 ```
 (Always `--user`; never `pip install` without it. ARGUS's system
 prompt enforces this.)
+
+**Loading GPKG (GeoPackage) sources.** Use `geopandas.read_file`.
+A `.gpkg` file may hold multiple named layers (see the `layers`
+field in `_inventory.json`); specify one explicitly:
+
+```python
+import geopandas as gpd
+
+# Single-layer file: layer argument is optional
+gdf = gpd.read_file("data.gpkg")
+
+# Multi-layer file: pass the layer name from _inventory.json
+gdf = gpd.read_file("data.gpkg", layer="layer_name")
+```
+
+The `crs` and `geometry_type` fields on each GPKG record tell you
+whether reprojection is needed before the merge. If skills combine
+multiple GPKG sources with different CRSs, reproject them to a
+common CRS (typically `EPSG:4326`) before concatenating:
+
+```python
+gdf = gdf.to_crs("EPSG:4326")
+```
+
+Persist merged geospatial data as a GeoParquet
+(`gdf.to_parquet(out_path)` on modern geopandas) or write the
+geometries as WKT/WKB in a regular parquet — whichever your
+skill's `load_data()` helper is prepared to consume.
 
 **Performance — vectorize, never iterrows() on >100K rows.** For
 any source with >100,000 rows (timeseries, sensor data, large

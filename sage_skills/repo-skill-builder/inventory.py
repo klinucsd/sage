@@ -24,7 +24,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 
-TABULAR_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".parquet"}
+TABULAR_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".gpkg"}
 SKIP_DIRS = {".git", ".github", "__pycache__", ".ipynb_checkpoints"}
 
 # Caps on what we store per record in _inventory.json. The schema
@@ -125,6 +125,73 @@ def _inspect_parquet(fp):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def _inspect_gpkg(fp):
+    """List layers, then inspect the first layer for schema + sample.
+
+    A GeoPackage (.gpkg) is a SQLite container that may hold multiple
+    named layers, each with its own attribute columns plus a geometry.
+    Layers are analogous to sheets in an XLSX file — enumerated in the
+    `layers` field so a build script can iterate over them if needed.
+    The geometry column is appended last in the reported `columns` list
+    but excluded from `sample_rows` (WKT strings would blow past the
+    per-cell cap and add no useful signal).
+    """
+    try:
+        import geopandas as gpd
+
+        # Enumerate layers. Newer geopandas has list_layers; fall back
+        # through pyogrio and fiona for older installs.
+        try:
+            layers = list(gpd.list_layers(fp)["name"])
+        except AttributeError:
+            try:
+                import pyogrio
+                layers = [row[0] for row in pyogrio.list_layers(str(fp))]
+            except ImportError:
+                import fiona
+                layers = list(fiona.listlayers(str(fp)))
+        if not layers:
+            return {"error": "no layers found in gpkg"}
+
+        # Read a small sample from the first layer. `rows=` requires
+        # geopandas 0.14+; fall back to head() on the full read for
+        # older versions (slow on huge layers but correct).
+        try:
+            gdf = gpd.read_file(fp, layer=layers[0], rows=5)
+        except TypeError:
+            gdf = gpd.read_file(fp, layer=layers[0]).head(5)
+
+        geom_col = gdf.geometry.name
+        attr_cols = [c for c in gdf.columns if c != geom_col]
+        cols = attr_cols + [geom_col]
+        dtypes = {str(c): str(gdf[c].dtype) for c in cols}
+        sample = gdf[attr_cols].head(3).to_dict(orient="records")
+
+        result = {
+            "layers": layers,
+            "columns": [str(c) for c in cols],
+            "dtypes": dtypes,
+            "sample_rows": sample,
+            "geometry_type": (str(gdf.geometry.geom_type.iloc[0])
+                              if len(gdf) else None),
+            "crs": str(gdf.crs) if gdf.crs else None,
+        }
+
+        # Cheap row-count via pyogrio metadata read (no data load); skip
+        # silently if pyogrio isn't available.
+        try:
+            import pyogrio
+            info = pyogrio.read_info(str(fp), layer=layers[0])
+            if info.get("features") is not None:
+                result["row_count"] = int(info["features"])
+        except Exception:
+            pass
+
+        return result
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 # ---------------------------------------------------------------------------
 # Schema fingerprint & grouping
 # ---------------------------------------------------------------------------
@@ -208,6 +275,8 @@ def inventory_repo(repo_dir):
                 entry.update(_inspect_excel(fp))
             elif ext == ".parquet":
                 entry.update(_inspect_parquet(fp))
+            elif ext == ".gpkg":
+                entry.update(_inspect_gpkg(fp))
         except Exception as e:
             entry["error"] = f"{type(e).__name__}: {e}"
         # Compute the schema fingerprint from the FULL column list before
