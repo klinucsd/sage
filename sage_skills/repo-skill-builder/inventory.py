@@ -24,7 +24,8 @@ from collections import Counter, defaultdict
 from pathlib import Path
 
 
-TABULAR_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".gpkg"}
+TABULAR_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".gpkg",
+                ".rdata", ".rda", ".rds"}
 SKIP_DIRS = {".git", ".github", "__pycache__", ".ipynb_checkpoints"}
 
 # Caps on what we store per record in _inventory.json. The schema
@@ -125,6 +126,53 @@ def _inspect_parquet(fp):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+def _inspect_rdata(fp):
+    """Read R serialization (.RData / .rda / .rds) via pyreadr; inspect
+    the first DataFrame object.
+
+    An .RData / .rda file (from R's `save()`) may hold multiple named
+    objects — analogous to XLSX sheets or GPKG layers. An .rds file
+    (from `saveRDS()`) holds a single unnamed object. In both cases,
+    non-DataFrame R objects (lists, vectors, models) are noted in the
+    `objects` field but not further inspected — pyreadr returns those
+    as unsupported types.
+    """
+    try:
+        import pyreadr
+        result = pyreadr.read_r(str(fp))
+        keys = list(result.keys())
+        if not keys:
+            return {"error": "no R objects in file"}
+        # Sentinel: use a separate found flag, since pyreadr uses `None`
+        # as a legitimate key for saveRDS output — `first_df_key is None`
+        # can't distinguish "not found" from "found with key=None".
+        found = False
+        first_df_key = None
+        for k, v in result.items():
+            if hasattr(v, "columns"):
+                first_df_key = k
+                found = True
+                break
+        # Emit stable string names ('<unnamed>' for the None key that
+        # pyreadr uses for saveRDS output).
+        object_names = [str(k) if k is not None else "<unnamed>" for k in keys]
+        if not found:
+            return {
+                "objects": object_names,
+                "error": "no DataFrame among R objects (only non-tabular types)",
+            }
+        df = result[first_df_key]
+        return {
+            "objects": object_names,
+            "columns": [str(c) for c in df.columns],
+            "dtypes": {str(c): str(df[c].dtype) for c in df.columns},
+            "row_count": len(df),
+            "sample_rows": df.head(3).to_dict(orient="records"),
+        }
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 def _inspect_gpkg(fp):
     """List layers, then inspect the first layer for schema + sample.
 
@@ -199,6 +247,83 @@ def _inspect_gpkg(fp):
 def _schema_fingerprint(cols):
     """Sorted, lowercased, stripped column-name tuple."""
     return tuple(sorted(str(c).lower().strip() for c in cols))
+
+
+# Fields that describe the *schema* of a group of files that share a
+# fingerprint. Lifted from the first-encountered record to the group
+# object during regrouping.
+_GROUP_LEVEL_FIELDS = (
+    "columns", "dtypes", "sample_rows",
+    "n_columns_total", "columns_truncated", "sample_rows_skipped",
+)
+
+# Fields that stay on the per-file object. Everything not in
+# _GROUP_LEVEL_FIELDS is per-file, including format-specific
+# metadata that may legitimately vary within a fingerprint group
+# (delimiter/encoding on CSV, layers/geometry_type/crs on GPKG,
+# objects on RData) plus rel_path/ext/size_bytes/row_count/error.
+
+def _regroup_records(records):
+    """Pivot a flat records list into `{groups: [...], unreadable_files: [...]}`.
+
+    For a repo with 3,000+ near-identical files (e.g. per-species
+    RData sweeps), the class-level schema fields are identical across
+    all files sharing a fingerprint. Emitting them per-file bloats
+    `_inventory.json` by ~10x for no useful signal. This function
+    lifts those fields to a group-level object and puts per-file
+    metadata under `group.files`.
+
+    Records without a fingerprint (unreadable files, or files that
+    lack any column list) are collected in `unreadable_files` — they
+    still record `rel_path`, `ext`, `size_bytes`, and `error`, but
+    are not attempts at schema grouping.
+    """
+    groups_by_fp: dict = {}
+    unreadable: list = []
+
+    for r in records:
+        fp = r.get("_fingerprint")
+        if fp is None:
+            # Non-tabular / read failure — keep minimal info in a
+            # separate bucket. `error` is the useful field here.
+            unreadable.append({
+                "rel_path": r.get("rel_path"),
+                "ext": r.get("ext"),
+                "size_bytes": r.get("size_bytes"),
+                "error": r.get("error"),
+            })
+            continue
+
+        if fp not in groups_by_fp:
+            # First record with this fingerprint — this record's
+            # schema fields become the group's schema. Lift them out.
+            group = {"_fingerprint": fp}
+            for k in _GROUP_LEVEL_FIELDS:
+                if k in r:
+                    group[k] = r[k]
+            group["files"] = []
+            groups_by_fp[fp] = group
+
+        # Build the per-file object: everything from the record EXCEPT
+        # the group-level fields and the fingerprint (redundant with
+        # the parent group).
+        file_obj = {
+            k: v for k, v in r.items()
+            if k not in _GROUP_LEVEL_FIELDS and k != "_fingerprint"
+        }
+        groups_by_fp[fp]["files"].append(file_obj)
+
+    # Emit groups largest-first for readability.
+    groups = sorted(groups_by_fp.values(),
+                    key=lambda g: -len(g.get("files", [])))
+    # Add convenience counters.
+    for g in groups:
+        g["n_files"] = len(g["files"])
+        exts_seen = sorted({f.get("ext") for f in g["files"] if f.get("ext")})
+        if exts_seen:
+            g["exts"] = exts_seen
+
+    return {"groups": groups, "unreadable_files": unreadable}
 
 
 def _cap_payload(entry):
@@ -277,6 +402,8 @@ def inventory_repo(repo_dir):
                 entry.update(_inspect_parquet(fp))
             elif ext == ".gpkg":
                 entry.update(_inspect_gpkg(fp))
+            elif ext in {".rdata", ".rda", ".rds"}:
+                entry.update(_inspect_rdata(fp))
         except Exception as e:
             entry["error"] = f"{type(e).__name__}: {e}"
         # Compute the schema fingerprint from the FULL column list before
@@ -430,8 +557,17 @@ def main(argv):
     for r in records:
         r.pop("__fp_tuple", None)
 
+    # Pivot the flat records list into a groups-first structure.
+    # Files that share a schema fingerprint are collected under one
+    # `group` object, with the class-level schema fields (columns,
+    # dtypes, sample_rows, n_columns_total) lifted to the group. Files
+    # without a fingerprint (read failures, non-tabular) go in
+    # `unreadable_files`. This keeps `_inventory.json` small on repos
+    # with many near-identical files (e.g. per-species RData sweeps).
+    payload = _regroup_records(records)
+
     out_json.parent.mkdir(parents=True, exist_ok=True)
-    out_json.write_text(json.dumps({"records": records}, default=str, indent=2))
+    out_json.write_text(json.dumps(payload, default=str, indent=2))
 
 
 if __name__ == "__main__":

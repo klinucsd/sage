@@ -2,8 +2,9 @@
 name: repo-skill-builder
 description: >-
   Build one or more ARGUS skills from a GitHub repository containing
-  tabular or geospatial data files (CSV, TSV, Excel, Parquet, or
-  GeoPackage). Use when the user provides a github.com
+  tabular, geospatial, or R-serialized data files (CSV, TSV, Excel,
+  Parquet, GeoPackage, RData / rda / rds). Use when the user provides
+  a github.com
   URL and asks to build, create, or generate skills from the data
   in the repo. Two-phase workflow: first you enumerate the data
   files and propose a skill plan, then you STOP for the user's
@@ -227,8 +228,8 @@ intent. That's a focused two-call action. Do not let it expand
 into directory listings.
 
 Walk the repo tree and collect every `.csv`, `.tsv`, `.xlsx`,
-`.xls`, `.parquet`, and `.gpkg` file. Skip anything obviously not
-data:
+`.xls`, `.parquet`, `.gpkg`, `.RData` (or `.rda`), and `.rds`
+file. Skip anything obviously not data:
 
 - README.md, LICENSE, CITATION.cff, .gitignore, .gitattributes
 - Notebooks, Python source, configuration files
@@ -242,10 +243,13 @@ For each tabular / geospatial file, capture:
 - For CSV/TSV: detected delimiter, encoding, header row
 - For GPKG: layer names (analogous to XLSX sheets), geometry type,
   CRS (loaded via geopandas)
+- For RData / rds: R object names (analogous to XLSX sheets), read
+  via pyreadr; only DataFrame objects get schema-inspected
 - Column names (sorted) — this is the **schema fingerprint**;
   for GPKG the geometry column is appended last
 - Approximate row count (for CSV: line count; for XLSX: from
-  metadata or by sampling; for GPKG: from pyogrio metadata)
+  metadata or by sampling; for GPKG: from pyogrio metadata; for
+  RData/rds: `len(df)` after pyreadr read)
 - A 3-row sample of the data, so you can sanity-check types
   (geometry column is excluded from GPKG samples to keep the
   payload small)
@@ -262,54 +266,95 @@ That script handles all the things agent-written inventories have
 historically gotten wrong: per-pandas-version `read_csv` arg bugs,
 encoding fallbacks (utf-8 → latin-1), Excel sheet enumeration,
 parquet schema reads, GPKG layer enumeration + CRS/geometry-type
-capture via geopandas, error isolation (one bad file doesn't crash
-the rest), schema fingerprint grouping, and the correct compact
-stdout summary format. It also writes the full inventory to JSON
-at `<repo-dir>/_inventory.json` for reference.
+capture via geopandas, RData/rds DataFrame extraction via pyreadr,
+error isolation (one bad file doesn't crash the rest), schema
+fingerprint grouping, and the correct compact stdout summary
+format. It also writes the full inventory to JSON at
+`<repo-dir>/_inventory.json` for reference.
 
 **`_inventory.json` schema (exact field names — do not guess).**
-If a Step 5+ build script needs to read this JSON to look up file
-paths, use these field names verbatim:
+The JSON is **groups-first**: files that share a schema fingerprint
+are collected under one group object, with the class-level schema
+(columns, dtypes, sample_rows) lifted to the group. This keeps the
+file small on repos with many near-identical inputs (e.g. per-species
+RData sweeps that produce thousands of same-schema files).
 
 ```json
 {
-  "records": [
+  "groups": [
     {
-      "rel_path":     "Piemonte/00100410001.csv",   // path relative to repo root
-      "ext":          ".csv",
-      "size_bytes":   12345,
-      "n_columns_total": 16,                         // true column count
-      "columns":      ["col1", "col2", ...],         // capped at 50 for wide files
-      "columns_truncated": true,                     // present only if capped
-      "dtypes":       {"col1": "object", ...},       // same cap as columns
-      "row_count":    8912,
-      "sample_rows":  [{...}, {...}, {...}],         // omitted for >50-column files
-      "sample_rows_skipped": "omitted: ...",         // present only if skipped
-      "_fingerprint": "<40-char sha1 hex>",          // schema-group identifier
-      "sheets":       [...],                         // XLSX only
-      "delimiter":    ",",                           // CSV/TSV only
-      "encoding":     "utf-8",                       // CSV/TSV only
-      "layers":       ["layer_name", ...],           // GPKG only
-      "geometry_type":"MultiPolygon",                // GPKG only (Polygon/Point/LineString/etc.)
-      "crs":          "EPSG:4326",                   // GPKG only
-      "error":        "ParserError: ..."             // present only on read failure
+      "_fingerprint":     "<40-char sha1 hex>",          // schema-group identifier
+      "n_files":          796,                            // convenience: len(files)
+      "exts":             [".rdata"],                     // sorted set of extensions in the group
+      "n_columns_total":  16,                             // true column count (may exceed len(columns))
+      "columns":          ["col1", "col2", ...],          // capped at 50 for wide files
+      "columns_truncated": true,                          // present only if capped
+      "dtypes":           {"col1": "object", ...},        // same cap as columns
+      "sample_rows":      [{...}, {...}, {...}],          // 3 rows from a representative file; omitted for >50-column files
+      "sample_rows_skipped": "omitted: ...",              // present only if sample was skipped
+      "files": [
+        {
+          "rel_path":     "Piemonte/00100410001.csv",     // path relative to repo root
+          "ext":          ".csv",
+          "size_bytes":   12345,
+          "row_count":    8912,
+          "delimiter":    ",",                            // CSV/TSV only
+          "encoding":     "utf-8",                        // CSV/TSV only
+          "sheets":       [...],                          // XLSX only
+          "layers":       ["layer_name", ...],            // GPKG only
+          "geometry_type":"MultiPolygon",                 // GPKG only (Polygon/Point/LineString/etc.)
+          "crs":          "EPSG:4326",                    // GPKG only
+          "objects":      ["<unnamed>", "df1", ...]       // RData/rda/rds only — R object names
+        },
+        ...
+      ]
+    },
+    ...
+  ],
+  "unreadable_files": [
+    {
+      "rel_path":   "some/file.dat",
+      "ext":        ".dat",
+      "size_bytes": 456,
+      "error":      "ParserError: ..."
     },
     ...
   ]
 }
 ```
 
+**How to look things up:**
+
+- Every file's row_count / rel_path / ext lives on the per-file
+  object inside `group["files"]`.
+- The schema (columns, dtypes, a 3-row sample) is on the parent
+  group and applies to every file in `group["files"]`.
+- To iterate every file in the repo:
+  ```python
+  for g in inv["groups"]:
+      for f in g["files"]:
+          # f["rel_path"], f["ext"], f["row_count"], ...
+  ```
+- To find files matching a specific schema, filter `groups` by
+  `_fingerprint`, columns, or presence of a specific column — then
+  iterate that group's `files` list.
+- Files that couldn't be inspected are in `unreadable_files`, not
+  in any group.
+
 Common hallucinations the agent has produced in field testing — do
 **not** use these:
 
-- `inv["files"]` — wrong, use `inv["records"]`
-- `record["relpath"]` — wrong, use `record["rel_path"]`
-- `record["schema_fingerprint"]` — wrong, use `record["_fingerprint"]`
-- `record["path"]` — wrong, use `record["rel_path"]`
+- `inv["records"]` — wrong, this used to exist but now the top-level
+  keys are `groups` and `unreadable_files`.
+- `inv["files"]` — wrong; there is no top-level `files` key.
+- `group["fingerprint"]` — wrong, use `group["_fingerprint"]`.
+- `file["relpath"]` / `file["path"]` — wrong, use `file["rel_path"]`.
+- Reading schema off individual `file` objects — wrong, schema lives
+  on the parent `group`.
 
 Note that `dict.get("wrong_key", [])` returns the default silently;
 your script will appear to succeed with empty results. Sanity-check
-your script's first iteration: if `len(inv["records"])` is 0 on a
+your script's first iteration: if `len(inv["groups"])` is 0 on a
 real repo, you're reading the wrong key.
 
 Run it using the directory you just read this `SKILL.md` from —
@@ -654,6 +699,30 @@ pip install --user pyarrow fastparquet
 ```
 (Always `--user`; never `pip install` without it. ARGUS's system
 prompt enforces this.)
+
+**Loading R serialization sources (`.RData` / `.rda` / `.rds`).**
+Use `pyreadr`. An `.RData` file (from R's `save()`) may hold
+multiple named objects; an `.rds` file (from `saveRDS()`) holds a
+single unnamed object. See the `objects` field in `_inventory.json`
+for the object names in each file.
+
+```python
+import pyreadr
+
+result = pyreadr.read_r("data.RData")
+# result is a dict; keys are object names (or None for saveRDS)
+for name, df in result.items():
+    if df is not None and hasattr(df, "columns"):
+        # df is a pandas DataFrame; use as normal
+        ...
+```
+
+Non-DataFrame R objects (lists, vectors, model fits) show up as
+unsupported types and are skipped by the inventory. If `pyreadr`
+isn't installed:
+```
+pip install --user pyreadr
+```
 
 **Loading GPKG (GeoPackage) sources.** Use `geopandas.read_file`.
 A `.gpkg` file may hold multiple named layers (see the `layers`
