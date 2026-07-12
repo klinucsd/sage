@@ -813,10 +813,25 @@ Altering it to be unique.` on every read. Fix: rename before write.
 
 ```python
 # BEFORE gdf.to_file(...) for GPKG output:
+def _free_name(base, existing):
+    """Return `base` if unused, else `base_2`, `base_3`, ..."""
+    if base not in existing:
+        return base
+    i = 2
+    while f"{base}_{i}" in existing:
+        i += 1
+    return f"{base}_{i}"
+
 for id_col in ("id", "fid", "feature_id", "FID"):
     if id_col in gdf.columns and gdf[id_col].duplicated().any():
-        gdf = gdf.rename(columns={id_col: f"source_{id_col}"})
+        new_name = _free_name(f"source_{id_col}", set(gdf.columns))
+        gdf = gdf.rename(columns={id_col: new_name})
 ```
+
+The `_free_name` helper prevents a collision if the source repo
+already has a column called `source_id` (which would silently
+overwrite that data on rename). If both `source_id` and
+`source_id_2` are already taken, it picks `source_id_3`, and so on.
 
 Update the SKILL.md's `## Fields` table to reflect any renames.
 Note in the description or the field's row that this column preserves
