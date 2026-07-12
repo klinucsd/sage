@@ -780,6 +780,51 @@ import geopandas as gpd
 gdf = gpd.read_file(gpkg_path)
 ```
 
+**Two write-time gotchas — apply BEFORE `to_file` for GPKG.** Both
+of these appear as warnings on every `load_data()` call if the
+build script skips them. The data still loads correctly, but the
+warnings clutter output and undermine user trust.
+
+**Gotcha 1 — cast object columns to `string` to avoid OGR type
+warnings.** If a source file uses OGR's native Time / Date / Binary
+types (common in GeoJSON — e.g. a `local_time` field stored as
+`OFTTime`), the type carries into the GPKG. pyogrio can't map those
+to native pandas dtypes and emits `Skipping field <name>: unsupported
+OGR type: 10` on every read. Fix: cast every non-geometry object
+column to pandas `string` before writing.
+
+```python
+# BEFORE gdf.to_file(...) for GPKG output:
+geom_col = gdf.geometry.name
+for col in gdf.columns:
+    if col == geom_col:
+        continue
+    if gdf[col].dtype == "object":
+        gdf[col] = gdf[col].astype("string")
+```
+
+**Gotcha 2 — rename non-unique `id` / `fid` columns to `source_id`
+before writing.** GPKG treats any column named `id`, `fid`,
+`feature_id`, or `FID` as the **feature ID (FID)**, which must be
+unique. If your source has a non-unique `id` (e.g. a per-batch row
+number that restarts), GDAL will silently renumber on write, and
+pyogrio warns `Several features with id = N have been found.
+Altering it to be unique.` on every read. Fix: rename before write.
+
+```python
+# BEFORE gdf.to_file(...) for GPKG output:
+for id_col in ("id", "fid", "feature_id", "FID"):
+    if id_col in gdf.columns and gdf[id_col].duplicated().any():
+        gdf = gdf.rename(columns={id_col: f"source_{id_col}"})
+```
+
+Update the SKILL.md's `## Fields` table to reflect any renames.
+Note in the description or the field's row that this column preserves
+the source's non-unique identifier — the actual per-record unique
+key should be documented separately (e.g. a hash column, a composite
+key, or "no per-record unique key exists — use the geometry +
+timestamp").
+
 The `load_data()` helper inside the generated `SKILL.md` (see
 Step 8) uses `gpd.read_file(path)` when the skill's data file ends
 in `.gpkg` — no fastparquet workaround needed, no dtype coercion.
