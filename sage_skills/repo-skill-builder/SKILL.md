@@ -3,8 +3,8 @@ name: repo-skill-builder
 description: >-
   Build one or more ARGUS skills from a GitHub repository containing
   tabular, geospatial, or R-serialized data files (CSV, TSV, Excel,
-  Parquet, GeoPackage, RData / rda / rds). Use when the user provides
-  a github.com
+  Parquet, GeoPackage, GeoJSON, RData / rda / rds). Use when the user
+  provides a github.com
   URL and asks to build, create, or generate skills from the data
   in the repo. Two-phase workflow: first you enumerate the data
   files and propose a skill plan, then you STOP for the user's
@@ -156,7 +156,9 @@ each containing:
 - `SKILL.md` — the agent-readable skill descriptor (frontmatter +
   body).
 - `data/<skill-name>.parquet` — the cleaned, merged data the skill
-  queries.
+  queries. For **spatial skills** (skills whose data has a geometry
+  column, e.g. built from GPKG or GeoJSON inputs), write
+  `data/<skill-name>.gpkg` instead — see Step 5.
 
 The skills are **local-only**, written to the notebook's
 per-notebook scratch folder. They are NOT installed into the
@@ -228,8 +230,8 @@ intent. That's a focused two-call action. Do not let it expand
 into directory listings.
 
 Walk the repo tree and collect every `.csv`, `.tsv`, `.xlsx`,
-`.xls`, `.parquet`, `.gpkg`, `.RData` (or `.rda`), and `.rds`
-file. Skip anything obviously not data:
+`.xls`, `.parquet`, `.gpkg`, `.geojson`, `.RData` (or `.rda`), and
+`.rds` file. Skip anything obviously not data:
 
 - README.md, LICENSE, CITATION.cff, .gitignore, .gitattributes
 - Notebooks, Python source, configuration files
@@ -243,6 +245,8 @@ For each tabular / geospatial file, capture:
 - For CSV/TSV: detected delimiter, encoding, header row
 - For GPKG: layer names (analogous to XLSX sheets), geometry type,
   CRS (loaded via geopandas)
+- For GeoJSON: geometry type, CRS, feature count (loaded via
+  geopandas; single feature collection, no layers)
 - For RData / rds: R object names (analogous to XLSX sheets), read
   via pyreadr; only DataFrame objects get schema-inspected
 - Column names (sorted) — this is the **schema fingerprint**;
@@ -266,11 +270,11 @@ That script handles all the things agent-written inventories have
 historically gotten wrong: per-pandas-version `read_csv` arg bugs,
 encoding fallbacks (utf-8 → latin-1), Excel sheet enumeration,
 parquet schema reads, GPKG layer enumeration + CRS/geometry-type
-capture via geopandas, RData/rds DataFrame extraction via pyreadr,
-error isolation (one bad file doesn't crash the rest), schema
-fingerprint grouping, and the correct compact stdout summary
-format. It also writes the full inventory to JSON at
-`<repo-dir>/_inventory.json` for reference.
+capture via geopandas, GeoJSON reading via geopandas, RData/rds
+DataFrame extraction via pyreadr, error isolation (one bad file
+doesn't crash the rest), schema fingerprint grouping, and the
+correct compact stdout summary format. It also writes the full
+inventory to JSON at `<repo-dir>/_inventory.json` for reference.
 
 **`_inventory.json` schema (exact field names — do not guess).**
 The JSON is **groups-first**: files that share a schema fingerprint
@@ -649,7 +653,10 @@ For each approved skill, write a Python script that:
 5. Drops obviously bad rows (all-null, schema mismatch after
    reconciliation).
 6. Writes to
-   `<SAGE_OUTPUT_DIR>/_skills_/<skill-name>/data/<skill-name>.parquet`.
+   `<SAGE_OUTPUT_DIR>/_skills_/<skill-name>/data/<skill-name>.parquet`
+   for tabular skills, or `data/<skill-name>.gpkg` for **spatial
+   skills** (any skill whose data has a geometry column — inputs from
+   GPKG, GeoJSON, or constructed points from lat/lon).
 
 **SAGE_OUTPUT_DIR caveat for build scripts.** `SAGE_OUTPUT_DIR`
 is injected into the *kernel* namespace but is **not** set in the
@@ -724,33 +731,60 @@ isn't installed:
 pip install --user pyreadr
 ```
 
-**Loading GPKG (GeoPackage) sources.** Use `geopandas.read_file`.
-A `.gpkg` file may hold multiple named layers (see the `layers`
-field in `_inventory.json`); specify one explicitly:
+**Loading GPKG (GeoPackage) and GeoJSON sources.** Use
+`geopandas.read_file`. A `.gpkg` file may hold multiple named layers
+(see the `layers` field in `_inventory.json`); GeoJSON holds a
+single feature collection.
 
 ```python
 import geopandas as gpd
 
-# Single-layer file: layer argument is optional
+# GeoJSON — one feature collection per file, no layer arg
+gdf = gpd.read_file("data.geojson")
+
+# GPKG single-layer file: layer argument is optional
 gdf = gpd.read_file("data.gpkg")
 
-# Multi-layer file: pass the layer name from _inventory.json
+# GPKG multi-layer file: pass the layer name from _inventory.json
 gdf = gpd.read_file("data.gpkg", layer="layer_name")
 ```
 
-The `crs` and `geometry_type` fields on each GPKG record tell you
+The `crs` and `geometry_type` fields on each spatial record tell you
 whether reprojection is needed before the merge. If skills combine
-multiple GPKG sources with different CRSs, reproject them to a
+multiple spatial sources with different CRSs, reproject them to a
 common CRS (typically `EPSG:4326`) before concatenating:
 
 ```python
 gdf = gdf.to_crs("EPSG:4326")
 ```
 
-Persist merged geospatial data as a GeoParquet
-(`gdf.to_parquet(out_path)` on modern geopandas) or write the
-geometries as WKT/WKB in a regular parquet — whichever your
-skill's `load_data()` helper is prepared to consume.
+**Persist spatial skills as GeoPackage (`.gpkg`), not Parquet.**
+When the skill's data has a geometry column — inputs were GPKG,
+GeoJSON, or you constructed points from lat/lon — write the merged
+result to `data/<skill-name>.gpkg` instead of the standard
+`data/<skill-name>.parquet` output. GPKG is the preferred spatial
+output format because it:
+
+- Stores geometry natively (no WKT/WKB round-trip through pandas)
+- Preserves CRS metadata cleanly on read
+- Opens directly in QGIS / ArcGIS / geopandas for the user without
+  a load helper
+- Is a single-file format (no sidecar files like Shapefile has)
+
+```python
+# WRITE — driver is auto-detected from .gpkg extension.
+gdf.to_file(out_path, driver="GPKG")   # or just gdf.to_file(out_path)
+
+# READ — geopandas restores the geometry column + CRS automatically.
+import geopandas as gpd
+gdf = gpd.read_file(gpkg_path)
+```
+
+The `load_data()` helper inside the generated `SKILL.md` (see
+Step 8) uses `gpd.read_file(path)` when the skill's data file ends
+in `.gpkg` — no fastparquet workaround needed, no dtype coercion.
+For non-spatial (purely tabular) skills, stick with Parquet and the
+fastparquet pattern above.
 
 **Performance — vectorize, never iterrows() on >100K rows.** For
 any source with >100,000 rows (timeseries, sensor data, large
@@ -920,11 +954,13 @@ structure (same conventions as `arcgis-feature-skill-builder`):
 
 4. **## Data** — bullets:
    - Source: `<github url>`
-   - Local cache: `data/<skill-name>.parquet`
+   - Local cache: `data/<skill-name>.parquet` (tabular skills) or
+     `data/<skill-name>.gpkg` (spatial skills — geometry column
+     present)
    - Row count, column count, CRS (if spatial)
 
 5. **## Fields** — table (name, type, meaning) for every column
-   in the Parquet.
+   in the data file.
 
 6. **## Field Value Dictionaries** — code subsections from Step 7,
    one per categorical column with 2–50 distinct values.
@@ -932,12 +968,28 @@ structure (same conventions as `arcgis-feature-skill-builder`):
 7. **## High-cardinality fields** *(if any)* — list columns
    with 51+ distinct values: name, sample of top values, note.
 
-8. **## How to Use** — a `load_data()` helper that reads the
-   Parquet and returns a DataFrame (or GeoDataFrame, if there
-   are `lat`/`lon` columns). **Use `pyarrow.parquet` directly,
-   not `pd.read_parquet`** — the latter crashes on pandas 3.x
-   with `future.infer_string=True` (the JupyterHub default
-   environment) inside its own extension-type loading path.
+8. **## How to Use** — a `load_data()` helper that reads the cached
+   data file.
+
+   **For spatial skills (`.gpkg` output):** use
+   `geopandas.read_file` — it restores the geometry column and CRS
+   natively, no dtype-coercion workaround needed.
+
+   ```python
+   from pathlib import Path
+   import geopandas as gpd
+
+   def load_data(skill_dir=None):
+       """Load the cached spatial skill data as a GeoDataFrame."""
+       if skill_dir is None:
+           skill_dir = Path(__file__).parent
+       return gpd.read_file(Path(skill_dir) / "data" / "<skill-name>.gpkg")
+   ```
+
+   **For tabular skills (`.parquet` output):** **use
+   `pyarrow.parquet` directly, not `pd.read_parquet`** — the latter
+   crashes on pandas 3.x with `future.infer_string=True` (the
+   JupyterHub default) inside its own extension-type loading path.
 
    ```python
    import pandas as pd
@@ -988,7 +1040,7 @@ For each skill in the build, confirm both of these:
 
 ```
 <SAGE_OUTPUT_DIR>/_skills_/<skill-name>/SKILL.md       (exists, non-empty)
-<SAGE_OUTPUT_DIR>/_skills_/<skill-name>/data/<skill-name>.parquet  (exists, non-empty)
+<SAGE_OUTPUT_DIR>/_skills_/<skill-name>/data/<skill-name>.parquet  (exists, non-empty; OR .gpkg for spatial skills)
 ```
 
 If any are missing, the build is incomplete — fix the missing
@@ -1185,7 +1237,8 @@ Before reporting success, verify each generated SKILL.md:
 - [ ] Description references the source GitHub URL.
 - [ ] Description does not mention implementation details
       (load_data, parquet, pandas).
-- [ ] `data/<skill-name>.parquet` exists and is non-empty.
+- [ ] `data/<skill-name>.parquet` (tabular) or
+      `data/<skill-name>.gpkg` (spatial) exists and is non-empty.
 - [ ] Field Value Dictionaries section has at least one entry
       (otherwise the data is fully high-cardinality, which is
       unusual — double-check the probe didn't fail).

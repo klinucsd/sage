@@ -25,7 +25,7 @@ from pathlib import Path
 
 
 TABULAR_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".gpkg",
-                ".rdata", ".rda", ".rds"}
+                ".rdata", ".rda", ".rds", ".geojson"}
 SKIP_DIRS = {".git", ".github", "__pycache__", ".ipynb_checkpoints"}
 
 # Caps on what we store per record in _inventory.json. The schema
@@ -169,6 +169,56 @@ def _inspect_rdata(fp):
             "row_count": len(df),
             "sample_rows": df.head(3).to_dict(orient="records"),
         }
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+def _inspect_geojson(fp):
+    """Read a GeoJSON file via geopandas; capture schema + CRS + geom type.
+
+    Unlike a GeoPackage, a GeoJSON file holds a single feature collection
+    (no layers), so we read it directly. The geometry column is
+    appended last in the reported `columns` list and excluded from
+    `sample_rows` (WKT strings would blow past the per-cell cap and add
+    no useful signal).
+    """
+    try:
+        import geopandas as gpd
+
+        # Read only the first few features to keep large files fast.
+        # geopandas' `rows=` was added in 0.14; fall back to head() on
+        # older versions (slower on huge files but correct).
+        try:
+            gdf = gpd.read_file(fp, rows=5)
+        except TypeError:
+            gdf = gpd.read_file(fp).head(5)
+
+        geom_col = gdf.geometry.name
+        attr_cols = [c for c in gdf.columns if c != geom_col]
+        cols = attr_cols + [geom_col]
+        dtypes = {str(c): str(gdf[c].dtype) for c in cols}
+        sample = gdf[attr_cols].head(3).to_dict(orient="records")
+
+        result = {
+            "columns": [str(c) for c in cols],
+            "dtypes": dtypes,
+            "sample_rows": sample,
+            "geometry_type": (str(gdf.geometry.geom_type.iloc[0])
+                              if len(gdf) else None),
+            "crs": str(gdf.crs) if gdf.crs else None,
+        }
+
+        # Cheap row-count via pyogrio metadata read (no data load); skip
+        # silently if pyogrio isn't available.
+        try:
+            import pyogrio
+            info = pyogrio.read_info(str(fp))
+            if info.get("features") is not None:
+                result["row_count"] = int(info["features"])
+        except Exception:
+            pass
+
+        return result
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
 
@@ -402,6 +452,8 @@ def inventory_repo(repo_dir):
                 entry.update(_inspect_parquet(fp))
             elif ext == ".gpkg":
                 entry.update(_inspect_gpkg(fp))
+            elif ext == ".geojson":
+                entry.update(_inspect_geojson(fp))
             elif ext in {".rdata", ".rda", ".rds"}:
                 entry.update(_inspect_rdata(fp))
         except Exception as e:
