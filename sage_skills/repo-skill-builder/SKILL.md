@@ -785,13 +785,15 @@ of these appear as warnings on every `load_data()` call if the
 build script skips them. The data still loads correctly, but the
 warnings clutter output and undermine user trust.
 
-**Gotcha 1 — cast object columns to `string` to avoid OGR type
-warnings.** If a source file uses OGR's native Time / Date / Binary
+**Gotcha 1 — cast object columns to `string`, AND combine plain-time
+columns with a date to make a full datetime.** Two related issues:
+
+Part A: if a source file uses OGR's native Time / Date / Binary
 types (common in GeoJSON — e.g. a `local_time` field stored as
 `OFTTime`), the type carries into the GPKG. pyogrio can't map those
 to native pandas dtypes and emits `Skipping field <name>: unsupported
-OGR type: 10` on every read. Fix: cast every non-geometry object
-column to pandas `string` before writing.
+OGR type: 10` on every read. Cast every non-geometry object column
+to pandas `string` before writing:
 
 ```python
 # BEFORE gdf.to_file(...) for GPKG output:
@@ -802,6 +804,44 @@ for col in gdf.columns:
     if gdf[col].dtype == "object":
         gdf[col] = gdf[col].astype("string")
 ```
+
+Part B: newer GDAL/pyogrio versions inspect VALUES on write and
+re-classify `HH:MM` (or `HH:MM:SS`) string values as `OFTTime` even
+after the pandas cast, because the writer's value-shape sniffer runs
+independently of the pandas dtype. The `Skipping field ...: OGR type
+10` warning then reappears on read.
+
+The robust fix: if the source has a plain-time column alongside a
+date column, **combine them into a full datetime column** before
+writing. GDAL writes proper datetimes as `OFTDateTime`, which
+pyogrio maps to `datetime64[ns]` on read — no warning. This is also
+cleaner data modeling: users get one queryable timestamp, not two
+separate string fields to concat.
+
+```python
+# Combine date + plain-time → full datetime, drop the plain time.
+gdf["event_utc"] = pd.to_datetime(
+    gdf["date_ad"].astype(str) + " " + gdf["utc_time"].astype(str),
+    errors="coerce",
+)
+gdf = gdf.drop(columns=["utc_time"])   # keep the combined column only
+
+# If a second time column represents a different zone (e.g. local),
+# either compute it from the UTC column via a known offset, or
+# combine it the same way.
+```
+
+If no date column exists alongside the plain-time column and you
+cannot construct one, suppress the specific warning inside the
+generated `load_data()` helper (see Step 8) so users don't see it
+on every load:
+
+```python
+import warnings
+warnings.filterwarnings("ignore", message="Skipping field .*unsupported OGR type: 10")
+gdf = gpd.read_file(gpkg_path)
+```
+
 
 **Gotcha 2 — rename non-unique `id` / `fid` columns to `source_id`
 before writing.** GPKG treats any column named `id`, `fid`,
