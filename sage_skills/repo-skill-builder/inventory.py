@@ -25,7 +25,15 @@ from pathlib import Path
 
 
 TABULAR_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".gpkg",
-                ".rdata", ".rda", ".rds", ".geojson"}
+                ".rdata", ".rda", ".rds", ".geojson", ".shp"}
+
+# Shapefile sidecar extensions. These files accompany a `.shp` and are
+# consumed automatically by geopandas / OGR when reading it — never
+# inventoried on their own. Only `.shp` is in TABULAR_EXTS, so these
+# are already naturally skipped by the extension gate below, but we
+# list them here so a future refactor can still find them via grep.
+_SHAPEFILE_SIDECAR_EXTS = {".shx", ".dbf", ".prj", ".cpg", ".qix",
+                           ".sbn", ".sbx", ".qmd", ".shp.xml"}
 SKIP_DIRS = {".git", ".github", "__pycache__", ".ipynb_checkpoints"}
 
 # Caps on what we store per record in _inventory.json. The schema
@@ -173,14 +181,20 @@ def _inspect_rdata(fp):
         return {"error": f"{type(e).__name__}: {e}"}
 
 
-def _inspect_geojson(fp):
-    """Read a GeoJSON file via geopandas; capture schema + CRS + geom type.
+def _inspect_single_layer_vector(fp):
+    """Read a single-layer vector file (`.geojson` or `.shp`) via geopandas;
+    capture schema + CRS + geometry type.
 
-    Unlike a GeoPackage, a GeoJSON file holds a single feature collection
-    (no layers), so we read it directly. The geometry column is
-    appended last in the reported `columns` list and excluded from
-    `sample_rows` (WKT strings would blow past the per-cell cap and add
-    no useful signal).
+    Unlike a GeoPackage, GeoJSON and Shapefile each hold a single feature
+    collection (no layer concept for GeoJSON; single layer per shapefile
+    sidecar set), so we read directly with `gpd.read_file(fp)`. For
+    shapefiles, geopandas / OGR automatically pull in the `.shx`, `.dbf`,
+    `.prj`, and any other sidecar files that share the base name — the
+    caller only needs the `.shp` path.
+
+    The geometry column is appended last in the reported `columns` list
+    and excluded from `sample_rows` (WKT strings would blow past the
+    per-cell cap and add no useful signal).
     """
     try:
         import geopandas as gpd
@@ -452,8 +466,8 @@ def inventory_repo(repo_dir):
                 entry.update(_inspect_parquet(fp))
             elif ext == ".gpkg":
                 entry.update(_inspect_gpkg(fp))
-            elif ext == ".geojson":
-                entry.update(_inspect_geojson(fp))
+            elif ext in {".geojson", ".shp"}:
+                entry.update(_inspect_single_layer_vector(fp))
             elif ext in {".rdata", ".rda", ".rds"}:
                 entry.update(_inspect_rdata(fp))
         except Exception as e:

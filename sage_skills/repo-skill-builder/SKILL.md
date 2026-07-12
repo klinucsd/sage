@@ -3,8 +3,8 @@ name: repo-skill-builder
 description: >-
   Build one or more ARGUS skills from a GitHub repository containing
   tabular, geospatial, or R-serialized data files (CSV, TSV, Excel,
-  Parquet, GeoPackage, GeoJSON, RData / rda / rds). Use when the user
-  provides a github.com
+  Parquet, GeoPackage, GeoJSON, Shapefile, RData / rda / rds). Use
+  when the user provides a github.com
   URL and asks to build, create, or generate skills from the data
   in the repo. Two-phase workflow: first you enumerate the data
   files and propose a skill plan, then you STOP for the user's
@@ -230,13 +230,18 @@ intent. That's a focused two-call action. Do not let it expand
 into directory listings.
 
 Walk the repo tree and collect every `.csv`, `.tsv`, `.xlsx`,
-`.xls`, `.parquet`, `.gpkg`, `.geojson`, `.RData` (or `.rda`), and
-`.rds` file. Skip anything obviously not data:
+`.xls`, `.parquet`, `.gpkg`, `.geojson`, `.shp`, `.RData` (or
+`.rda`), and `.rds` file. Skip anything obviously not data:
 
 - README.md, LICENSE, CITATION.cff, .gitignore, .gitattributes
 - Notebooks, Python source, configuration files
 - Figures, images
 - Files inside `.git/` or hidden directories
+- **Shapefile sidecar files** — `.shx`, `.dbf`, `.prj`, `.cpg`,
+  `.qix`, `.sbn`, `.sbx`, `.qmd`, `.shp.xml`. The `.shp` file is
+  the entry point; geopandas / OGR reads the sidecars automatically
+  when you open the `.shp`. Never inventory sidecars as separate
+  records.
 
 For each tabular / geospatial file, capture:
 
@@ -245,8 +250,10 @@ For each tabular / geospatial file, capture:
 - For CSV/TSV: detected delimiter, encoding, header row
 - For GPKG: layer names (analogous to XLSX sheets), geometry type,
   CRS (loaded via geopandas)
-- For GeoJSON: geometry type, CRS, feature count (loaded via
-  geopandas; single feature collection, no layers)
+- For GeoJSON / Shapefile: geometry type, CRS, feature count (loaded
+  via geopandas; single feature collection per file — for
+  shapefile, geopandas reads the `.shx` / `.dbf` / `.prj` /
+  `.cpg` sidecars automatically from the `.shp` path)
 - For RData / rds: R object names (analogous to XLSX sheets), read
   via pyreadr; only DataFrame objects get schema-inspected
 - Column names (sorted) — this is the **schema fingerprint**;
@@ -731,16 +738,20 @@ isn't installed:
 pip install --user pyreadr
 ```
 
-**Loading GPKG (GeoPackage) and GeoJSON sources.** Use
-`geopandas.read_file`. A `.gpkg` file may hold multiple named layers
-(see the `layers` field in `_inventory.json`); GeoJSON holds a
-single feature collection.
+**Loading GPKG, GeoJSON, and Shapefile sources.** Use
+`geopandas.read_file`. GeoJSON and Shapefile each hold a single
+feature collection; GPKG may hold multiple named layers (see the
+`layers` field in `_inventory.json`).
 
 ```python
 import geopandas as gpd
 
 # GeoJSON — one feature collection per file, no layer arg
 gdf = gpd.read_file("data.geojson")
+
+# Shapefile — pass the .shp path; sidecars (.shx, .dbf, .prj, .cpg)
+# in the same directory with the same base name are read automatically
+gdf = gpd.read_file("data.shp")
 
 # GPKG single-layer file: layer argument is optional
 gdf = gpd.read_file("data.gpkg")
@@ -758,18 +769,22 @@ common CRS (typically `EPSG:4326`) before concatenating:
 gdf = gdf.to_crs("EPSG:4326")
 ```
 
-**Persist spatial skills as GeoPackage (`.gpkg`), not Parquet.**
-When the skill's data has a geometry column — inputs were GPKG,
-GeoJSON, or you constructed points from lat/lon — write the merged
-result to `data/<skill-name>.gpkg` instead of the standard
-`data/<skill-name>.parquet` output. GPKG is the preferred spatial
-output format because it:
+**Persist spatial skills as GeoPackage (`.gpkg`), not Parquet or
+Shapefile.** When the skill's data has a geometry column — inputs
+were GPKG, GeoJSON, Shapefile, or you constructed points from
+lat/lon — write the merged result to `data/<skill-name>.gpkg`
+instead of the standard `data/<skill-name>.parquet` output. GPKG is
+the preferred spatial output format because it:
 
 - Stores geometry natively (no WKT/WKB round-trip through pandas)
 - Preserves CRS metadata cleanly on read
 - Opens directly in QGIS / ArcGIS / geopandas for the user without
   a load helper
-- Is a single-file format (no sidecar files like Shapefile has)
+- Is a **single-file format** — unlike Shapefile, which requires
+  a set of sidecar files (`.shx`, `.dbf`, `.prj`, ...) to travel
+  together and can drop attributes or truncate column names on
+  write. If the source is Shapefile, always pack the merged output
+  as GPKG, not another Shapefile.
 
 ```python
 # WRITE — driver is auto-detected from .gpkg extension.
