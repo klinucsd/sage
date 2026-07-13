@@ -1163,7 +1163,28 @@ outputs and re-verify. **Do NOT proceed to cleanup until every
 proposed skill has both files on disk.** The cleanup step deletes
 the clone, which is the only fallback if a Parquet write failed.
 
-#### 9b. Delete the cloned repo
+#### 9b. Delete intermediate scratch files from each skill directory
+
+Steps 7 and 8 often use per-skill intermediate files (e.g.
+`_categorical_probes.json`, `_probe_results.json`) so Step 8's
+SKILL.md-writer can read the probe results back from disk. **These
+files are build-time artifacts, not part of the deployable skill,
+and must be deleted before finishing.** The final skill directory
+should contain ONLY:
+
+```
+<SAGE_OUTPUT_DIR>/_skills_/<skill-name>/
+  SKILL.md
+  data/
+    <skill-name>.parquet    # or <skill-name>.gpkg for spatial skills
+```
+
+Anything else — files starting with `_`, temporary scripts, backup
+`.old` files, hidden `.probe/` directories — is scratch and should
+be removed. A `find <skill-dir> -type f` should list at most two
+files (SKILL.md + one data file) per skill.
+
+#### 9c. Delete the cloned repo
 
 **After verification passes, delete the cloned repo.** This is
 mandatory, not optional. Models clone to different locations
