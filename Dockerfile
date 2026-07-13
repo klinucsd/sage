@@ -60,7 +60,7 @@ RUN apt-get update && apt-get install -y \
 RUN pip install --no-cache-dir \
     "jupyterlab==4.2.4" "notebook==7.2.2" \
     "deepagents-code==0.1.10" nest_asyncio folium geopandas matplotlib rasterio \
-    ipywidgets ipyleaflet leafmap plotly pypdf openpyxl tomli-w
+    ipywidgets ipyleaflet leafmap plotly pypdf openpyxl tomli-w pyreadr
 
 # Install PDAL via conda before pyforestscan — pip cannot build pdal from source without
 # the system PDAL library, and pyforestscan pulls it in as a dependency.
