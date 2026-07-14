@@ -58,6 +58,7 @@ except ImportError:
 # Users can opt out by setting SKIP_CORE_SKILLS = True before running this installer.
 _CORE_SKILLS = (
     "arcgis-feature-skill-builder",
+    "ckan-skill-builder",
     "ndp-search",
     "repo-skill-builder",
     "sage-bbox-map",
