@@ -8,8 +8,8 @@ description: >-
   `/dataset/<slug>` browse URL — and asks to build, create, or
   generate skills from it. Fetcher-only: downloads the dataset's
   tabular resources into a local directory, then hands off to the
-  `repo-skill-builder` skill for the enumerate → propose → build
-  pipeline. Two-phase workflow (from repo-skill-builder): first you
+  `tabular-skill-builder` skill for the enumerate → propose → build
+  pipeline. Two-phase workflow (from tabular-skill-builder): first you
   enumerate the downloaded files and propose a skill plan, then STOP
   for the user's approval; on "yes" in the next %%ask cell you
   continue to build.
@@ -24,10 +24,10 @@ before doing anything else.
 
 1. **You are a fetcher shell.** Your only responsibility is to
    download the dataset's tabular resources and hand off to
-   `repo-skill-builder`. Do not write an inventory script. Do not
+   `tabular-skill-builder`. Do not write an inventory script. Do not
    probe schemas. Do not propose skills yourself. Once `fetch.py`
    finishes, every remaining step in the build is
-   `repo-skill-builder`'s Steps 2 through 9.
+   `tabular-skill-builder`'s Steps 2 through 9.
 
 2. **Use the bundled `fetch.py`, not a custom script.** The skill
    ships `fetch.py` next to this `SKILL.md`. It handles CKAN URL
@@ -40,12 +40,13 @@ before doing anything else.
    read to know what happened.
 
 3. **Download to `/tmp/repo-skills/<dataset-slug>/`.** This is the
-   same scratch location `repo-skill-builder` clones repos into.
+   same scratch location `repo-skill-builder` clones repos into and
+   that `tabular-skill-builder` expects to inventory.
    Sharing the path lets the handoff step invoke
-   `repo-skill-builder`'s `inventory.py` on the download directory
+   `tabular-skill-builder`'s `inventory.py` on the download directory
    with no additional glue.
 
-4. **After the download, explicitly load `repo-skill-builder`'s
+4. **After the download, explicitly load `tabular-skill-builder`'s
    `SKILL.md` and follow it.** The two skills exist as separate
    files; the handoff is real, not implicit. Step 3 below tells you
    the exact `read_file` call to make.
@@ -62,7 +63,7 @@ asks to build a skill from it. Example URL shapes:
 
 Decline (do not use this skill) when:
 
-- The URL is a github.com repo — use `repo-skill-builder` directly.
+- The URL is a github.com repo — use `repo-skill-builder`.
 - The URL is an ArcGIS Feature/Map Service — use
   `arcgis-feature-skill-builder`.
 - The dataset has no tabular resources (only PDFs, HTML pages,
@@ -79,7 +80,7 @@ automatically from CKAN's `package_show` API and saved to
 
 If the user has expressed preferences ("only download the annual
 files", "skip the monthly ones"), pass those preferences forward
-in your handoff message so `repo-skill-builder`'s Step 3 grouping
+in your handoff message so `tabular-skill-builder`'s Step 3 grouping
 respects them — but do not attempt to filter resources yourself in
 this skill; the fetcher takes everything tabular by design.
 
@@ -124,7 +125,7 @@ Out dir      : /tmp/repo-skills/<dataset-slug>
 Metadata     : /tmp/repo-skills/<dataset-slug>/_ckan_metadata.json
 Skipped list : /tmp/repo-skills/<dataset-slug>/_skipped_resources.json  (only if M > 0)
 
-Next: hand off to repo-skill-builder starting at its Step 2 —
+Next: hand off to tabular-skill-builder starting at its Step 2 —
       run its inventory.py on the out dir above.
 ```
 
@@ -134,17 +135,17 @@ was skipped (from `_skipped_resources.json`) so they know why.
 
 **If `Downloaded` is non-zero**, proceed to Step 3.
 
-### Step 3 — Hand off to `repo-skill-builder`
+### Step 3 — Hand off to `tabular-skill-builder`
 
-`repo-skill-builder`'s `SKILL.md` is a large document with strict
+`tabular-skill-builder`'s `SKILL.md` is a large document with strict
 pre-flight rules, a two-phase workflow with a hard-stop between
 inventory and build, and per-format loading conventions. You must
 load it fully into your context before continuing.
 
-1. **Read `repo-skill-builder`'s `SKILL.md`:**
+1. **Read `tabular-skill-builder`'s `SKILL.md`:**
 
    ```
-   read_file /home/jovyan/.deepagents/agent/skills/repo-skill-builder/SKILL.md
+   read_file /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/SKILL.md
    ```
 
    Substitute the actual skills directory prefix for other runtimes.
@@ -152,14 +153,14 @@ load it fully into your context before continuing.
 2. **Then follow that skill starting at its Step 2** (Enumerate the
    tabular data files). Treat `/tmp/repo-skills/<dataset-slug>/`
    exactly as if it were a cloned GitHub repo. Every rule in
-   `repo-skill-builder`'s Pre-Flight and every step from 2 through
+   `tabular-skill-builder`'s Pre-Flight and every step from 2 through
    9 applies unchanged. In particular:
 
-   - Run `repo-skill-builder`'s bundled `inventory.py` on the
+   - Run `tabular-skill-builder`'s bundled `inventory.py` on the
      download directory:
 
      ```bash
-     python /home/jovyan/.deepagents/agent/skills/repo-skill-builder/inventory.py \
+     python /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/inventory.py \
             /tmp/repo-skills/<dataset-slug>
      ```
 
@@ -167,7 +168,7 @@ load it fully into your context before continuing.
      turn. Wait for the user's "yes" in the next `%%ask` cell before
      building.
 
-3. **One CKAN-specific refinement to `repo-skill-builder`'s Step 8**
+3. **One CKAN-specific refinement to `tabular-skill-builder`'s Step 8**
    (Write each SKILL.md): before writing the frontmatter, read
    `/tmp/repo-skills/<dataset-slug>/_ckan_metadata.json` and use it
    to source:
@@ -186,7 +187,7 @@ load it fully into your context before continuing.
 
 ### Step 9d — CKAN-specific cleanup
 
-`repo-skill-builder`'s Step 9c deletes the download directory
+`tabular-skill-builder`'s Step 9c deletes the download directory
 after verification. `_ckan_metadata.json` and
 `_skipped_resources.json` are inside that directory and go with it
 — their contents are already threaded into each built skill's
@@ -206,7 +207,7 @@ after verification. `_ckan_metadata.json` and
   because they might be silently useful. Mention the skipped count
   in your handoff message so the user knows about them.
 
-- **Do not short-circuit `repo-skill-builder`'s Step 4 stop just
+- **Do not short-circuit `tabular-skill-builder`'s Step 4 stop just
   because CKAN gave you a title and description.** Those hints
   feed the generated SKILL.md's description in Step 8; they do
   not replace schema-fingerprint grouping and user confirmation

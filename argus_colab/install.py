@@ -65,6 +65,7 @@ _CORE_SKILLS = (
     "sage-dropdown",
     "sage-metrics",
     "skillsmp",
+    "tabular-skill-builder",
     "us-counties",
     "us-states",
 )

@@ -2,8 +2,8 @@
 """CKAN dataset fetcher for ckan-skill-builder.
 
 Downloads tabular resources from a CKAN dataset into a local directory
-that repo-skill-builder's inventory.py can then treat as if it were a
-cloned git repo.
+that tabular-skill-builder's inventory.py can then treat as if it were
+a cloned git repo.
 
 Usage:
     python fetch.py <ckan-dataset-url> <out-dir>
@@ -237,7 +237,7 @@ def main(argv: list[str]) -> int:
     if skipped:
         print(f"Skipped list : {out_dir}/_skipped_resources.json")
     print()
-    print("Next: hand off to repo-skill-builder starting at its Step 2 —")
+    print("Next: hand off to tabular-skill-builder starting at its Step 2 —")
     print("      run its inventory.py on the out dir above.")
 
     return 0 if n_downloaded > 0 else 3
