@@ -31,7 +31,7 @@ import sys
 import zipfile
 from pathlib import Path
 from urllib.parse import urlparse, urlencode, urlunparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 # Case-insensitive allowlist. CKAN's `format` field varies wildly across
 # portals ("CSV", "csv", ".csv", "Comma Separated Values"), so we
@@ -49,6 +49,33 @@ TABULAR_FORMATS = {
 }
 
 _UNSAFE_FS_CHARS = set('/\\:*?"<>|')
+
+
+class _StripDefaultPortRedirect(HTTPRedirectHandler):
+    """Rewrite redirect Locations that carry a redundant default port.
+
+    CKAN portals (data.ca.gov / data.cnra.ca.gov / others) 302-redirect
+    resource-download URLs to AWS S3 presigned URLs, and the Location
+    header often includes an explicit `:443` on the HTTPS URL. AWS SigV4
+    signs `Host: s3.amazonaws.com` WITHOUT the port for standard HTTPS,
+    but urllib preserves the port from the URL — it then sends
+    `Host: s3.amazonaws.com:443` and S3 rejects the request with
+    `SignatureDoesNotMatch` (HTTP 403). Curl doesn't hit this because it
+    normalises the URL and drops default ports; urllib does not.
+
+    Stripping `:443` from HTTPS redirect targets makes urllib send the
+    canonical Host header the signature was computed against.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if newurl.startswith("https://") and ":443/" in newurl:
+            newurl = newurl.replace(":443/", "/", 1)
+        elif newurl.startswith("http://") and ":80/" in newurl:
+            newurl = newurl.replace(":80/", "/", 1)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_OPENER = build_opener(_StripDefaultPortRedirect())
 
 
 def _normalize_format(fmt: str | None) -> str:
@@ -104,7 +131,8 @@ def _pick_filename(resource: dict, idx: int) -> str:
 
 def _download(url: str, dest: Path, *, timeout: int = 120) -> None:
     req = Request(url, headers={"User-Agent": "ckan-skill-builder/0.1"})
-    with urlopen(req, timeout=timeout) as r, dest.open("wb") as f:
+    # Use the port-stripping opener so S3-backed CKAN portals don't 403.
+    with _OPENER.open(req, timeout=timeout) as r, dest.open("wb") as f:
         while True:
             chunk = r.read(1 << 15)  # 32 KiB
             if not chunk:
