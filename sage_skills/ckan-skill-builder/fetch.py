@@ -240,8 +240,15 @@ def main(argv: list[str]) -> int:
     print("Next: hand off to tabular-skill-builder starting at its Step 2 —")
     print("      run its inventory.py on the out dir above.")
 
-    return 0 if n_downloaded > 0 else 3
+    if n_downloaded == 0:
+        # Signal via stdout, not via a non-zero exit / SystemExit.
+        # Some ARGUS backends run Python scripts in-process (KernelShellBackend),
+        # where SystemExit propagates as an unhandled exception and derails the
+        # agent — matching inventory.py's pattern is safer.
+        print()
+        print("NO tabular resources were downloaded — the caller should stop "
+              "and tell the user (see _skipped_resources.json for reasons).")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))
+    main(sys.argv)
