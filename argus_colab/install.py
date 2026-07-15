@@ -60,6 +60,7 @@ _CORE_SKILLS = (
     "arcgis-feature-skill-builder",
     "ckan-skill-builder",
     "ndp-search",
+    "ndp-skill-builder",
     "repo-skill-builder",
     "s3-skill-builder",
     "sage-bbox-map",
