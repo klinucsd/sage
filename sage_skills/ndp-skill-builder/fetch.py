@@ -31,8 +31,16 @@ This wrapper adds no sidecars of its own.
 from __future__ import annotations
 
 import sys
-from pathlib import Path
-from urllib.parse import urlparse
+
+# Prevent Python from writing `__pycache__/*.pyc` for the runtime import
+# of ckan-skill-builder's fetch.py further down. Without this, a .pyc
+# lands inside ~/.deepagents/agent/skills/ckan-skill-builder/__pycache__/
+# every time this wrapper runs, cluttering the shipped skill directory.
+# Must be set BEFORE any subsequent import for it to take effect.
+sys.dont_write_bytecode = True
+
+from pathlib import Path  # noqa: E402
+from urllib.parse import urlparse  # noqa: E402
 
 
 def _rewrite_ndp_url(url: str) -> str:
