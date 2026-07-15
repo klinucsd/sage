@@ -61,6 +61,7 @@ _CORE_SKILLS = (
     "ckan-skill-builder",
     "ndp-search",
     "repo-skill-builder",
+    "s3-skill-builder",
     "sage-bbox-map",
     "sage-dropdown",
     "sage-metrics",
