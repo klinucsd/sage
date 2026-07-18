@@ -2508,8 +2508,14 @@ def _sage_clone_github_subtree(org, repo, ref, subpath):
     return target, None
 
 
-def _sage_install_skill_dir(src_dir, skill_name):
-    """Copy src_dir → ~/.deepagents/agent/skills/<skill_name>/ (overwriting).
+def _sage_install_skill_dir(src_dir, skill_name, dest_root=None):
+    """Copy src_dir → <dest_root>/<skill_name>/ (overwriting).
+
+    `dest_root` defaults to `_SAGE_SKILLS_DIR` — the global registry at
+    `~/.deepagents/agent/skills/`. Pass `<SAGE_OUTPUT_DIR>/_skills_/` to
+    install a skill notebook-locally (only visible to the current
+    notebook, not to sibling notebooks). This is the destination the
+    `%%skill --notebook` flag routes to.
 
     Guards against the self-destructive case where src and dest are the same
     directory (e.g. user runs `%%skill` pointing at an already-installed
@@ -2517,8 +2523,11 @@ def _sage_install_skill_dir(src_dir, skill_name):
     source, and `copytree` would then fail.
     """
     import shutil
-    _SAGE_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = _SAGE_SKILLS_DIR / skill_name
+    if dest_root is None:
+        dest_root = _SAGE_SKILLS_DIR
+    dest_root = Path(dest_root)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    dest = dest_root / skill_name
     src_dir = Path(src_dir)
     # No-op when src IS dest. Use samefile() to handle symlinks correctly.
     if dest.exists() and src_dir.exists():
@@ -3708,6 +3717,16 @@ try:
             https://github.com/<org>/<repo>/tree/<COMMIT_SHA>/path/to/skill
             # blank lines and comments are ignored
 
+        Options:
+            --notebook   Install to <SAGE_OUTPUT_DIR>/_skills_/ instead of
+                         the global registry at ~/.deepagents/agent/skills/.
+                         Skills installed this way are visible only to the
+                         current notebook — sibling notebooks in the same
+                         directory do NOT see them. Use this for skills that
+                         carry large data files, or that are only meaningful
+                         in one notebook's context, and shouldn't accumulate
+                         in the global registry.
+
         Security model:
           - Local paths: installed silently (you control the filesystem).
           - GitHub URLs from allowlisted orgs (~/.deepagents/.sage_trusted_orgs.json):
@@ -3721,6 +3740,26 @@ try:
             rejected for untrusted orgs — use a commit SHA or tag.
         """
         from IPython.display import display, HTML
+
+        # Parse options from the magic-line
+        notebook_local = False
+        line_stripped = (line or "").strip()
+        if line_stripped == "--notebook":
+            notebook_local = True
+        elif line_stripped:
+            display(HTML(
+                f"<div style='color:#e00'>%%skill: unknown option "
+                f"<code>{line_stripped}</code>. Only <code>--notebook</code> is supported.</div>"
+            ))
+            return
+
+        # Destination root — None means "use the default in _sage_install_skill_dir"
+        # (i.e. the global ~/.deepagents/agent/skills/). For --notebook the
+        # SkillsMiddleware already scans SAGE_OUTPUT_DIR/_skills_/ every cell,
+        # so no reload/restart is needed after install.
+        dest_root = None
+        if notebook_local:
+            dest_root = Path(SAGE_OUTPUT_DIR) / "_skills_"
 
         entries = []
         errors = []
@@ -3840,7 +3879,7 @@ try:
         for e in (auto_install + needs_prompt):
             src = e["src_dir"] if e["kind"] == "github" else e["path"]
             try:
-                dest = _sage_install_skill_dir(src, e["skill_name"])
+                dest = _sage_install_skill_dir(src, e["skill_name"], dest_root=dest_root)
                 e["dest"] = dest
                 installed.append(e)
                 # Phase 4: refresh the per-skill Learnings.md frontmatter
@@ -3866,9 +3905,10 @@ try:
             "<b>Skills install summary</b>",
         ]
         if installed:
+            scope_label = ("<b>notebook-local</b> " if notebook_local else "")
             parts.append(
                 f"<div style='margin-top:4px'>✅ <b>Installed "
-                f"({len(installed)})</b> — available in the next "
+                f"({len(installed)}) {scope_label}</b>— available in the next "
                 f"<code>%%ask</code> cell:</div>"
             )
             parts.append("<ul style='margin:2px 0 0 0; padding-left:1.5em'>")
