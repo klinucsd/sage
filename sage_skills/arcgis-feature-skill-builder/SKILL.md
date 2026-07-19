@@ -1,9 +1,12 @@
 ---
 name: arcgis-feature-skill-builder
 description: >-
-  Build an ARGUS skill from an ArcGIS Feature Service or MapService URL.
-  Use when the user asks to build, create, or generate a skill for a
-  URL whose path contains /FeatureServer or /MapServer.
+  Build an ARGUS skill from an ArcGIS Feature Service, or from the vector
+  Feature Layer of a MapServer. Vector data only — this skill does not
+  handle raster ArcGIS services (ImageServer URLs, raster MapServer
+  layers, or tile-cached MapServer services). Use when the user provides
+  a URL containing /FeatureServer/<n> or /MapServer/<n> and the target
+  layer is a queryable vector Feature Layer or Table.
 ---
 
 # ArcGIS Feature Skill Builder
@@ -73,6 +76,41 @@ This single call provides almost everything you need:
 If the request fails (404, 500, or the response is HTML/error JSON
 instead of valid metadata), abort with a clear message: "URL does not
 appear to be a valid ArcGIS Feature Service layer."
+
+**Vector-only scope check — refuse raster and non-queryable payloads.**
+Once the JSON parses, verify the payload describes a queryable vector
+layer BEFORE building anything. This skill is vector-only by design;
+raster ArcGIS services are out of scope. Check the metadata for each
+of these three conditions:
+
+- **Layer `type`** — must be `"Feature Layer"` or `"Table"`. If it is
+  `"Raster Layer"`, `"Group Layer"`, `"Annotation Layer"`, or any
+  other type, abort with the message:
+  > "This skill is vector-only. The URL's layer is `<the actual type
+  > from metadata>` and cannot be built into a queryable feature
+  > skill."
+
+  A `"Group Layer"` refusal should additionally suggest: "Group
+  layers are containers; try one of the child sub-layer URLs like
+  `<service>/<n>` where `<n>` is a real leaf-layer index."
+
+- **Service `capabilities`** — must include `"Query"`. If it does
+  not (e.g. `capabilities` is `"Map"` alone, `"Map,TilesOnly"`, or
+  similar), abort with:
+  > "This service does not support the Query capability. It appears
+  > to be a display-only map service with no queryable vector
+  > surface."
+
+- **`singleFusedMapCache`** — if the metadata shows
+  `singleFusedMapCache: true` (or the response is dominated by a
+  `tileInfo` block with no `fields` array), abort with:
+  > "This is a tile-cached map service. There is no queryable vector
+  > layer here — the service serves pre-rendered tiles only."
+
+Only proceed to Step 2 if all three checks pass. Together these
+catch the three ways a vector-only builder can be misinvoked on
+ArcGIS: raster MapServer layers, tile-cached MapServer services, and
+group-layer container URLs.
 
 ### Step 2 — Decide the skill name
 
