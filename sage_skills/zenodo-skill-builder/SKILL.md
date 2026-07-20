@@ -169,13 +169,46 @@ python /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/inventory.py 
        /tmp/zenodo-skills/<record-id>
 ```
 
+**Now STOP (pre-flight rule 6). Present this proposal and END YOUR
+TURN. Do not write a build script, do not merge any Parquet, do not
+write any SKILL.md.** A tabular record often holds several distinct
+schemas that map to several skills — deciding *how many skills and
+which files go in each* is the key judgement call on this route, and
+it is invisible once built. That grouping is the tabular analogue of
+the combined route's JOIN line: the user must confirm it before you
+build, not after.
+
+```
+I've fetched and inspected <record> (ROUTE: tabular). Proposal:
+
+Source: <title, creators, license, DOI>
+Files: <N> tabular (<M> schema groups from inventory), <K> docs
+
+Proposed skills:
+  1. <skill-name>  — each row is a <entity>; from <files>; ~<rows> rows;
+       key columns: <a few>
+  2. <skill-name>  — …
+  (consolidate near-duplicate schema groups into one skill where they
+   describe the same entity; split genuinely different entities)
+
+Notes: <encoding issues, column-name ambiguities, docs consulted>
+Data: bundle (<size>, small) [or lazy]
+
+Open questions: <real grouping judgement calls; skip if none>
+
+Reply "yes" to build as proposed, or with edits (e.g. "merge 2 and 3",
+"drop skill 4", "rename …").
+(Resume state: /tmp/zenodo-skills/<record-id>/ + _inventory.json.)
+```
+
+Then stop and wait. Only after the user replies do you proceed to
+`tabular-skill-builder`'s Steps 5–9 (merge → Parquet → write SKILL.md).
+
 One Zenodo-specific refinement to that skill's Step 8 (Write each
 SKILL.md): source the frontmatter `description`, the `## Data`
 section's `Source:` bullet, and the citation from
 `_zenodo_metadata.json` (`title`, `description`, `creators`, `doi`,
 `license`, `source_url`) rather than inferring them from filenames.
-That skill's **Step 4 hard stop** applies unchanged — propose and
-wait (pre-flight rule 6) before building.
 
 #### `ROUTE: combined`
 
