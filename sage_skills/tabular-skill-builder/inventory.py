@@ -28,6 +28,14 @@ from pathlib import Path
 TABULAR_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".parquet", ".gpkg",
                 ".rdata", ".rda", ".rds", ".geojson", ".shp"}
 
+# Ambiguous text extensions. In general a `.txt` is documentation, NOT
+# tabular data. These are inventoried ONLY when a content sniff shows a
+# consistent delimited structure (see `_looks_tabular`); otherwise they are
+# skipped like any other non-tabular file. This mirrors the sniff in
+# zenodo-skill-builder's fetch.py so the fetcher and this inventory agree
+# on which `.txt` files are real tabular data.
+SNIFF_EXTS = {".txt", ".dat"}
+
 # Shapefile sidecar extensions. These files accompany a `.shp` and are
 # consumed automatically by geopandas / OGR when reading it — never
 # inventoried on their own. Only `.shp` is in TABULAR_EXTS, so these
@@ -63,6 +71,40 @@ def _detect_csv_delimiter(fp, encoding="utf-8"):
     except Exception:
         pass
     return ","
+
+
+def _looks_tabular(fp, max_lines=40):
+    """Content heuristic for ambiguous `.txt` / `.dat` files.
+
+    Returns True if the file has a consistent multi-column delimited
+    structure, else False. Deliberately strict: prose / README-style text
+    returns False and is skipped. Kept in sync with the identical heuristic
+    in zenodo-skill-builder's fetch.py so both agree on which `.txt` files
+    are genuinely tabular.
+    """
+    try:
+        with open(fp, "r", encoding="utf-8", errors="replace") as f:
+            lines = []
+            for line in f:
+                s = line.rstrip("\n")
+                if s.strip():
+                    lines.append(s)
+                if len(lines) >= max_lines:
+                    break
+    except Exception:
+        return False
+    if len(lines) < 3:
+        return False
+    for delim in ("\t", ";", "|", ","):
+        counts = [ln.count(delim) for ln in lines]
+        if min(counts) >= 1:
+            modal, n = Counter(counts).most_common(1)[0]
+            if n >= 0.8 * len(lines):
+                return True
+    import re as _re
+    field_counts = [len(_re.split(r"\s+", ln.strip())) for ln in lines]
+    modal, n = Counter(field_counts).most_common(1)[0]
+    return modal >= 2 and n >= 0.8 * len(lines)
 
 
 def _inspect_csv(fp):
@@ -450,7 +492,12 @@ def inventory_repo(repo_dir):
         if not fp.is_file():
             continue
         ext = fp.suffix.lower()
-        if ext not in TABULAR_EXTS:
+        if ext in SNIFF_EXTS:
+            # `.txt` / `.dat`: only inventory when the content is genuinely
+            # delimited tabular data. Prose / docs are skipped.
+            if not _looks_tabular(fp):
+                continue
+        elif ext not in TABULAR_EXTS:
             continue
 
         entry = {
@@ -459,7 +506,7 @@ def inventory_repo(repo_dir):
             "size_bytes": fp.stat().st_size,
         }
         try:
-            if ext in {".csv", ".tsv"}:
+            if ext in {".csv", ".tsv"} or ext in SNIFF_EXTS:
                 entry.update(_inspect_csv(fp))
             elif ext in {".xlsx", ".xls"}:
                 entry.update(_inspect_excel(fp))
