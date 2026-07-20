@@ -42,6 +42,33 @@ description: >-
    `fetch.py`'s stdout already summarises both. Downstream steps read
    specific fields from them with `json.load` in a script.
 
+6. **STOP for user approval before you build anything — no exceptions.**
+   After fetch + inventory(-ies) + reading the docs, your next action
+   is to **present a proposal and END YOUR TURN**. Do NOT write a build
+   script. Do NOT write a `SKILL.md`. Do NOT merge files into Parquet
+   or bundle data. Do NOT install anything. You wait for the user to
+   reply "yes" / "no" / edits in the next `%%ask` cell, and only then
+   do you build.
+
+   This is the single most-skipped rule in the field, and skipping it
+   is never harmless. The most consequential decisions in a build are
+   made at proposal time and are invisible in the finished skill:
+
+   - **one combined skill vs. two separate skills** (combined route);
+   - **the join semantics** tying tabular rows to array indices — this
+     is subtle, easy to get wrong, and a wrong join silently corrupts
+     every cross-layer query. A domain user reviewing the proposal is
+     the only reliable check on it;
+   - **bundling data vs. lazy download**, a data-distribution decision
+     the user may have opinions about;
+   - **channel/column semantics** the docs left ambiguous.
+
+   The user cannot veto any of these once you have already built. The
+   gate exists precisely so they can. Treat "I'm confident, so I'll
+   just build it" as a rule violation — confidence is exactly the state
+   in which a wrong-but-plausible join ships unreviewed. Build only
+   after an explicit approval reply.
+
 ## When to Use
 
 Trigger when the user provides a Zenodo reference and asks to build a
@@ -122,7 +149,9 @@ python /home/jovyan/.deepagents/agent/skills/array-skill-builder/inventory.py \
 
 The inventory picks up `_zenodo_metadata.json` and `_docs/` from the
 staged directory automatically, so record provenance and
-documentation flow through without extra glue.
+documentation flow through without extra glue. Then follow
+`array-skill-builder`'s **Step 4 hard stop** — propose and wait
+(pre-flight rule 6); do not build before the user replies.
 
 #### `ROUTE: tabular`
 
@@ -145,6 +174,8 @@ SKILL.md): source the frontmatter `description`, the `## Data`
 section's `Source:` bullet, and the citation from
 `_zenodo_metadata.json` (`title`, `description`, `creators`, `doi`,
 `license`, `source_url`) rather than inferring them from filenames.
+That skill's **Step 4 hard stop** applies unchanged — propose and
+wait (pre-flight rule 6) before building.
 
 #### `ROUTE: combined`
 
@@ -158,7 +189,8 @@ files are *linked* — they describe the same entities and share an
 index, grid id, station id, or timestamp. Splitting them produces two
 skills that each answer half a question and neither can join.
 
-Run **both** inventories, then propose at **one** gate:
+Run **both** inventories, read the docs, then **STOP and propose**
+(pre-flight rule 6) — do not build yet:
 
 ```bash
 python /home/jovyan/.deepagents/agent/skills/array-skill-builder/inventory.py \
@@ -195,10 +227,36 @@ emitted skill carries loaders from both conventions:
 different study area, a different entity, no shared key. Say so
 explicitly in the proposal and explain why you are splitting.
 
-Either way, **Step 4 of the downstream builder is still a hard stop**:
-present the plan and end your turn. Let the user confirm the
-one-skill-vs-two decision before building — it is exactly the kind of
-judgement call the gate exists for.
+**Now STOP (pre-flight rule 6). Present this proposal and END YOUR
+TURN. Do not write a build script or SKILL.md.** The proposal must
+state, explicitly, every decision the user can't see once built:
+
+```
+I've fetched and inspected <record> (ROUTE: combined). Proposal:
+
+Source: <title, creators, license, DOI>
+Files: <N> array (<names>), <M> tabular (<names>), <K> docs
+
+Proposed shape: ONE combined skill `<name>`   [or: TWO skills, because …]
+  - Tabular layer: each row is a <entity> (<row count>, columns: <key ones>)
+  - Array layer: <HDF5 groups / what the arrays hold>
+  - JOIN: <tabular column> ↔ <array index>, mapping `<exact arithmetic>`
+    (e.g. "node N → Figure_06 index N−1"). ← STATE THE OFFSET EXPLICITLY.
+    I inferred this from <docs / matching ranges / shapes>; please confirm
+    it, since a wrong offset silently corrupts every cross-layer query.
+  - Data: bundle (<size> MiB, under ~100 MiB) [or: lazy download]
+  - Column-name notes: <any collisions / renames / ambiguous units>
+
+Open questions: <only real judgement calls; skip if none>
+
+Reply "yes" to build as proposed, or with edits.
+(Resume state: /tmp/zenodo-skills/<record-id>/ + the two inventories.)
+```
+
+The **JOIN line is the one you must not hand-wave.** It is the most
+error-prone decision in a combined build and is invisible in the
+finished skill — spell out the exact index arithmetic and ask the
+user to confirm it. Then stop and wait for their reply.
 
 #### `ROUTE: none`
 
