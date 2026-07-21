@@ -58,6 +58,7 @@ except ImportError:
 # Users can opt out by setting SKIP_CORE_SKILLS = True before running this installer.
 _CORE_SKILLS = (
     "arcgis-feature-skill-builder",
+    "array-skill-builder",
     "ckan-skill-builder",
     "ndp-search",
     "ndp-skill-builder",
@@ -70,6 +71,7 @@ _CORE_SKILLS = (
     "tabular-skill-builder",
     "us-counties",
     "us-states",
+    "zenodo-skill-builder",
 )
 
 print("ARGUS bootstrap starting...")
