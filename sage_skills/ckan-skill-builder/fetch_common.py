@@ -38,12 +38,12 @@ from pathlib import Path
 # --------------------------------------------------------------------------- #
 
 # Array / gridded scientific formats -> array-skill-builder.
-# NetCDF-4 (.nc/.nc4) is HDF5-based and readable by array-skill-builder's h5py
-# walker today; classic NetCDF-3 is not HDF5 and would need scipy/netCDF4 (the
-# array core notes this). Zarr stores are directories and usually arrive zipped.
+# array-skill-builder reads HDF5 via h5py and NetCDF (both NetCDF-3 classic
+# and NetCDF-4) via xarray + the netCDF4 backend. Zarr stores are directories
+# and usually arrive zipped (unpacked by the archive handling below).
 ARRAY_EXTS = {
-    ".h5", ".hdf5", ".he5",           # HDF5 family
-    ".nc", ".nc4", ".cdf",            # NetCDF
+    ".h5", ".hdf5", ".he5",           # HDF5 family (h5py)
+    ".nc", ".nc4", ".cdf",            # NetCDF-3 + NetCDF-4 (xarray/netCDF4)
     ".zarr",                          # Zarr
 }
 

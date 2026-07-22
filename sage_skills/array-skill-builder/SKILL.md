@@ -279,9 +279,16 @@ Substitute the actual skill directory prefix for other runtimes
 (Claude Code, Codex).
 
 With `--dir`, files are read **in place** — nothing is re-downloaded,
-and the fetcher's `_zenodo_metadata.json` / `_docs/` are picked up
-automatically so provenance and documentation flow into the
-inventory without extra glue.
+and the fetcher's `_zenodo_metadata.json` / `_ckan_metadata.json` /
+`_docs/` are picked up automatically so provenance and documentation
+flow into the inventory without extra glue.
+
+**Reader dependencies.** `inventory.py` reads HDF5 with `h5py` and
+NetCDF with `xarray` (+ the `netCDF4` backend, which handles both
+NetCDF-3 classic and NetCDF-4). Neither is preinstalled. If the
+inventory errors with `xarray is not installed ...` or `h5py is not
+installed ...`, install what it names and re-run:
+`pip install --user h5py` or `pip install --user xarray netCDF4`.
 
 **Always route `--out` under `/tmp/`, never under `SAGE_OUTPUT_DIR`
 or `~/work/`.** HDF5 collections routinely total tens or hundreds of
@@ -439,10 +446,26 @@ cheaply:
    - Missing → the scratch dir got cleared (rare; pod recycle). Tell
      the user and ask them to re-run `%%skill-build`.
 
-### Step 5 — Design the CHANNELS mapping
+### Step 5 — Branch on the group's format, then design the loaders
+
+The inventory reports **`groups[i].format`** — either `hdf5` or
+`netcdf`. The two use different readers and loader shapes:
+
+- **`format: hdf5`** — h5py + a CHANNELS mapping. Follow Steps 5a → 7
+  below (the CHANNELS / `load_month` / Igor-time-axis machinery).
+- **`format: netcdf`** — xarray. **Skip the CHANNELS steps entirely**
+  and follow **Step 6b** instead. NetCDF variables already carry
+  clean names, named dimensions, and CF units, so there is no
+  dialect-reconciliation or CHANNELS-tuple work — xarray reads the
+  file directly.
+
+Pick the branch per group. A record can even be combined (some HDF5,
+some NetCDF), though that is rare.
+
+#### Step 5a — Design the CHANNELS mapping (HDF5 only)
 
 From the inventory's `groups[i].normalised_channels` field, produce
-the CHANNELS dict for each proposed skill. The rules:
+the CHANNELS dict for each proposed HDF5 skill. The rules:
 
 **One entry per normalised channel.** Key = clean short name in
 snake_case (agent's choice, informed by the documentation).
@@ -577,7 +600,72 @@ def _ensure(key):
     return local
 ```
 
-### Step 7 — Design the time-axis conversion
+### Step 6b — NetCDF loaders (xarray) — use INSTEAD of Steps 5a–7
+
+For a group whose `format` is `netcdf`, do NOT build a CHANNELS dict
+or an h5py loader. NetCDF is self-describing — variables carry names,
+named dimensions, units, and (usually CF) time — so xarray reads it
+directly. The emitted skill's How-to-Use block is just:
+
+```python
+import xarray as xr
+from pathlib import Path
+
+_SKILL_NAME = "<skill-name>"
+
+# Deps: xarray + the netCDF4 backend (reads NetCDF-3 classic AND
+# NetCDF-4). Not preinstalled — install on first use.
+try:
+    import xarray as xr
+except ImportError:
+    import subprocess, sys
+    subprocess.run([sys.executable, "-m", "pip", "install", "--user",
+                    "xarray", "netCDF4"], check=True)
+    import xarray as xr
+
+def _data_dir():
+    ...   # the portable _data_dir() from the bundled-data rule above,
+          # OR the /tmp/<skill-name>-cache lazy-download path
+
+def load(<partition-key args if a multi-file collection>):
+    """Open the NetCDF dataset as an xarray.Dataset.
+
+    decode_times=True lets xarray apply CF time decoding; drop to
+    False if the file uses a non-CF time axis (e.g. IOAPI TFLAG) —
+    see Caveats.
+    """
+    path = _data_dir() / "<filename>"          # single-file case
+    return xr.open_dataset(path, decode_times=True)
+```
+
+Loader shape still follows the group topology (Step 6): a single-file
+group emits one `load()`; a multi-file collection emits
+`load_<axis>(key)` + `load_all()` that `xr.open_mfdataset(...)`
+concatenates along the partition dimension (or opens each and
+`xr.concat`s). For the collection case, prefer:
+
+```python
+def load_all():
+    """Open all partitions as one dataset, concatenated along <dim>."""
+    return xr.open_mfdataset(sorted(_data_dir().glob("*.nc")),
+                             combine="by_coords")   # or concat_dim="<time>"
+```
+
+**Emit a variable table, not a CHANNELS dict.** From the inventory's
+`datasets_union` (which carries each variable's `dims`, `units`,
+`long_name`), write a `## Variables` table: variable name, dims,
+units, meaning (from `long_name` / the docs). List coordinate
+variables separately. Access is by name and dimension, e.g.
+`ds["PM25"].isel(TSTEP=0)` or `ds["PM25"].sel(time="2025-09-26")`.
+
+**Data-quality still applies** (Step 8's rule): if the inventory
+flagged a variable, document the range + a filter recipe in Caveats;
+do not mutate values in `load()`. The `where` idiom is xarray's
+filter: `ds["PM25"].where(ds["PM25"] >= 0)`.
+
+Then skip to Step 8 to compose the SKILL.md (the NetCDF variant).
+
+### Step 7 — Design the time-axis conversion (HDF5 only)
 
 If the inventory identified a time axis (`groups[i].time_axis` is
 not null), the emitted skill needs a converter. Recognised
@@ -652,18 +740,25 @@ partition axis) fills in the rest.
    inventory surfaced) and how `open_file` / `open_partition`
    navigates it.
 
-7. **## Channels (N total)** — Markdown table with columns:
-   `Clean name | Source-name(s) in files | Physical quantity | Units`.
-   Populate from CHANNELS + the documentation. Include ALL clean
-   names. In "Source-name(s)" list every candidate the CHANNELS
-   tuple carries. Mark the time axis separately below the table.
+7. **## Channels / Variables table** —
+   - **HDF5:** `## Channels (N total)` — `Clean name | Source-name(s)
+     in files | Physical quantity | Units`, populated from CHANNELS +
+     docs. List every candidate the CHANNELS tuple carries. Mark the
+     time axis separately below the table.
+   - **NetCDF:** `## Variables (N total)` — `Variable | Dimensions |
+     Units | Meaning`, populated from the inventory's `datasets_union`
+     (`dims`, `units`, `long_name`) + docs. List coordinate variables
+     separately.
 
 8. **## How to Use** — narrative + code:
-   - Import block (h5py, pandas, numpy, urllib).
-   - The full CHANNELS dict verbatim, followed by the tuple-guard
-     assert.
-   - The `_ensure`, `open_*`, `load_*` helpers verbatim from Step 6.
-   - The `_timestamps` helper from Step 7.
+   - **HDF5:** import block (h5py, pandas, numpy, urllib); the full
+     CHANNELS dict verbatim + the tuple-guard assert; the `_ensure`,
+     `open_*`, `load_*` helpers from Step 6; the `_timestamps` helper
+     from Step 7.
+   - **NetCDF:** import block (xarray, with the on-demand install
+     guard); the `_data_dir()` / cache helper; the `load()` /
+     `load_all()` xarray helpers from Step 6b. No CHANNELS, no
+     `_timestamps` — xarray's `decode_times` handles CF time.
 
 9. **## Examples** — 3–7 code examples showing realistic queries.
    Each has a natural-language description and a code block using
@@ -674,7 +769,11 @@ partition axis) fills in the rest.
     lands. Include one entry per finding:
 
     - **Time-axis convention** — the epoch, timezone, and how to
-      convert (Igor vs Unix vs CF).
+      convert (Igor vs Unix vs CF). **NetCDF:** state whether the
+      file is CF-compliant (`load(decode_times=True)` works) or uses
+      a non-CF axis such as IOAPI `TFLAG` (`YYYYDDD,HHMMSS`), where
+      `decode_times=True` will fail/mislead and the user must decode
+      the flag manually — give the recipe.
     - **Source-name mislabelling** — any channels where the source
       dataset name is misleading (ATLASM5's `Indoor_Humidity___C_`
       being RH-percent, not degrees C).

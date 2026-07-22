@@ -150,9 +150,26 @@ def _import_h5py():
     return h5py
 
 
+def _import_xarray():
+    try:
+        import xarray  # noqa: F401
+    except ImportError:
+        raise _InventoryError(
+            "xarray is not installed (needed to read NetCDF). Run: "
+            "pip install --user xarray netCDF4"
+        )
+    import xarray
+    return xarray
+
+
 def _import_numpy():
     import numpy as np
     return np
+
+
+# File extensions handled by the NetCDF (xarray) path vs the HDF5 (h5py) path.
+_NETCDF_EXTS = (".nc", ".nc4", ".cdf")
+_HDF5_EXTS = (".h5", ".hdf5", ".he5")
 
 
 def _normalise_name(name: str) -> str:
@@ -204,6 +221,14 @@ def _detect_time_axis(datasets: dict[str, dict]) -> str | None:
         wu = meta.get("attrs", {}).get("IGORWaveUnits")
         if isinstance(wu, (bytes, str)):
             if (wu.decode() if isinstance(wu, bytes) else wu).strip() == "dat":
+                return src
+    # CF-convention time: a variable whose `units` reads "<unit> since <date>".
+    for src, meta in datasets.items():
+        u = meta.get("attrs", {}).get("units")
+        if isinstance(u, (bytes, str)):
+            us = (u.decode() if isinstance(u, bytes) else u).lower()
+            if " since " in us and any(us.startswith(p) for p in
+                                       ("seconds", "minutes", "hours", "days")):
                 return src
     for src, meta in datasets.items():
         base = src.lower().rsplit("/", 1)[-1]
@@ -272,6 +297,84 @@ def _dataset_stats(np, obj, max_samples: int = 200_000) -> dict[str, Any]:
         "p05":    float(np.percentile(finite, 5)),
         "p95":    float(np.percentile(finite, 95)),
     }
+
+
+def _stats_from_array(np, arr, n, max_samples=200_000):
+    """Shared stats body for an already-materialised flat numpy array."""
+    if n == 0:
+        return {"n": 0}
+    if arr.size > max_samples:
+        step = max(1, arr.size // max_samples)
+        arr = arr[::step]
+    arr = arr.astype("float64", copy=False)
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return {"n": n, "n_finite": 0}
+    return {
+        "n": n,
+        "n_finite": int(finite.size),
+        "min":    float(finite.min()),
+        "max":    float(finite.max()),
+        "median": float(np.median(finite)),
+        "p05":    float(np.percentile(finite, 5)),
+        "p95":    float(np.percentile(finite, 95)),
+    }
+
+
+def _walk_netcdf(np, path):
+    """Walk a NetCDF file with xarray. Returns (datasets, global_attrs).
+
+    `datasets` is keyed by variable name and shaped like the h5py walker's
+    output — shape / dtype / dtype_kind / attrs — plus NetCDF-specific
+    `dims` (named dimensions) and `is_coord`. Reads NetCDF-3 (classic) and
+    NetCDF-4 (HDF5-based) alike via the netCDF4 backend.
+    """
+    xr = _import_xarray()
+    datasets: dict[str, dict] = {}
+    # decode_times=False: a non-CF / IOAPI time axis must not fail the open;
+    # time is detected + documented separately, and the emitted loader lets
+    # the user opt into xarray's CF decoding.
+    ds = xr.open_dataset(path, decode_times=False, mask_and_scale=False)
+    try:
+        global_attrs = {}
+        for k, v in ds.attrs.items():
+            try:
+                global_attrs[k] = v.item() if hasattr(v, "item") else v
+            except Exception:
+                global_attrs[k] = str(v)
+        for name, var in ds.variables.items():
+            attrs = {}
+            for k, v in var.attrs.items():
+                try:
+                    attrs[k] = v.item() if hasattr(v, "item") else v
+                except Exception:
+                    attrs[k] = str(v)
+            meta = {
+                "shape":      tuple(int(x) for x in var.shape),
+                "dtype":      str(var.dtype),
+                "dtype_kind": var.dtype.kind,
+                "dims":       [str(d) for d in var.dims],
+                "attrs":      attrs,
+                "is_coord":   name in ds.coords,
+            }
+            if var.dtype.kind in ("f", "i", "u"):
+                # Skip stats on very large variables to bound memory (the file
+                # size guard caps the download, but a single var can still be
+                # hundreds of MB). Shape/dtype/attrs are still recorded.
+                if getattr(var, "nbytes", 0) <= 400 * 1024 * 1024:
+                    try:
+                        flat = np.asarray(var.values).ravel()
+                        stats = _stats_from_array(np, flat, int(var.size))
+                        meta["stats"] = stats
+                        flag = _corruption_flag(stats)
+                        if flag:
+                            meta["corruption_flag"] = flag
+                    except Exception as e:
+                        meta["stats"] = {"error": f"{type(e).__name__}: {e}"}
+            datasets[str(name)] = meta
+    finally:
+        ds.close()
+    return datasets, global_attrs
 
 
 def _corruption_flag(stats: dict[str, Any]) -> str | None:
@@ -390,9 +493,11 @@ def _infer_partition_axis(filenames: list[str]) -> tuple[str, dict[str, str]]:
 
 def _inventory_one_file(url: str, filename: str,
                         cache_dir: Path, max_bytes: int) -> dict[str, Any]:
-    """Download-and-inspect one HDF5 file. Returns a per-file record."""
-    h5py = _import_h5py()
+    """Download-and-inspect one array file (HDF5 or NetCDF). Returns a
+    per-file record. The reader is chosen by extension: NetCDF (.nc/.nc4/
+    .cdf) via xarray, HDF5 (.h5/.hdf5/.he5) via h5py."""
     np = _import_numpy()
+    is_netcdf = filename.lower().endswith(_NETCDF_EXTS)
     t0 = time.time()
     if url.startswith("file://"):
         # Already staged locally by a fetcher shell — read in place rather
@@ -413,49 +518,61 @@ def _inventory_one_file(url: str, filename: str,
             }
     dl_sec = time.time() - t0
 
+    fmt = "netcdf" if is_netcdf else "hdf5"
     try:
-        with h5py.File(path, "r") as f:
-            top_keys = list(f.keys())
-            if len(top_keys) == 1:
-                top_group_name = top_keys[0]
-                grp = f[top_group_name]
-            else:
-                top_group_name = None
-                grp = f
-            datasets: dict[str, dict] = {}
-            _walk_group(np, grp, "", datasets)
-            # Per-dataset stats for numeric leaves
-            for src, meta in list(datasets.items()):
-                if meta.get("is_group") or "error" in meta:
-                    continue
-                if meta.get("dtype_kind") in ("f", "i", "u"):
-                    if src.rsplit("/", 1)[-1] in _IGOR_ADMIN_NAMES:
+        if is_netcdf:
+            datasets, global_attrs = _walk_netcdf(np, path)
+            top_group_name = None
+        else:
+            h5py = _import_h5py()
+            global_attrs = {}
+            with h5py.File(path, "r") as f:
+                top_keys = list(f.keys())
+                if len(top_keys) == 1:
+                    top_group_name = top_keys[0]
+                    grp = f[top_group_name]
+                else:
+                    top_group_name = None
+                    grp = f
+                datasets = {}
+                _walk_group(np, grp, "", datasets)
+                # Per-dataset stats for numeric leaves
+                for src, meta in list(datasets.items()):
+                    if meta.get("is_group") or "error" in meta:
                         continue
-                    try:
-                        obj = grp[src]
-                    except Exception:
-                        continue
-                    stats = _dataset_stats(np, obj)
-                    meta["stats"] = stats
-                    flag = _corruption_flag(stats)
-                    if flag:
-                        meta["corruption_flag"] = flag
+                    if meta.get("dtype_kind") in ("f", "i", "u"):
+                        if src.rsplit("/", 1)[-1] in _IGOR_ADMIN_NAMES:
+                            continue
+                        try:
+                            obj = grp[src]
+                        except Exception:
+                            continue
+                        stats = _dataset_stats(np, obj)
+                        meta["stats"] = stats
+                        flag = _corruption_flag(stats)
+                        if flag:
+                            meta["corruption_flag"] = flag
         time_axis_src = _detect_time_axis(datasets)
         fp, breakdown = _fingerprint(datasets, time_axis_src)
+    except _InventoryError:
+        raise
     except Exception as e:
+        reader = "xarray" if is_netcdf else "h5py"
         return {
-            "filename": filename, "url": url,
+            "filename": filename, "url": url, "format": fmt,
             "download_seconds": round(dl_sec, 2),
             "downloaded_bytes": size,
-            "error": f"h5py open/walk failed: {type(e).__name__}: {e}",
+            "error": f"{reader} open/walk failed: {type(e).__name__}: {e}",
         }
 
     return {
         "filename":         filename,
         "url":              url,
+        "format":           fmt,
         "downloaded_bytes": size,
         "download_seconds": round(dl_sec, 2),
         "top_group":        top_group_name,
+        "global_attrs":     global_attrs,
         "fingerprint":      fp,
         "time_axis":        time_axis_src,
         "n_datasets":       sum(1 for m in datasets.values()
@@ -485,10 +602,16 @@ def _build_groups(files_by_fp: dict[str, list[dict]]) -> list[dict]:
                     "flagged_in_files": [],
                     "attrs_examples": {},
                     "stats_by_file": {},
+                    "dims": None,        # NetCDF named dimensions (first seen)
+                    "is_coord": False,
                 })
                 union[src]["src_names_seen"].add(src)
                 union[src]["ranks"][len(meta.get("shape", ()))] += 1
                 union[src]["dtype_kinds"][meta.get("dtype_kind", "?")] += 1
+                if meta.get("dims") and union[src]["dims"] is None:
+                    union[src]["dims"] = list(meta["dims"])
+                if meta.get("is_coord"):
+                    union[src]["is_coord"] = True
                 if meta.get("corruption_flag"):
                     union[src]["flagged_in_files"].append(
                         (r["filename"], meta["corruption_flag"])
@@ -514,11 +637,13 @@ def _build_groups(files_by_fp: dict[str, list[dict]]) -> list[dict]:
         groups.append({
             "_fingerprint":  fp,
             "n_files":       len(records),
+            "format":        records[0].get("format", "hdf5"),
             "partition_axis": axis,
             "partition_keys": keys,
             "time_axis":     records[0]["time_axis"],
             "top_group_names": sorted({r.get("top_group") for r in records
                                         if r.get("top_group")}),
+            "global_attrs":  records[0].get("global_attrs") or {},
             "datasets_union": union,
             "normalised_channels": {
                 norm: sorted(set(sources))
@@ -666,6 +791,8 @@ def _merge_similar_groups(groups: list[dict],
                         "flagged_in_files": list(u.get("flagged_in_files", [])),
                         "attrs_examples":   dict(u.get("attrs_examples", {})),
                         "stats_by_file":    dict(u.get("stats_by_file", {})),
+                        "dims":             u.get("dims"),
+                        "is_coord":         u.get("is_coord", False),
                     }
                     continue
                 tgt["src_names_seen"] = sorted(
@@ -689,10 +816,12 @@ def _merge_similar_groups(groups: list[dict],
             "_fingerprint":  "merged:" + "+".join(component_fps),
             "merged_from":   component_fps,
             "n_files":       len(combined_files),
+            "format":        groups[members[0]].get("format", "hdf5"),
             "partition_axis": axis,
             "partition_keys": keys,
             "time_axis":     groups[members[0]]["time_axis"],
             "top_group_names": sorted(top_groups),
+            "global_attrs":  groups[members[0]].get("global_attrs") or {},
             "datasets_union":  combined_dsu,
             "normalised_channels": {
                 norm: sorted(set(srcs))
@@ -752,14 +881,27 @@ def _print_summary(source_desc: str,
         example_files = [f["filename"] for f in g["files"][:3]]
         example_keys  = [f["partition_key"] for f in g["files"][:3]]
         n_channels = len(g["normalised_channels"])
+        fmt = g.get("format", "hdf5")
         lines.append(
-            f"  [{i}] fp={g['_fingerprint'][:8]}  n_files={n}  "
-            f"axis={axis}  channels={n_channels}"
+            f"  [{i}] fp={g['_fingerprint'][:8]}  format={fmt}  n_files={n}  "
+            f"axis={axis}  {'variables' if fmt=='netcdf' else 'channels'}={n_channels}"
         )
         lines.append(f"       time_axis={g['time_axis']!r}  "
                      f"top_groups={g['top_group_names']}")
         lines.append(f"       example files: {example_files}")
         lines.append(f"       partition keys: {example_keys}")
+        # NetCDF: show each variable's named dims + units so the SKILL.md
+        # writer can emit dimension-aware xarray loaders without re-opening
+        # the file. (HDF5 has no named dims; this block is NetCDF-only.)
+        if fmt == "netcdf":
+            lines.append("       variables (name: dims [units]):")
+            for src, u in list(g["datasets_union"].items())[:20]:
+                dims = u.get("dims") or []
+                ax = u.get("attrs_examples", {})
+                units = ax.get("units", "")
+                coord = " [coord]" if u.get("is_coord") else ""
+                lines.append(f"         {src}: {dims} "
+                             f"[{units}]{coord}".rstrip())
         # The emitted skill needs (partition_key -> remote URL). Print the
         # full mapping here so the SKILL.md writer never has to open the
         # inventory JSON just to recover download URLs.
