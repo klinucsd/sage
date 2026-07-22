@@ -89,6 +89,14 @@ DOC_NAME_HINTS = ("readme", "license", "licence", "citation", "changelog",
 
 _UNSAFE_FS_CHARS = set('/\\:*?"<>|')
 
+# Build-phase download ceiling. The fetcher downloads whole files to /tmp for
+# the build; multi-GB scientific HDF5 (e.g. a 28.6 GB InSAR time-series) would
+# fill pod-local disk and take too long. Files larger than this are recorded as
+# 'too-large' and skipped — the honest signal that building them needs
+# metadata-only remote reads (HTTP Range via h5py ros3/fsspec, design-doc
+# §11.4), which array-skill-builder does not do yet.
+MAX_DOWNLOAD_BYTES = 5 * 1024 ** 3   # 5 GiB
+
 # Classes the router treats as "buildable data".
 _ARRAY = "array"
 _TABULAR = "tabular"
@@ -215,6 +223,31 @@ def download(url: str, dest: Path, user_agent: str = "argus-fetcher/0.1",
     return size
 
 
+def probe_size(url, user_agent="argus-fetcher/0.1", opener=None):
+    """Return the resource's total byte size via a Range probe, or None.
+
+    Uses `Range: bytes=0-0` and reads the total from Content-Range
+    (`bytes 0-0/<total>`). Falls back to Content-Length on a non-partial
+    response. Returns None if the size can't be determined (the caller then
+    downloads normally, since we can't prove it's oversized)."""
+    req = urllib.request.Request(
+        url, headers={"User-Agent": user_agent, "Range": "bytes=0-0"})
+    _open = opener.open if opener is not None else urllib.request.urlopen
+    try:
+        with _open(req, timeout=60) as r:
+            cr = r.headers.get("Content-Range")
+            if cr and "/" in cr:
+                tail = cr.rsplit("/", 1)[-1].strip()
+                if tail.isdigit():
+                    return int(tail)
+            cl = r.headers.get("Content-Length")
+            if cl and cl.isdigit() and getattr(r, "status", None) != 206:
+                return int(cl)
+    except Exception:
+        return None
+    return None
+
+
 def _safe_members_zip(zf: zipfile.ZipFile, dest: Path):
     for info in zf.infolist():
         p = (dest / info.filename).resolve()
@@ -276,6 +309,20 @@ def process_resource(url, key, out_dir: Path, docs_dir: Path,
     """
     entries = []
     kind = classify(key)
+
+    # Build-phase size guard: refuse to download files above the cap. Building
+    # them needs metadata-only remote reads (§11.4), not a full /tmp download.
+    total = probe_size(url, user_agent, opener=opener)
+    if total is not None and total > MAX_DOWNLOAD_BYTES:
+        gb = total / 1024 ** 3
+        cap = MAX_DOWNLOAD_BYTES / 1024 ** 3
+        print(f"  {'too-large':22s} {key}  ({gb:.1f} GB > {cap:.0f} GB cap) "
+              f"-> skipped")
+        entries.append({"filename": key, "class": "too-large",
+                        "intended_class": kind, "url": url,
+                        "size_bytes": total})
+        return entries
+
     target_dir = docs_dir if kind == _DOCS else out_dir
     dest = target_dir / safe_name(key)
     try:
@@ -353,6 +400,8 @@ def route(entries) -> str:
         return "array"
     if tabulars:
         return "tabular"
+    if has("too-large"):
+        return "too-large"
     if has(_RASTER):
         return "raster"
     return "none"
@@ -369,6 +418,7 @@ def report_classification(entries, out_dir: Path, docs_dir: Path,
         return [e for e in entries if e["class"] == kind and "error" not in e]
     arrays, tabulars = of(_ARRAY), of(_TABULAR)
     docs, rasters, others = of(_DOCS), of(_RASTER), of(_OTHER)
+    toolarge = of("too-large")
     errs = [e for e in entries if "error" in e]
     the_route = route(entries)
 
@@ -377,6 +427,14 @@ def report_classification(entries, out_dir: Path, docs_dir: Path,
     print(f"  array   : {len(arrays)} file(s)  -> array-skill-builder")
     print(f"  tabular : {len(tabulars)} file(s)  -> tabular-skill-builder")
     print(f"  docs    : {len(docs)} file(s)  -> read for semantics (_docs/)")
+    if toolarge:
+        cap = MAX_DOWNLOAD_BYTES / 1024 ** 3
+        print(f"  too-large: {len(toolarge)} file(s)  -> exceeds the {cap:.0f} GB "
+              f"build-phase download cap")
+        for e in toolarge[:3]:
+            gb = (e.get("size_bytes") or 0) / 1024 ** 3
+            print(f"      {e['filename']}  ({gb:.1f} GB, would be "
+                  f"{e.get('intended_class')})")
     if rasters:
         print(f"  raster  : {len(rasters)} file(s)  -> NOT YET SUPPORTED "
               f"(array-skill-builder has no GeoTIFF/GDAL reader)")
@@ -399,6 +457,11 @@ def report_classification(entries, out_dir: Path, docs_dir: Path,
         print("  Record holds BOTH array and tabular data. Run BOTH")
         print("  inventories, then propose at ONE gate. Default to a single")
         print("  combined skill when the files share an index/grid/key.")
+    elif the_route == "too-large":
+        print("  The array file(s) exceed the build-phase download cap.")
+        print("  Building large remote HDF5 needs metadata-only Range reads,")
+        print("  which array-skill-builder does not do yet — tell the user")
+        print("  the file size and stop.")
     elif the_route == "raster":
         print("  Raster data only (GeoTIFF/GDAL). array-skill-builder cannot")
         print("  build these yet — tell the user and stop.")
