@@ -2,17 +2,15 @@
 name: ckan-skill-builder
 description: >-
   Build one or more ARGUS skills from a CKAN dataset (data.gov,
-  data.cnra.ca.gov, and other CKAN-based open-data portals). Use when
-  the user provides a CKAN dataset URL — either the
-  `/api/3/action/package_show?id=<slug>` API URL or the
+  data.cnra.ca.gov, National Data Platform, and other CKAN-based
+  open-data portals). Use when the user provides a CKAN dataset URL —
+  either the `/api/3/action/package_show?id=<slug>` API URL or the
   `/dataset/<slug>` browse URL — and asks to build, create, or
-  generate skills from it. Fetcher-only: downloads the dataset's
-  tabular resources into a local directory, then hands off to the
-  `tabular-skill-builder` skill for the enumerate → propose → build
-  pipeline. Two-phase workflow (from tabular-skill-builder): first you
-  enumerate the downloaded files and propose a skill plan, then STOP
-  for the user's approval; on "yes" in the next %%ask cell you
-  continue to build.
+  generate skills from it. Fetcher-only: downloads and classifies the
+  dataset's resources (unpacking `.zip` / `.tar.gz` archives), then
+  routes to `tabular-skill-builder` (CSV/Excel/…), `array-skill-builder`
+  (HDF5/NetCDF), or both. Whichever downstream builder runs, it stops
+  for the user's approval before building.
 ---
 
 # CKAN Skill Builder
@@ -23,33 +21,38 @@ These rules define the contract this skill fulfills. Read them
 before doing anything else.
 
 1. **You are a fetcher shell.** Your only responsibility is to
-   download the dataset's tabular resources and hand off to
-   `tabular-skill-builder`. Do not write an inventory script. Do not
-   probe schemas. Do not propose skills yourself. Once `fetch.py`
-   finishes, every remaining step in the build is
-   `tabular-skill-builder`'s Steps 2 through 9.
+   download + classify the dataset's resources and hand off to the
+   right core builder. Do not write an inventory script. Do not probe
+   schemas. Do not propose skills yourself. Once `fetch.py` finishes,
+   the rest of the build belongs to `tabular-skill-builder` and/or
+   `array-skill-builder`, per the `ROUTE:` line `fetch.py` prints.
 
 2. **Use the bundled `fetch.py`, not a custom script.** The skill
    ships `fetch.py` next to this `SKILL.md`. It handles CKAN URL
-   resolution (API vs browse URL), format allowlist, ZIP unpacking,
-   safe filename picking, dataset-level metadata capture, and a
-   per-resource skipped-list. Do not re-implement it. Do not call
-   the CKAN API yourself first "to peek at the resources" —
-   `fetch.py` does exactly one metadata call plus one download
-   call per allowed resource, and its stdout summary is what you
-   read to know what happened.
+   resolution, downloads every resource, classifies each as array /
+   tabular / docs, unpacks `.zip` / `.tar.gz` archives and re-classifies
+   their contents, captures dataset metadata, and prints a `ROUTE:`
+   line. Do not re-implement it. Do not call the CKAN API yourself
+   first "to peek at the resources" — `fetch.py`'s stdout summary is
+   what you read to know what happened.
 
-3. **Download to `/tmp/repo-skills/<dataset-slug>/`.** This is the
-   same scratch location `repo-skill-builder` clones repos into and
-   that `tabular-skill-builder` expects to inventory.
-   Sharing the path lets the handoff step invoke
-   `tabular-skill-builder`'s `inventory.py` on the download directory
-   with no additional glue.
+3. **Download to `/tmp/ckan-skills/<dataset-slug>/`.** Pod-local
+   scratch, never `SAGE_OUTPUT_DIR` or `~/work/` (those have a 10 GB
+   quota that a `.tar.gz` of HDF5 can overwhelm). The staged directory
+   is what the downstream inventory reads — tabular-skill-builder's
+   `inventory.py` on the dir, or array-skill-builder's
+   `inventory.py --dir` on it.
 
-4. **After the download, explicitly load `tabular-skill-builder`'s
-   `SKILL.md` and follow it.** The two skills exist as separate
-   files; the handoff is real, not implicit. Step 3 below tells you
-   the exact `read_file` call to make.
+4. **The `ROUTE:` line decides the handoff.** After `fetch.py` runs,
+   read its `ROUTE:` line and follow the matching branch in Step 3.
+   Load the downstream builder's `SKILL.md` fully before continuing —
+   the handoff is real, not implicit.
+
+5. **STOP for user approval before building — no exceptions.**
+   Whichever downstream builder you hand off to, its proposal gate
+   applies unchanged: propose the skill plan and END YOUR TURN; build
+   only after the user replies "yes" in the next `%%ask` cell. A
+   fetcher handing off does not consume that gate.
 
 ## When to Use
 
@@ -66,10 +69,10 @@ Decline (do not use this skill) when:
 - The URL is a github.com repo — use `repo-skill-builder`.
 - The URL is an ArcGIS Feature/Map Service — use
   `arcgis-feature-skill-builder`.
-- The dataset has no tabular resources (only PDFs, HTML pages,
-  raster imagery, or documentation) — `fetch.py` will exit with
-  zero downloaded resources; tell the user there is nothing
-  queryable to build here.
+- The dataset has no buildable data (only PDFs, HTML pages, raster
+  imagery, or documentation) — `fetch.py` prints `ROUTE: none` (or
+  `ROUTE: raster`); tell the user there is nothing queryable to
+  build here.
 
 ## What You Need From the User
 
@@ -96,122 +99,112 @@ CKAN's authoritative slug in its output; if it differs, that's
 fine — the directory name is arbitrary and only used for scratch
 paths.
 
-### Step 2 — Run `fetch.py` to download the tabular resources
+### Step 2 — Run `fetch.py`
 
 **Do not read the CKAN API yourself first.** `fetch.py` does one
-metadata GET plus one download per allowed resource; anything you
-learn by pre-calling the API is redundant with what the script
-already captures into `_ckan_metadata.json`.
+metadata GET plus one download per resource; anything you learn by
+pre-calling the API is redundant with what the script captures.
 
 Under the ARGUS install layout the command is:
 
 ```bash
 python /home/jovyan/.deepagents/agent/skills/ckan-skill-builder/fetch.py \
        <ckan-url> \
-       /tmp/repo-skills/<dataset-slug>
+       /tmp/ckan-skills/<dataset-slug>
 ```
 
-If you read this `SKILL.md` from a different runtime (Claude Code,
-Codex), substitute the actual skills directory for the prefix.
+Substitute the actual skills directory prefix for other runtimes
+(Claude Code, Codex).
 
-The script's stdout ends with a summary block:
+The script downloads + classifies every resource, unpacks archives,
+and ends with a classification tally and a `ROUTE:` line:
 
 ```
-CKAN dataset : '<title>'
-Slug         : <slug>
-Downloaded   : <N> tabular resource(s)
-Skipped      : <M> resource(s)
-Out dir      : /tmp/repo-skills/<dataset-slug>
-Metadata     : /tmp/repo-skills/<dataset-slug>/_ckan_metadata.json
-Skipped list : /tmp/repo-skills/<dataset-slug>/_skipped_resources.json  (only if M > 0)
+Classification
+  array   : 1 file(s)  -> array-skill-builder
+  tabular : 2 file(s)  -> tabular-skill-builder
+  docs    : 1 file(s)  -> read for semantics (_docs/)
 
-Next: hand off to tabular-skill-builder starting at its Step 2 —
-      run its inventory.py on the out dir above.
+ROUTE: combined
 ```
 
-**If `Downloaded` is 0**, stop and tell the user: the dataset has
-no resources in a format we can build a skill from. Mention what
-was skipped (from `_skipped_resources.json`) so they know why.
+It also separates documentation into `_docs/` and writes
+`_ckan_metadata.json` (provenance) + `_classification.json`
+(per-file class + source URLs). Archives (`.zip`, `.tar.gz`) are
+unpacked and their contents re-classified automatically.
 
-**If `Downloaded` is non-zero**, proceed to Step 3.
+### Step 3 — Branch on the `ROUTE:` line
 
-### Step 3 — Hand off to `tabular-skill-builder`
+#### `ROUTE: tabular`
 
-`tabular-skill-builder`'s `SKILL.md` is a large document with strict
-pre-flight rules, a two-phase workflow with a hard-stop between
-inventory and build, and per-format loading conventions. You must
-load it fully into your context before continuing.
+Read `tabular-skill-builder`'s `SKILL.md` fully, then follow it from
+its **Step 2**, treating the download directory like a cloned repo:
 
-1. **Read `tabular-skill-builder`'s `SKILL.md`:**
+```
+read_file /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/SKILL.md
+```
+```bash
+python /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/inventory.py \
+       /tmp/ckan-skills/<dataset-slug>
+```
 
-   ```
-   read_file /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/SKILL.md
-   ```
+Its **Step 4 hard stop** applies unchanged — propose and wait
+(pre-flight rule 5) before building. One CKAN refinement to its
+Step 8 (Write each SKILL.md): source the `description`, the `## Data`
+`Source:` bullet, and provenance from `_ckan_metadata.json`
+(`title`, `notes`, `tags`, `license_title`, `organization`,
+`source_url`) rather than inferring from filenames.
 
-   Substitute the actual skills directory prefix for other runtimes.
+#### `ROUTE: array`
 
-2. **Then follow that skill starting at its Step 2** (Enumerate the
-   tabular data files). Treat `/tmp/repo-skills/<dataset-slug>/`
-   exactly as if it were a cloned GitHub repo. Every rule in
-   `tabular-skill-builder`'s Pre-Flight and every step from 2 through
-   9 applies unchanged. In particular:
+Read `array-skill-builder`'s `SKILL.md` fully, then follow it from
+its **Step 2**, pointing its inventory at the staged directory with
+`--dir` (it picks up `_ckan_metadata.json` + `_docs/` automatically):
 
-   - Run `tabular-skill-builder`'s bundled `inventory.py` on the
-     download directory:
+```
+read_file /home/jovyan/.deepagents/agent/skills/array-skill-builder/SKILL.md
+```
+```bash
+python /home/jovyan/.deepagents/agent/skills/array-skill-builder/inventory.py \
+       --dir /tmp/ckan-skills/<dataset-slug> \
+       --out /tmp/array-skill-inv/<dataset-slug>
+```
 
-     ```bash
-     python /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/inventory.py \
-            /tmp/repo-skills/<dataset-slug>
-     ```
+Its **Step 4 hard stop** applies unchanged — propose and wait before
+building.
 
-   - Step 4 is a hard stop: propose the skill plan and end your
-     turn. Wait for the user's "yes" in the next `%%ask` cell before
-     building.
+#### `ROUTE: combined`
 
-3. **One CKAN-specific refinement to `tabular-skill-builder`'s Step 8**
-   (Write each SKILL.md): before writing the frontmatter, read
-   `/tmp/repo-skills/<dataset-slug>/_ckan_metadata.json` and use it
-   to source:
+The dataset holds BOTH array and tabular data (common for simulation
+outputs: gridded HDF5 + per-node attribute tables). Read **both**
+downstream `SKILL.md` files, run both inventories, then propose at
+**one** gate — default to a single combined skill when the files
+share a join key, and state the exact join in the proposal. This is
+the same combined flow `zenodo-skill-builder`'s SKILL.md documents;
+follow it. Do not build before the user approves the plan.
 
-   - The `description` field's plain-English framing (from `title`
-     and `notes`).
-   - The synonyms / query-worthy attributes (from `tags` and the
-     per-resource `description` fields).
-   - The `## Data` section's `Source:` bullet — point it at
-     `_ckan_metadata.json`'s `source_url` (the CKAN dataset landing
-     page), not the raw resource download URL. This lets the user
-     trace back to the catalog page for license and provenance.
-   - The `## Description` paragraph — include the dataset's
-     `license_title` and `organization` so the built skill carries
-     provenance.
+#### `ROUTE: raster` or `ROUTE: none`
 
-### Step 9d — CKAN-specific cleanup
-
-`tabular-skill-builder`'s Step 9c deletes the download directory
-after verification. `_ckan_metadata.json` and
-`_skipped_resources.json` are inside that directory and go with it
-— their contents are already threaded into each built skill's
-`SKILL.md`, so no additional cleanup is needed.
+Nothing buildable yet (raster-only means GeoTIFF, which
+`array-skill-builder` cannot read yet). Tell the user what the
+dataset contains — the classification tally and
+`_skipped_resources.json` name the categories — and stop.
 
 ## Things to Avoid
 
-- **Do not enumerate resources yourself.** No manual CKAN API
-  calls, no `curl <resource url>` loop, no per-resource
-  `python -c "requests.get(...)"`. `fetch.py` is the single entry
-  point.
+- **Do not enumerate resources yourself.** No manual CKAN API calls,
+  no `curl <resource url>` loop, no per-resource `requests.get`.
+  `fetch.py` is the single entry point.
 
-- **Do not decide which formats to include or exclude.** The
-  allowlist inside `fetch.py` is the contract. Non-tabular
-  resources (PDF, HTML, JPG, KML, NetCDF, GeoTIFF, etc.) are
-  recorded in `_skipped_resources.json` for user visibility, not
-  because they might be silently useful. Mention the skipped count
-  in your handoff message so the user knows about them.
+- **Do not reclassify files by hand.** The format taxonomy inside
+  `fetch_common.py` is the contract. If a resource looks
+  misclassified, mention it in your handoff and let the user decide;
+  do not silently move files between categories.
 
-- **Do not short-circuit `tabular-skill-builder`'s Step 4 stop just
-  because CKAN gave you a title and description.** Those hints
-  feed the generated SKILL.md's description in Step 8; they do
-  not replace schema-fingerprint grouping and user confirmation
-  of the skill plan.
+- **Do not skip the downstream hard stop** just because CKAN gave you
+  a title and description. Those hints feed the generated SKILL.md's
+  description; they do not replace schema grouping (or, for combined,
+  the join decision) and the user's confirmation of the plan.
 
 - **Do not attempt CKAN authentication.** Public datasets only.
   If `fetch.py` gets an HTTP 401/403 the download error is
@@ -219,6 +212,6 @@ after verification. `_ckan_metadata.json` and
   resource is behind auth and stop.
 
 - **Do not use `SAGE_OUTPUT_DIR` as the download destination.**
-  `/tmp/repo-skills/<slug>/` is correct. `SAGE_OUTPUT_DIR` is on a
+  `/tmp/ckan-skills/<slug>/` is correct. `SAGE_OUTPUT_DIR` is on a
   small persistent quota and is for skill outputs only, not for
   build scratch.

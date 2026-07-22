@@ -903,10 +903,13 @@ def _cli(argv: list[str]) -> int:
                 urls.append((p.as_uri(), p.name))
         # Provenance written by the fetcher, if present — threaded into the
         # inventory so the SKILL.md writer has title/DOI/license/citation.
-        meta_path = src / "_zenodo_metadata.json"
-        if meta_path.exists():
+        # Zenodo and CKAN/NDP fetchers write different sidecars; read whichever
+        # is present and normalise to a common shape.
+        zen_path = src / "_zenodo_metadata.json"
+        ckan_path = src / "_ckan_metadata.json"
+        if zen_path.exists():
             try:
-                z = json.loads(meta_path.read_text())
+                z = json.loads(zen_path.read_text())
                 record_meta = {
                     "record_id":   z.get("record_id"),
                     "title":       z.get("title"),
@@ -919,7 +922,23 @@ def _cli(argv: list[str]) -> int:
                 }
             except Exception as e:
                 sys.stdout.write(
-                    f"WARNING: could not read {meta_path.name}: {e}\n")
+                    f"WARNING: could not read {zen_path.name}: {e}\n")
+        elif ckan_path.exists():
+            try:
+                c = json.loads(ckan_path.read_text())
+                record_meta = {
+                    "record_id":   c.get("name"),
+                    "title":       c.get("title"),
+                    "description": c.get("notes"),          # CKAN field name
+                    "license":     c.get("license_title"),
+                    "creators":    [c["organization"]] if c.get("organization") else [],
+                    "doi":         None,
+                    "source_url":  c.get("source_url"),
+                    "files":       [],
+                }
+            except Exception as e:
+                sys.stdout.write(
+                    f"WARNING: could not read {ckan_path.name}: {e}\n")
         # Documentation staged by the fetcher under _docs/.
         docs_dir = src / "_docs"
         if docs_dir.is_dir():
