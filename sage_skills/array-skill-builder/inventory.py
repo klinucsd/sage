@@ -969,6 +969,34 @@ def _print_summary(source_desc: str,
     sys.stdout.flush()
 
 
+def _print_gate_reminder() -> None:
+    """Print the mandatory-stop block.
+
+    The proposal gate is the single most-skipped instruction in the field.
+    SKILL.md prose gets skimmed; this stdout block does not, because the
+    agent always reads the inventory output it just ran. Printed LAST so it
+    is the final thing in the tool result.
+    """
+    bar = "=" * 66
+    sys.stdout.write(
+        f"\n{bar}\n"
+        "NEXT STEP — MANDATORY STOP (array-skill-builder Step 4)\n"
+        "\n"
+        "  1. Read the documentation sidecars (if any) for semantics.\n"
+        "  2. PRESENT A PROPOSAL to the user and END YOUR TURN.\n"
+        "\n"
+        "  Do NOT write a SKILL.md. Do NOT write a build script. Do NOT\n"
+        "  bundle or merge data. The user replies 'yes' (or with edits)\n"
+        "  in the NEXT cell — only then do you build.\n"
+        "\n"
+        "  Building now would skip the user's only chance to correct the\n"
+        "  skill shape, the variable/channel semantics, and the join or\n"
+        "  partition decisions — all invisible once built.\n"
+        f"{bar}\n"
+    )
+    sys.stdout.flush()
+
+
 # --------------------------------------------------------------------------- #
 # CLI
 # --------------------------------------------------------------------------- #
@@ -1164,6 +1192,7 @@ def _cli(argv: list[str]) -> int:
             f"(Downloaded files cached at {cache_dir}; safe to delete after "
             f"the skill is built.)\n"
         )
+    _print_gate_reminder()
     return 0
 
 

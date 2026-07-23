@@ -453,11 +453,15 @@ The inventory reports **`groups[i].format`** — either `hdf5` or
 
 - **`format: hdf5`** — h5py + a CHANNELS mapping. Follow Steps 5a → 7
   below (the CHANNELS / `load_month` / Igor-time-axis machinery).
-- **`format: netcdf`** — xarray. **Skip the CHANNELS steps entirely**
-  and follow **Step 6b** instead. NetCDF variables already carry
-  clean names, named dimensions, and CF units, so there is no
-  dialect-reconciliation or CHANNELS-tuple work — xarray reads the
-  file directly.
+- **`format: netcdf`** — xarray. Use **Step 6b** in place of the
+  CHANNELS steps (5a–7). NetCDF variables already carry clean names,
+  named dimensions, and CF units, so there is no dialect-
+  reconciliation or CHANNELS-tuple work — xarray reads the file
+  directly.
+
+Both branches sit **after** the Step 4 approval gate. Choosing a
+loader branch is not a reason to revisit whether the gate applies —
+you only reach Step 5 once the user has approved the plan.
 
 Pick the branch per group. A record can even be combined (some HDF5,
 some NetCDF), though that is rare.
@@ -663,7 +667,7 @@ flagged a variable, document the range + a filter recipe in Caveats;
 do not mutate values in `load()`. The `where` idiom is xarray's
 filter: `ds["PM25"].where(ds["PM25"] >= 0)`.
 
-Then skip to Step 8 to compose the SKILL.md (the NetCDF variant).
+Then continue to Step 8 to compose the SKILL.md (the NetCDF variant).
 
 ### Step 7 — Design the time-axis conversion (HDF5 only)
 

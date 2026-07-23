@@ -630,6 +630,26 @@ def print_summary(records, repo_dir, out_json):
     print("(Reference only — do NOT read this JSON for Step 3 grouping; "
           "use the groups above.)")
 
+    # The proposal gate is the single most-skipped instruction in the field.
+    # SKILL.md prose gets skimmed; this stdout block does not, because the
+    # agent always reads the inventory output it just ran. Keep it last so
+    # it is the final thing in the tool result.
+    print()
+    print("=" * 66)
+    print("NEXT STEP — MANDATORY STOP (tabular-skill-builder Step 4)")
+    print()
+    print("  Group the files into skill candidates, then PRESENT A PROPOSAL")
+    print("  to the user and END YOUR TURN.")
+    print()
+    print("  Do NOT write a SKILL.md. Do NOT write a build script. Do NOT")
+    print("  merge anything into Parquet. The user replies 'yes' (or with")
+    print("  edits) in the NEXT cell — only then do you build.")
+    print()
+    print("  How many skills and which files go in each is the user's call;")
+    print("  it is invisible once built. Building now skips their only")
+    print("  chance to redirect the grouping.")
+    print("=" * 66)
+
 
 # ---------------------------------------------------------------------------
 # Entrypoint
