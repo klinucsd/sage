@@ -1192,6 +1192,13 @@ def _cli(argv: list[str]) -> int:
             f"(Downloaded files cached at {cache_dir}; safe to delete after "
             f"the skill is built.)\n"
         )
+    # Name both scratch dirs explicitly — the staged download is the big one
+    # and the one most often left behind (Step 9b).
+    sys.stdout.write("\nCLEAN UP AFTER THE BUILD IS VERIFIED (Step 9b) — both:\n")
+    sys.stdout.write(f"  rm -rf {out_dir}\n")
+    if args.dir:
+        sys.stdout.write(f"  rm -rf {args.dir}      <- staged download "
+                         f"(the large one)\n")
     _print_gate_reminder()
     return 0
 

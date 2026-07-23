@@ -190,6 +190,23 @@ Nothing buildable yet (raster-only means GeoTIFF, which
 dataset contains — the classification tally and
 `_skipped_resources.json` name the categories — and stop.
 
+### Step 4 — Clean up the staged download
+
+After the downstream builder has written the skill AND the user has
+verified it, delete the staged directory. It holds the raw resources
+— often hundreds of MB — that the finished skill no longer needs
+(a bundled skill has already copied what it keeps into
+`_skills_/<name>/data/`; a lazy-download skill re-fetches from the
+source URL).
+
+```python
+import shutil
+shutil.rmtree("/tmp/ckan-skills/<dataset-slug>")
+```
+
+Never delete the emitted `_skills_/<skill-name>/` directory — that
+is the product. Report the freed space in your summary.
+
 ## Things to Avoid
 
 - **Do not enumerate resources yourself.** No manual CKAN API calls,

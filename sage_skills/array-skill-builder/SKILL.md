@@ -122,6 +122,14 @@ Non-negotiable. Detailed rationale is in the steps below.
    timestamps can't be represented usefully, so the loader may
    drop those rows, but that drop must be documented.
 
+9. **After the skill is built and verified, delete BOTH scratch
+   directories.** Step 9b is mandatory. There are two: the inventory
+   scratch (`--out`, e.g. `/tmp/array-skill-inv/<slug>`) and the
+   fetcher's staged download (`--dir`, e.g. `/tmp/ndp-skills/<slug>`).
+   The staged one holds the raw HDF5/NetCDF — often hundreds of MB —
+   and is the one most often forgotten. Leaving it behind fills
+   pod-local disk with data the finished skill no longer needs.
+
 If your next action would violate any of these, stop and re-plan.
 
 ---
@@ -823,19 +831,36 @@ and ask whether to overwrite or pick a new name.
 do not call any internal install helper. The freshly-written skill
 is automatically picked up by the next `%%ask` cell.
 
-### Step 9b — Clean up the inventory scratch
+### Step 9b — Clean up BOTH scratch directories
 
-Once the skill is written and the user has verified a working
-`%%ask` query against it, delete the scratch directory to avoid
-holding stale HDF5 downloads on disk:
+Once the skill is written and verified, delete **both** scratch
+locations. There are two, and forgetting the second is the common
+mistake — the staged download is by far the larger of the two
+(hundreds of MB of HDF5/NetCDF):
 
 ```python
 import shutil
-shutil.rmtree(<out-dir>)   # e.g. /tmp/array-skill-inv/zenodo-3660832
+
+# 1. The inventory scratch (--out): _inventory.json, explore.py, _h5_cache/
+shutil.rmtree("<out-dir>")        # e.g. /tmp/array-skill-inv/<slug>
+
+# 2. The FETCHER's staged download (--dir) — the big one.
+shutil.rmtree("<staged-dir>")     # e.g. /tmp/ndp-skills/<slug>,
+                                  #      /tmp/ckan-skills/<slug>,
+                                  #      /tmp/zenodo-skills/<record-id>
 ```
 
+**Order matters.** Delete the staged directory only *after* the
+skill is built and verified — and, if the skill **bundles** its data,
+only after the build script has copied those files into
+`_skills_/<skill-name>/data/`. A lazy-download skill keeps no local
+copy at all (it re-fetches from the source URL into its own
+`/tmp/<skill-name>-cache/`), so its staged directory is pure waste
+once the build is done.
+
 Do NOT delete the emitted `_skills_/<skill-name>/` directory —
-that's the skill itself.
+that's the skill itself. Report the freed space in your summary so
+the user can see the scratch is gone.
 
 ---
 

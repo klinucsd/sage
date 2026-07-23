@@ -137,6 +137,20 @@ Then apply its `ROUTE: tabular` / `ROUTE: array` / `ROUTE: combined`
 branch to the `/tmp/ndp-skills/<slug>/` directory. Every rule there —
 including the downstream hard stop — applies unchanged.
 
+### Step 3 — Clean up the staged download
+
+After the downstream builder has written the skill AND the user has
+verified it, delete the staged directory. It holds the raw resources
+— often hundreds of MB — that the finished skill no longer needs:
+
+```python
+import shutil
+shutil.rmtree("/tmp/ndp-skills/<slug>")
+```
+
+Never delete the emitted `_skills_/<skill-name>/` directory — that
+is the product. Report the freed space in your summary.
+
 ## Things to Avoid
 
 - **Do not implement URL rewriting yourself.** `fetch.py`'s
