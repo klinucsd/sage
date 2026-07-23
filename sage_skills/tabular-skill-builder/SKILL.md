@@ -128,6 +128,36 @@ the binding contract.
    column across just the relevant files, then fix the build script.
    Not before the first build attempt. Never.
 
+8. **NEVER call `sys.exit()` or raise `SystemExit` in any script you
+   write.** Not in a build script, not in a verification script, not
+   on an error path. ARGUS runs `python your_script.py` **in-process**
+   (KernelShellBackend), so a `SystemExit` does not end the script —
+   it propagates out and **kills the whole `%%ask` cell**, and it
+   destroys the diagnostic: your `print("[FAIL] …")` never reaches the
+   tool result, so nobody learns what actually broke.
+
+   Collect failures and print them instead:
+
+   ```python
+   # WRONG — kills the cell and hides the reason
+   except Exception as e:
+       print(f"[FAIL] {e}")
+       sys.exit(1)
+
+   # RIGHT — the failure is visible and fixable
+   failures = []
+   ...
+   except Exception as e:
+       failures.append(f"{name}: {type(e).__name__}: {e}")
+   print("VERIFY OK" if not failures else "VERIFY FAILED:")
+   for f in failures:
+       print("  -", f)
+   ```
+
+   Same for `argparse` (`parser.error()` / `parse_args()` call
+   `sys.exit` internally — use `exit_on_error=False`) and for any
+   "clean exit" `raise SystemExit(0)`; falling off the end is correct.
+
 If your next action would violate any of these, **stop and re-plan**
 before taking it. The rest of this document elaborates on why; the
 rules above are the contract.

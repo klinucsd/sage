@@ -130,6 +130,42 @@ Non-negotiable. Detailed rationale is in the steps below.
    and is the one most often forgotten. Leaving it behind fills
    pod-local disk with data the finished skill no longer needs.
 
+10. **NEVER call `sys.exit()` or raise `SystemExit` in any script you
+    write.** Not in a build script, not in a verification script, not
+    on an error path. ARGUS runs `python your_script.py` **in-process**
+    (KernelShellBackend), so a `SystemExit` does not end the script —
+    it propagates out and **kills the whole `%%ask` cell**.
+
+    Worse, it destroys the diagnostic: your script's `print("[FAIL]
+    …")` never reaches the tool result, so neither you nor the user
+    learns what actually went wrong. A verification script that exits
+    on failure converts a fixable one-line bug into an opaque
+    `SystemExit: 1`.
+
+    Signal outcomes by **printing and returning normally**:
+
+    ```python
+    # WRONG — kills the cell and hides the reason
+    except Exception as e:
+        print(f"[FAIL] {e}")
+        sys.exit(1)
+
+    # RIGHT — the failure is visible and you can fix it
+    failures = []
+    ...
+    except Exception as e:
+        failures.append(f"{name}: {type(e).__name__}: {e}")
+    ...
+    print("VERIFY OK" if not failures else "VERIFY FAILED:")
+    for f in failures:
+        print("  -", f)
+    ```
+
+    Same rule for `argparse` (`parser.error()` and `parser.parse_args()`
+    call `sys.exit` internally — use `exit_on_error=False` and handle
+    the exception) and for any `raise SystemExit(0)` "clean exit" at the
+    end of a script; a bare `return` or falling off the end is correct.
+
 If your next action would violate any of these, stop and re-plan.
 
 ---
