@@ -850,6 +850,41 @@ Caveats.
 value and the valid-pixel fraction from the inventory; the helpers
 already exclude nodata, so never bake a fill value into a sum.
 
+**One canonical polygon layer for zonal aggregation.** When the raster
+is bundled with vector polygon layers users will aggregate it over
+(the population-raster + admin-boundaries case), the record often ships
+**more than one polygon set covering the SAME units** — e.g. two
+governorate boundary layers from different sources (a standard
+geoBoundaries set and a "simplified" set). They are NOT
+interchangeable: overlapping boundary sets draw the borders in slightly
+different places, so summing the same raster over each gives different
+per-region numbers even though the national total matches. If the skill
+leaves two equal-looking layers, different queries silently pick
+different ones and return **contradictory per-region results** — the
+same governorate reads one population in one answer and another
+elsewhere.
+
+So when you detect ≥2 polygon layers for the same administrative level:
+
+- **Designate ONE canonical layer** for all zonal aggregation and joins.
+  Prefer the recognized standard source (e.g. geoBoundaries ADM1) unless
+  the docs say otherwise; if it is genuinely unclear which the user
+  wants, **ask at the Step 4 gate** (this is a real judgement call, not a
+  guess-and-move-on).
+- **Use only the canonical layer in every `## Examples` snippet** and in
+  the emitted helpers' defaults, so the agent picks it consistently at
+  query time.
+- **Demote the alternate(s) explicitly** in the skill: keep them loadable
+  (they may carry extra attributes — Arabic names, Wikidata IDs) but
+  state in the Fields/Caveats section that they are **reference-only, not
+  for population/area aggregation**, and that mixing layers across
+  queries produces inconsistent totals.
+
+The same rule applies to a purely-tabular combined build (two boundary
+GPKGs and no raster) — pick one canonical layer for the join. Overlapping
+authoritative boundaries are a data-quality property of the *source*, not
+something to silently paper over.
+
 Then continue to Step 8 to compose the SKILL.md (the raster variant).
 
 ### Step 7 — Design the time-axis conversion (HDF5 only)
