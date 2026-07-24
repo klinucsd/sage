@@ -2,16 +2,15 @@
 name: repo-skill-builder
 description: >-
   Build one or more ARGUS skills from a GitHub repository containing
-  tabular, geospatial, or R-serialized data files (CSV, TSV, Excel,
-  Parquet, GeoPackage, GeoJSON, Shapefile, RData / rda / rds). Use
-  when the user provides a github.com URL and asks to build, create,
-  or generate skills from the data in the repo. Fetcher-only: clones
-  the repository into a local scratch directory, then hands off to
-  the `tabular-skill-builder` skill for the enumerate → propose →
-  build pipeline. Two-phase workflow (from tabular-skill-builder):
-  first you enumerate the cloned files and propose a skill plan,
-  then STOP for the user's approval; on "yes" in the next %%ask cell
-  you continue to build.
+  data files — tabular / geospatial vectors (CSV, TSV, Excel, Parquet,
+  GeoPackage, GeoJSON, Shapefile, RData), gridded arrays (HDF5,
+  NetCDF), or rasters (GeoTIFF). Use when the user gives a github.com
+  URL and asks to build, create, or generate skills from the repo's
+  data. Fetcher-only: clones the repo into local scratch, classifies
+  every file with the shared taxonomy, and prints a ROUTE line, then
+  hands off to `tabular-skill-builder` and/or `array-skill-builder`
+  for the enumerate → propose → STOP → build pipeline. Two-phase:
+  propose a skill plan and STOP for approval, then build on "yes".
 ---
 
 # Repo Skill Builder
@@ -21,151 +20,195 @@ description: >-
 These rules define the contract this skill fulfills. Read them
 before doing anything else.
 
-1. **You are a fetcher shell.** Your only responsibility is to
-   clone the repository and hand off to `tabular-skill-builder`.
-   Do not write an inventory script. Do not probe schemas. Do not
-   propose skills yourself. Once `git clone` finishes, every
-   remaining step in the build is `tabular-skill-builder`'s
-   Steps 2 through 9.
+1. **You are a fetcher shell.** Your job is to clone the repository
+   and run the bundled `fetch.py`, which classifies the working tree
+   and prints a `ROUTE:` line. The rest of the build belongs to
+   `tabular-skill-builder` and/or `array-skill-builder`, per that
+   `ROUTE:` line. Do not enumerate the repo yourself, do not probe
+   schemas, do not propose skills here.
 
-2. **Clone with `git clone --depth=1`. No custom wrapper.** For
-   GitHub, `git clone` is the entire fetch step — there is no API
-   metadata call to make, no resource filtering to apply, no archive
-   unpacking to do. Do not write a Python wrapper around it. Do not
-   authenticate; if the clone fails (private repo, network error,
-   404), report the error and stop.
+2. **Run `fetch.py`; do not hand-roll the clone + walk.** `fetch.py`
+   clones with `git clone --depth=1`, walks the tree, classifies each
+   file (array / tabular / docs / other) through the shared
+   `fetch_common` taxonomy, copies docs to `_docs/`, records the raw
+   GitHub URL per data file (for lazy loaders), writes
+   `_repo_metadata.json` + `_classification.json`, and prints the
+   `ROUTE:` line. It is the single entry point.
 
-3. **Clone to `/tmp/repo-skills/<repo-name>/`.** Same scratch
-   location `ckan-skill-builder` downloads into, and that
-   `tabular-skill-builder` expects to inventory. Never clone to
-   `SAGE_OUTPUT_DIR` or anywhere under `~/work/` — those are on a
-   persistent volume with a ~10 GB shared quota, and the clone is
-   throwaway scratch that /tmp handles correctly.
+3. **Clone/scratch lives at `/tmp/repo-skills/<repo-name>/`.** Never
+   under `SAGE_OUTPUT_DIR` or `~/work/` — those are a small
+   persistent quota, and the clone is throwaway scratch that `/tmp`
+   handles correctly.
 
-4. **After the clone, explicitly load `tabular-skill-builder`'s
-   `SKILL.md` and follow it.** The two skills exist as separate
-   files; the handoff is real, not implicit. Step 2 below tells
-   you the exact `read_file` call to make.
+4. **The `ROUTE:` line decides the handoff.** After `fetch.py` runs,
+   read its `ROUTE:` line and follow the matching branch in Step 2.
+   A repo mixing CSV/GPKG tables with GeoTIFF/NetCDF grids routes
+   `combined` — both cores run, one gate.
+
+5. **The downstream Step 4 hard STOP applies unchanged.** Whichever
+   core you hand off to, you propose the skill plan and END YOUR TURN
+   before building. The README gives you a head start on the
+   description — it does NOT replace schema grouping, the join/variant
+   decision, or the user's confirmation.
 
 ## When to Use
 
-Trigger this skill when the user provides a `github.com` URL and
-asks to build a skill from the data in the repo. Example URL shapes:
+Trigger when the user gives a `github.com` URL and asks to build a
+skill from the data in the repo. URL shapes:
 
 - `https://github.com/<owner>/<repo>`
 - `https://github.com/<owner>/<repo>.git`
-- `https://github.com/<owner>/<repo>/tree/<branch>` (branch/tag
-  ignored — clone always takes HEAD of the default branch)
+- `https://github.com/<owner>/<repo>/tree/<branch>`
 
-Decline (do not use this skill) when:
+Decline (use a different skill) when:
 
-- The URL is a CKAN dataset (`/api/3/action/package_show?id=...` or
-  `/dataset/<slug>`) — use `ckan-skill-builder`.
-- The URL is an ArcGIS Feature / Map Service — use
+- The URL is a CKAN dataset (`/dataset/<slug>`) → `ckan-skill-builder`.
+- The URL is a Zenodo record → `zenodo-skill-builder`.
+- The URL is an ArcGIS Feature/Map Service →
   `arcgis-feature-skill-builder`.
-- The repo contains only code with no tabular data — there's nothing
-  to build a queryable skill against.
-- The user has already named specific files and just wants them
-  loaded into a notebook for ad-hoc analysis — that's a plain
-  `%%ask` task, not a skill-build.
+- The repo has only code and no data files — `fetch.py` prints
+  `ROUTE: none`; tell the user there is nothing queryable to build.
+
+Note: repository **code** (`.py`, `.ipynb`, etc.) is classified
+`other` and ignored — this skill builds from the repo's *data*, not
+its programs.
 
 ## What You Need From the User
 
-Just the GitHub URL. The user does not need to specify the skill
-name, the file format, or anything else. `tabular-skill-builder`
-will inspect the clone and propose a sensible plan.
-
-If the user has expressed preferences (e.g. "merge them all into
-one skill" or "split by region"), pass those forward in your
-handoff message so `tabular-skill-builder`'s Step 3 grouping
-respects them — but do not attempt to filter files yourself in
-this skill; the clone always brings everything.
+Just the GitHub URL. If the user expressed preferences ("merge into
+one skill", "split by region"), pass them forward into the downstream
+Step 3 grouping — but do not filter files here; the clone brings
+everything and the taxonomy decides.
 
 ## Steps
 
-### Step 1 — Clone the repository
+### Step 1 — Run `fetch.py`
 
 ```bash
-mkdir -p /tmp/repo-skills
-cd /tmp/repo-skills
-# --depth=1 skips history; we just need the latest snapshot.
-git clone --depth=1 https://github.com/<owner>/<repo>.git <repo-name>
+python /home/jovyan/.deepagents/agent/skills/repo-skill-builder/fetch.py \
+       https://github.com/<owner>/<repo> \
+       /tmp/repo-skills/<repo-name>
 ```
 
-If the clone fails (private repo, network error, 404), report the
-error to the user and stop. Do not try to authenticate.
+Substitute the actual skills-directory prefix for other runtimes.
+`fetch.py` clones, classifies, and ends with a tally and a `ROUTE:`
+line, e.g.:
 
-If the repo is huge (>500 MB), **stop and ask the user** before
-downloading — a quick `git ls-remote` or GitHub API call to
-estimate size is fine.
+```
+Classification
+  array   : 2 file(s)  -> array-skill-builder  (of which 2 GeoTIFF/raster)
+  tabular : 17 file(s)  -> tabular-skill-builder
+  docs    : 5 file(s)  -> read for semantics (_docs/)
+  other   : 34 file(s)  -> ignored (…)
 
-### Step 2 — Hand off to `tabular-skill-builder`
+ROUTE: combined
+```
 
-`tabular-skill-builder`'s `SKILL.md` is a large document with strict
-pre-flight rules, a two-phase workflow with a hard-stop between
-inventory and build, and per-format loading conventions. You must
-load it fully into your context before continuing.
+If the clone fails (private repo, 404, network), `fetch.py` reports
+the error — relay it and stop. Do not attempt authentication. If the
+repo is very large, `fetch.py` still clones `--depth=1`; if you know
+in advance it is huge (>500 MB), confirm with the user first.
 
-1. **Read `tabular-skill-builder`'s `SKILL.md`:**
+### Step 2 — Branch on the `ROUTE:` line
 
-   ```
-   read_file /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/SKILL.md
-   ```
+#### `ROUTE: tabular`
 
-   Substitute the actual skills directory prefix for other runtimes.
+Read `tabular-skill-builder`'s `SKILL.md` fully, then follow it from
+its **Step 2**, treating the clone as the source directory:
 
-2. **Then follow that skill starting at its Step 2** (Enumerate the
-   tabular data files). Treat `/tmp/repo-skills/<repo-name>/`
-   exactly as the source directory. Every rule in
-   `tabular-skill-builder`'s Pre-Flight and every step from 2
-   through 9 applies unchanged. In particular:
+```
+read_file /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/SKILL.md
+```
+```bash
+python /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/inventory.py \
+       /tmp/repo-skills/<repo-name>
+```
 
-   - Run `tabular-skill-builder`'s bundled `inventory.py` on the
-     clone:
+Its **Step 4 hard stop** applies unchanged. When writing each
+generated SKILL.md (its Step 8), source the `description` and the
+`## Data` `Source:` bullet from `_repo_metadata.json` (repo title,
+README description, license) and point provenance at the
+`https://github.com/<owner>/<repo>` URL.
 
-     ```bash
-     python /home/jovyan/.deepagents/agent/skills/tabular-skill-builder/inventory.py \
-            /tmp/repo-skills/<repo-name>
-     ```
+#### `ROUTE: array`
 
-   - Step 4 is a hard stop: propose the skill plan and end your
-     turn. Wait for the user's "yes" in the next `%%ask` cell before
-     building.
+Read `array-skill-builder`'s `SKILL.md` fully, then follow it from
+its **Step 2**, pointing its inventory at the clone with `--dir` (it
+picks up `_repo_metadata.json` + `_docs/` automatically):
 
-3. **When writing the generated SKILL.md's frontmatter** (in
-   `tabular-skill-builder`'s Step 8), source the `description` and
-   `## Data` section from the repo's top-level `README.md` (if
-   present) plus the GitHub URL itself. Point the "Source:" bullet
-   at the `https://github.com/<owner>/<repo>` URL — that's the
-   canonical provenance link the user can trace back through. If
-   the repo's README names a paper, dataset title, or license, thread
-   those into the built SKILL.md's Description paragraph so the
-   provenance survives.
+```
+read_file /home/jovyan/.deepagents/agent/skills/array-skill-builder/SKILL.md
+```
+```bash
+python /home/jovyan/.deepagents/agent/skills/array-skill-builder/inventory.py \
+       --dir /tmp/repo-skills/<repo-name> \
+       --out /tmp/array-skill-inv/<repo-name>
+```
+
+Its **Step 4 hard stop** applies unchanged. For GeoTIFF rasters, the
+array builder emits spatial-query helpers (zonal statistics, point
+sample) per its Step 6c; the emitted skill lazy-downloads each raster
+from the raw GitHub URL `fetch.py` recorded, or bundles it if small.
+
+#### `ROUTE: combined`
+
+The repo holds BOTH array and tabular data — the canonical case is a
+GeoTIFF population/quantity raster alongside CSV records and GPKG
+admin-boundary polygons. Read **both** downstream `SKILL.md` files,
+run **both** inventories on the clone (the array `--dir`, the tabular
+on the same dir), then propose at **ONE** gate. Default to a single
+combined skill when the layers share a spatial join or key, and state
+the exact join in the proposal (e.g. "`zonal_sum(district_geom)` sums
+the population raster inside each GPKG district polygon; both are
+EPSG:4326"). This is the same combined flow `zenodo-skill-builder`'s
+SKILL.md documents. Do not build before the user approves.
+
+#### `ROUTE: none`
+
+No data files — only code, or an empty repo. Tell the user what the
+repo contains (the classification tally names the categories) and
+stop; there is nothing queryable to build.
+
+### Step 3 — Clean up the clone
+
+After the downstream builder has written the skill AND the user has
+verified it, delete the clone. It holds the full repo — often
+hundreds of MB of data — that the finished skill no longer needs (a
+bundled skill copied what it keeps into `_skills_/<name>/data/`; a
+lazy-download skill re-fetches from the raw GitHub URL).
+
+```python
+import shutil
+shutil.rmtree("/tmp/repo-skills/<repo-name>")
+```
+
+If the array builder was involved, also remove its inventory scratch
+(`/tmp/array-skill-inv/<repo-name>`). Never delete the emitted
+`_skills_/<skill-name>/` directory — that is the product. Report the
+freed space.
 
 ## Things to Avoid
 
-- **Do not enumerate the repo yourself.** No `ls`-then-analyze,
-  no manual `find` walks, no per-file `head` inspections.
-  `tabular-skill-builder`'s `inventory.py` is the single entry
-  point.
+- **Do not enumerate the repo yourself.** No `ls`-then-analyze, no
+  manual `find` walks, no per-file `head`. `fetch.py` + the downstream
+  inventories are the entry points.
 
-- **Do not short-circuit `tabular-skill-builder`'s Step 4 stop just
-  because you already read the README.** README hints feed the
-  generated SKILL.md's description in Step 8; they do not replace
-  schema-fingerprint grouping and user confirmation of the skill
-  plan.
+- **Do not reclassify files by hand.** The taxonomy in
+  `fetch_common.py` is the contract. If a file looks misclassified,
+  raise it in your proposal and let the user decide; do not silently
+  move files between categories.
 
-- **Do not attempt authentication.** Public repos only. If
-  `git clone` gets a 403, 404, or credentials prompt, report to the
-  user and stop.
+- **Do not build from the repo's code.** `.py` / `.ipynb` modelling
+  scripts are classified `other` and ignored. Exposing what those
+  programs *do* is a separate capability, not this skill.
+
+- **Do not skip the downstream hard stop** just because the README
+  gave you a title and description. Those feed the generated skill's
+  description; they do not replace grouping, the join/variant
+  decision, or the user's confirmation.
+
+- **Do not attempt authentication.** Public repos only. On a clone
+  403/404, report to the user and stop.
 
 - **Do not use `SAGE_OUTPUT_DIR` as the clone destination.**
-  `/tmp/repo-skills/<repo-name>/` is correct. `SAGE_OUTPUT_DIR` is
-  on a small persistent quota and is for skill outputs only, not
-  for build scratch.
-
-- **Do not write your own `inventory.py` here.** The canonical copy
-  lives at `tabular-skill-builder/inventory.py` and Step 2 above
-  invokes it directly. `repo-skill-builder/` no longer ships an
-  inventory script (as of the 2026-07-14 refactor into a fetcher
-  shell — see [[project_fetcher_core_split]]).
+  `/tmp/repo-skills/<repo-name>/` is correct.

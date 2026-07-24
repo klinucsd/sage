@@ -167,8 +167,26 @@ def _import_numpy():
     return np
 
 
-# File extensions handled by the NetCDF (xarray) path vs the HDF5 (h5py) path.
+def _import_rasterio():
+    try:
+        import rasterio  # noqa: F401
+    except ImportError:
+        raise _InventoryError(
+            "rasterio is not installed (needed to read GeoTIFF / GDAL "
+            "rasters). Run: pip install --user rasterio"
+        )
+    import rasterio
+    return rasterio
+
+
+# File extensions handled by each reader path.
 _NETCDF_EXTS = (".nc", ".nc4", ".cdf")
+# Raster / GeoTIFF family -> rasterio. A single-band raster is a 2D
+# georeferenced array; a multi-band raster is (band, y, x). The value beyond
+# the pixel array is the georeferencing (CRS + affine transform), which the
+# emitted skill needs for polygon zonal statistics — so the raster walker keeps
+# it in global_attrs rather than dropping it the way a plain array reader would.
+_RASTER_EXTS = (".tif", ".tiff", ".geotiff", ".img", ".grd")
 _HDF5_EXTS = (".h5", ".hdf5", ".he5")
 
 
@@ -377,6 +395,109 @@ def _walk_netcdf(np, path):
     return datasets, global_attrs
 
 
+# Decimate stats reads above this many pixels/band so a large raster does not
+# pull its full array into memory. Stats become approximate (flagged as such).
+_RASTER_STAT_MAX_PIXELS = 8_000_000
+
+
+def _walk_raster(np, path):
+    """Walk a GeoTIFF / GDAL raster with rasterio. Returns (datasets,
+    global_attrs), shaped like the NetCDF walker so the fingerprint, grouping
+    and summary machinery treat it identically.
+
+    Each band becomes one entry in `datasets` (keyed by its band description
+    when present, else `band_<i>`), with the 2D pixel array's shape/dtype/
+    stats. The georeferencing that makes zonal statistics possible — CRS,
+    affine transform, resolution, bounds, nodata — lives in `global_attrs`;
+    the emitted skill reads it to sum pixels inside a polygon.
+    """
+    rasterio = _import_rasterio()
+    datasets: dict[str, dict] = {}
+    with rasterio.open(path) as ds:
+        transform = ds.transform
+        try:
+            epsg = ds.crs.to_epsg() if ds.crs else None
+        except Exception:
+            epsg = None
+        global_attrs = {
+            "driver":      ds.driver,
+            "crs":         str(ds.crs) if ds.crs else None,
+            "epsg":        epsg,
+            "width":       int(ds.width),
+            "height":      int(ds.height),
+            "band_count":  int(ds.count),
+            "dtype":       ds.dtypes[0] if ds.dtypes else None,
+            "nodata":      None if ds.nodata is None else float(ds.nodata),
+            "res":         [abs(float(transform.a)), abs(float(transform.e))],
+            "bounds":      [round(float(b), 6) for b in ds.bounds],
+            "transform":   [float(x) for x in tuple(transform)[:6]],
+            # AREA_OR_POINT and any author tags — the only self-describing
+            # metadata a GeoTIFF usually carries (often just AREA_OR_POINT).
+            "tags":        {k: v for k, v in ds.tags().items()},
+        }
+        npix = int(ds.width) * int(ds.height)
+        decimate = npix > _RASTER_STAT_MAX_PIXELS
+        # Read at reduced resolution for stats only when the band is large;
+        # the emitted zonal_sum reads full resolution at query time.
+        if decimate:
+            import math
+            factor = int(math.ceil((npix / _RASTER_STAT_MAX_PIXELS) ** 0.5))
+            out_h = max(1, int(ds.height) // factor)
+            out_w = max(1, int(ds.width) // factor)
+        for i in range(1, ds.count + 1):
+            desc = ds.descriptions[i - 1]
+            unit = ds.units[i - 1]
+            key = desc if desc else f"band_{i}"
+            attrs = {"band_index": i}
+            if desc:
+                attrs["description"] = desc
+            if unit:
+                attrs["units"] = unit
+            btags = ds.tags(i)
+            if btags:
+                attrs["band_tags"] = btags
+            dt = np.dtype(ds.dtypes[i - 1])
+            meta = {
+                "shape":      (int(ds.height), int(ds.width)),
+                "dtype":      str(dt),
+                "dtype_kind": dt.kind,
+                "dims":       ["y", "x"],
+                "attrs":      attrs,
+                "is_coord":   False,
+            }
+            if dt.kind in ("f", "i", "u"):
+                try:
+                    if decimate:
+                        arr = ds.read(i, out_shape=(out_h, out_w),
+                                      masked=True)
+                    else:
+                        arr = ds.read(i, masked=True)
+                    flat = np.ma.filled(arr.astype("float64"),
+                                        np.nan).ravel()
+                    valid = flat[~np.isnan(flat)]
+                    stats = _stats_from_array(np, valid, int(valid.size))
+                    # A decimated read sampled 1/factor^2 of the pixels, so the
+                    # pixel-count and pixel-sum are scaled back up to full-grid
+                    # estimates (kept consistent with total_pixels). Both the
+                    # count and the sum are the quantities zonal_sum works with,
+                    # surfaced here as a semantic hint (approximate when
+                    # decimated).
+                    scale = (factor * factor) if decimate else 1
+                    stats["valid_pixels"] = int(valid.size) * scale
+                    stats["total_pixels"] = npix
+                    if valid.size:
+                        stats["sum"] = float(valid.sum()) * scale
+                    stats["approximate"] = bool(decimate)
+                    meta["stats"] = stats
+                    flag = _corruption_flag(stats)
+                    if flag:
+                        meta["corruption_flag"] = flag
+                except Exception as e:
+                    meta["stats"] = {"error": f"{type(e).__name__}: {e}"}
+            datasets[str(key)] = meta
+    return datasets, global_attrs
+
+
 def _corruption_flag(stats: dict[str, Any]) -> str | None:
     """Return a short flag if the dataset looks numerically suspect."""
     if "min" not in stats or "max" not in stats:
@@ -497,7 +618,9 @@ def _inventory_one_file(url: str, filename: str,
     per-file record. The reader is chosen by extension: NetCDF (.nc/.nc4/
     .cdf) via xarray, HDF5 (.h5/.hdf5/.he5) via h5py."""
     np = _import_numpy()
-    is_netcdf = filename.lower().endswith(_NETCDF_EXTS)
+    low = filename.lower()
+    is_netcdf = low.endswith(_NETCDF_EXTS)
+    is_raster = low.endswith(_RASTER_EXTS)
     t0 = time.time()
     if url.startswith("file://"):
         # Already staged locally by a fetcher shell — read in place rather
@@ -518,9 +641,12 @@ def _inventory_one_file(url: str, filename: str,
             }
     dl_sec = time.time() - t0
 
-    fmt = "netcdf" if is_netcdf else "hdf5"
+    fmt = "geotiff" if is_raster else ("netcdf" if is_netcdf else "hdf5")
     try:
-        if is_netcdf:
+        if is_raster:
+            datasets, global_attrs = _walk_raster(np, path)
+            top_group_name = None
+        elif is_netcdf:
             datasets, global_attrs = _walk_netcdf(np, path)
             top_group_name = None
         else:
@@ -557,7 +683,8 @@ def _inventory_one_file(url: str, filename: str,
     except _InventoryError:
         raise
     except Exception as e:
-        reader = "xarray" if is_netcdf else "h5py"
+        reader = ("rasterio" if is_raster
+                  else "xarray" if is_netcdf else "h5py")
         return {
             "filename": filename, "url": url, "format": fmt,
             "download_seconds": round(dl_sec, 2),
@@ -951,7 +1078,18 @@ def _print_summary(source_desc: str,
     for i, g in enumerate(groups, 1):
         n = g["n_files"]
         axis = g["partition_axis"]
-        if n == 1:
+        if g.get("format") == "geotiff":
+            # Rasters expose a spatial-query interface, not a partition
+            # loader (SKILL.md Step 6c): zonal stats / point sample / clip.
+            if n == 1:
+                shape = ("raster — open_raster() + zonal_sum(polygon) / "
+                         "sample_at(lon,lat) [Step 6c]")
+            else:
+                shape = (f"raster group ({n} files) — confirm at the gate "
+                         "whether these are ONE quantity in variants "
+                         "(add variant=) or different variables; then "
+                         "zonal_sum / sample_at per Step 6c")
+        elif n == 1:
             shape = "single-file skill (load() returns the whole dataset)"
         elif axis == "month":
             shape = "temporal partition — load_month(m) + load_year()"
@@ -1066,10 +1204,10 @@ def _cli(argv: list[str]) -> int:
             except Exception as e:
                 sys.stdout.write(
                     f"WARNING: could not read {cls_path.name}: {e}\n")
-        # Array files staged by the fetcher.
+        # Array files staged by the fetcher (HDF5, NetCDF, and raster/GeoTIFF).
+        _array_suffixes = set(_HDF5_EXTS + _NETCDF_EXTS + _RASTER_EXTS)
         for p in sorted(src.rglob("*")):
-            if p.is_file() and p.suffix.lower() in (".h5", ".hdf5", ".he5",
-                                                    ".nc", ".nc4", ".cdf"):
+            if p.is_file() and p.suffix.lower() in _array_suffixes:
                 urls.append((p.as_uri(), p.name))
         # Provenance written by the fetcher, if present — threaded into the
         # inventory so the SKILL.md writer has title/DOI/license/citation.
@@ -1077,6 +1215,7 @@ def _cli(argv: list[str]) -> int:
         # is present and normalise to a common shape.
         zen_path = src / "_zenodo_metadata.json"
         ckan_path = src / "_ckan_metadata.json"
+        repo_path = src / "_repo_metadata.json"
         if zen_path.exists():
             try:
                 z = json.loads(zen_path.read_text())
@@ -1109,6 +1248,23 @@ def _cli(argv: list[str]) -> int:
             except Exception as e:
                 sys.stdout.write(
                     f"WARNING: could not read {ckan_path.name}: {e}\n")
+        elif repo_path.exists():
+            try:
+                rp = json.loads(repo_path.read_text())
+                # repo fetcher already writes the normalised shape.
+                record_meta = {
+                    "record_id":   rp.get("record_id"),
+                    "title":       rp.get("title"),
+                    "description": rp.get("description"),
+                    "license":     rp.get("license"),
+                    "creators":    rp.get("creators") or [],
+                    "doi":         rp.get("doi"),
+                    "source_url":  rp.get("source_url"),
+                    "files":       [],
+                }
+            except Exception as e:
+                sys.stdout.write(
+                    f"WARNING: could not read {repo_path.name}: {e}\n")
         # Documentation staged by the fetcher under _docs/.
         docs_dir = src / "_docs"
         if docs_dir.is_dir():

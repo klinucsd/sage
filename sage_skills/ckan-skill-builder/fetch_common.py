@@ -11,15 +11,19 @@ Home: ckan-skill-builder/ (the foundational fetcher; ndp delegates to it).
 Imported directly by ckan-skill-builder/fetch.py, and via the sibling-skill
 path pattern by zenodo-skill-builder/fetch.py (see that file's import dance).
 
-Adding a format later (the "prepare for netcdf / geotiff" requirement):
+Adding a format later:
   - A format the array/tabular core can ALREADY read  -> add its extension to
     ARRAY_EXTS or TABULAR_EXTS. Done.
-  - A format no core reader supports yet (e.g. GeoTIFF today) -> add it to
-    RASTER_EXTS (or a new *_EXTS set). classify() returns a distinct class and
-    the router reports it as "not yet supported" instead of silently dropping
-    it or mis-routing it to a reader that will crash. When array-skill-builder
-    gains the reader (rasterio/GDAL for GeoTIFF), move the extensions into
-    ARRAY_EXTS and delete the RASTER_EXTS handling.
+  - A format no core reader supports yet -> add it to a new *_EXTS set that
+    classify() maps to a distinct class the router reports as "not yet
+    supported", so a record of that format gets an honest refusal rather than
+    a crash inside the wrong reader. Promote it once the core gains a reader.
+
+GeoTIFF followed exactly that path: it began life in RASTER_EXTS as an honest
+refusal, and once array-skill-builder gained a rasterio reader (a single-band
+GeoTIFF is a 2D georeferenced array; multi-band is band x y x x), its
+extensions moved into the array family below. RASTER_EXTS is kept as a named
+subset so the classification report can still say "of which N GeoTIFF".
 """
 
 from __future__ import annotations
@@ -47,12 +51,13 @@ ARRAY_EXTS = {
     ".zarr",                          # Zarr
 }
 
-# Raster formats the array core cannot read YET. Classified distinctly so a
-# raster-only record gets an honest "not yet supported" message rather than a
-# crash inside an h5py loader. Promote into ARRAY_EXTS once a GeoTIFF/GDAL
-# reader lands in array-skill-builder.
+# Raster / GeoTIFF formats. array-skill-builder now reads these via rasterio
+# (inventory._walk_raster), so they are part of the array family: classify()
+# maps them to 'array' and they route to array-skill-builder like HDF5/NetCDF.
+# Kept as a named subset so the classification report can distinguish them and
+# so the array inventory can pick the rasterio reader by extension.
 RASTER_EXTS = {
-    ".tif", ".tiff", ".geotiff",      # GeoTIFF (needs rasterio/GDAL — not wired)
+    ".tif", ".tiff", ".geotiff",      # GeoTIFF (rasterio/GDAL)
     ".img", ".grd",                   # other GDAL rasters
 }
 
@@ -112,10 +117,11 @@ _OTHER = "other"
 # --------------------------------------------------------------------------- #
 
 def classify(filename: str) -> str:
-    """Return one of: array, tabular, docs, raster, sniff, archive, other.
+    """Return one of: array, tabular, docs, sniff, archive, other.
 
     'sniff' is an ambiguous text file resolved after download by looks_tabular.
-    'raster' is a format we recognise but cannot build yet (honest refusal).
+    GeoTIFF / GDAL rasters map to 'array' (array-skill-builder reads them via
+    rasterio) — see RASTER_EXTS.
     """
     name = filename.rsplit("/", 1)[-1]
     lower = name.lower()
@@ -129,10 +135,8 @@ def classify(filename: str) -> str:
     if any(h in stem for h in DOC_NAME_HINTS):
         return _DOCS
 
-    if ext in ARRAY_EXTS:
+    if ext in ARRAY_EXTS or ext in RASTER_EXTS:
         return _ARRAY
-    if ext in RASTER_EXTS:
-        return _RASTER
     if ext in DOC_EXTS:
         return _DOCS
     if ext in TABULAR_EXTS:
@@ -382,6 +386,81 @@ def process_resource(url, key, out_dir: Path, docs_dir: Path,
     return entries
 
 
+def process_local_file(local_path, key, out_dir: Path, docs_dir: Path,
+                       source_url=None):
+    """Classify an ALREADY-LOCAL file the same way process_resource classifies
+    a freshly downloaded one — minus the download.
+
+    This is the shared post-fetch routing for fetchers whose fetch step
+    produces files on disk directly (a git clone, an S3 sync, an extracted
+    archive) rather than a list of URLs to pull. The fetch differs per source;
+    the classify -> sniff -> docs -> route steps are identical, and live here.
+
+    `key` is the display name / source-relative path (drives classify()).
+    `source_url` is the permanent remote URL the emitted skill can re-fetch
+    from (e.g. a raw.githubusercontent.com URL); it is threaded into the entry
+    so the downstream inventory can wire a lazy-download loader.
+    Returns a list of entry dicts (an archive expands to several).
+    """
+    src = Path(local_path)
+    if not src.is_file():
+        return [{"filename": key, "class": _OTHER, "url": source_url,
+                 "error": "local file missing"}]
+    kind = classify(key)
+    size = src.stat().st_size
+
+    # Archives: unpack in place and reclassify the contents (same as the
+    # download path's archive handling).
+    if kind == _ARCHIVE:
+        entries = [{"filename": key, "class": _ARCHIVE, "url": source_url,
+                    "local_path": str(src), "size_bytes": size}]
+        for ex in unpack(src, out_dir):
+            sub = classify(ex.name)
+            if sub == _SNIFF:
+                sub, ex = finalize_sniff(ex, docs_dir)
+            elif sub == _DOCS:
+                docs_dir.mkdir(parents=True, exist_ok=True)
+                moved = docs_dir / ex.name
+                try:
+                    ex.replace(moved); ex = moved
+                except Exception:
+                    pass
+            entries.append({
+                "filename": ex.name if sub == _DOCS
+                            else str(ex.relative_to(out_dir)),
+                "class": sub, "from_archive": key, "local_path": str(ex),
+                "size_bytes": ex.stat().st_size if ex.exists() else None})
+        return entries
+
+    dest, sniffed = src, None
+    if kind == _SNIFF:
+        kind, dest = finalize_sniff(src, docs_dir)
+        sniffed = looks_tabular(dest) if kind == _TABULAR else "not-tabular"
+    elif kind == _DOCS:
+        # Copy docs into _docs/ so the core builders' semantics step finds
+        # them; leave the clone otherwise intact. Disambiguate name clashes
+        # across subdirs by falling back to the flattened relative path.
+        docs_dir.mkdir(parents=True, exist_ok=True)
+        target = docs_dir / src.name
+        try:
+            if target.exists() and target.resolve() != src.resolve():
+                target = docs_dir / str(
+                    src.relative_to(out_dir)).replace("/", "__")
+            import shutil
+            shutil.copy2(src, target)
+            dest = target
+        except Exception:
+            dest = src
+
+    note = f"  (delimiter: {sniffed!r})" if sniffed and kind == _TABULAR else ""
+    print(f"  {kind:22s} {key}  ({size/1024:.0f} KB){note}")
+    entry = {"filename": key, "class": kind, "url": source_url,
+             "local_path": str(dest), "size_bytes": size}
+    if sniffed:
+        entry["sniffed_delimiter"] = sniffed
+    return [entry]
+
+
 # --------------------------------------------------------------------------- #
 # Routing
 # --------------------------------------------------------------------------- #
@@ -389,7 +468,9 @@ def process_resource(url, key, out_dir: Path, docs_dir: Path,
 def route(entries) -> str:
     """Pick the downstream route from classified entries.
 
-    Returns one of: 'array', 'tabular', 'combined', 'raster', 'none'.
+    Returns one of: 'array', 'tabular', 'combined', 'too-large', 'none'.
+    Rasters classify as 'array', so a raster-only record routes 'array' and a
+    raster+CSV record routes 'combined'.
     """
     def has(kind):
         return any(e["class"] == kind and "error" not in e for e in entries)
@@ -402,8 +483,6 @@ def route(entries) -> str:
         return "tabular"
     if has("too-large"):
         return "too-large"
-    if has(_RASTER):
-        return "raster"
     return "none"
 
 
@@ -417,14 +496,21 @@ def report_classification(entries, out_dir: Path, docs_dir: Path,
     def of(kind):
         return [e for e in entries if e["class"] == kind and "error" not in e]
     arrays, tabulars = of(_ARRAY), of(_TABULAR)
-    docs, rasters, others = of(_DOCS), of(_RASTER), of(_OTHER)
+    docs, others = of(_DOCS), of(_OTHER)
     toolarge = of("too-large")
     errs = [e for e in entries if "error" in e]
     the_route = route(entries)
 
+    def _is_raster(e):
+        return os.path.splitext(e["filename"].lower())[1] in RASTER_EXTS
+    n_raster = sum(1 for e in arrays if _is_raster(e))
+
     print()
     print("Classification")
-    print(f"  array   : {len(arrays)} file(s)  -> array-skill-builder")
+    raster_note = (f"  (of which {n_raster} GeoTIFF/raster)"
+                   if n_raster else "")
+    print(f"  array   : {len(arrays)} file(s)  -> array-skill-builder"
+          f"{raster_note}")
     print(f"  tabular : {len(tabulars)} file(s)  -> tabular-skill-builder")
     print(f"  docs    : {len(docs)} file(s)  -> read for semantics (_docs/)")
     if toolarge:
@@ -435,9 +521,6 @@ def report_classification(entries, out_dir: Path, docs_dir: Path,
             gb = (e.get("size_bytes") or 0) / 1024 ** 3
             print(f"      {e['filename']}  ({gb:.1f} GB, would be "
                   f"{e.get('intended_class')})")
-    if rasters:
-        print(f"  raster  : {len(rasters)} file(s)  -> NOT YET SUPPORTED "
-              f"(array-skill-builder has no GeoTIFF/GDAL reader)")
     if others:
         shown = ", ".join(e["filename"] for e in others[:4])
         print(f"  other   : {len(others)} file(s)  -> ignored ({shown}"
@@ -462,9 +545,6 @@ def report_classification(entries, out_dir: Path, docs_dir: Path,
         print("  Building large remote HDF5 needs metadata-only Range reads,")
         print("  which array-skill-builder does not do yet — tell the user")
         print("  the file size and stop.")
-    elif the_route == "raster":
-        print("  Raster data only (GeoTIFF/GDAL). array-skill-builder cannot")
-        print("  build these yet — tell the user and stop.")
     else:
         print("  Nothing buildable — no array or tabular files here.")
         print("  Tell the user what was found and stop.")

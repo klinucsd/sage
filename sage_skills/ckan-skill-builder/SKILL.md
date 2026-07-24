@@ -69,10 +69,10 @@ Decline (do not use this skill) when:
 - The URL is a github.com repo — use `repo-skill-builder`.
 - The URL is an ArcGIS Feature/Map Service — use
   `arcgis-feature-skill-builder`.
-- The dataset has no buildable data (only PDFs, HTML pages, raster
-  imagery, or documentation) — `fetch.py` prints `ROUTE: none` (or
-  `ROUTE: raster`); tell the user there is nothing queryable to
-  build here.
+- The dataset has no buildable data (only PDFs, HTML pages, or
+  documentation) — `fetch.py` prints `ROUTE: none`; tell the user
+  there is nothing queryable to build here. (GeoTIFF rasters ARE
+  buildable now — they route `array`/`combined`, not `none`.)
 
 ## What You Need From the User
 
@@ -183,12 +183,13 @@ share a join key, and state the exact join in the proposal. This is
 the same combined flow `zenodo-skill-builder`'s SKILL.md documents;
 follow it. Do not build before the user approves the plan.
 
-#### `ROUTE: raster` or `ROUTE: none`
+#### `ROUTE: none`
 
-Nothing buildable yet (raster-only means GeoTIFF, which
-`array-skill-builder` cannot read yet). Tell the user what the
-dataset contains — the classification tally and
-`_skipped_resources.json` name the categories — and stop.
+Nothing buildable — no array, tabular, or raster data (only docs /
+HTML / images). Tell the user what the dataset contains — the
+classification tally and `_skipped_resources.json` name the
+categories — and stop. (GeoTIFF is no longer a dead end: rasters
+classify as `array` and route `array`/`combined`.)
 
 ### Step 4 — Clean up the staged download
 

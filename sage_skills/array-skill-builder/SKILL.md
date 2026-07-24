@@ -1,15 +1,18 @@
 ---
 name: array-skill-builder
 description: >-
-  Build an ARGUS skill from HDF5 / NetCDF array data — a directory of
-  staged files handed over by a fetcher shell (`zenodo-skill-builder`,
-  `ckan-skill-builder`), or a direct `.h5` / `.hdf5` / `.nc` URL.
-  Handles single-file datasets and multi-file collections whose files
-  share a schema and get queried as one logical dataset (e.g. 12
-  monthly files → one `load_month(m)` interface). Reads sibling
+  Build an ARGUS skill from HDF5 / NetCDF / GeoTIFF array data — a
+  directory of staged files handed over by a fetcher shell
+  (`zenodo-skill-builder`, `ckan-skill-builder`), or a direct
+  `.h5` / `.hdf5` / `.nc` / `.tif` URL. Handles single-file datasets
+  and multi-file collections whose files share a schema and get
+  queried as one logical dataset (e.g. 12 monthly files → one
+  `load_month(m)` interface). For GeoTIFF rasters it emits spatial-
+  query helpers — the value/population inside a polygon (zonal
+  statistics), the value at a point, a clipped window. Reads sibling
   README / PDF documentation for physical-quantity labels. Two-phase:
   inventory + propose + STOP, then generate the SKILL.md after user
-  approval. Use for gridded/array scientific data.
+  approval. Use for gridded/array/raster scientific data.
 ---
 
 # Array Skill Builder
@@ -33,17 +36,31 @@ Non-negotiable. Detailed rationale is in the steps below.
    documentation from the record, and prints a compact summary. It
    is the *first* picture you get.
 
-2. **HDF5 alone almost never carries the semantics you need.**
-   Physical-quantity meanings, dimension units, calibration
-   information, and dataset provenance normally live in a sibling
-   README, technical PDF, or text file that Zenodo / CKAN ship
-   alongside the data. The bundled inventory downloads these into
-   `<out-dir>/_docs/` and inlines short text files into the JSON
-   under `documentation[].text_head`. **Before writing the SKILL.md
-   you MUST read every documentation sidecar** (PDFs via `pypdf`,
-   text files via the inlined `text_head` field, or with a Python
-   script for anything larger). Emitted skills whose descriptions
-   and Caveats are derived from HDF5 alone are consistently thin
+2. **The data file alone almost never carries the semantics you
+   need — and this gets worse across formats.** Physical-quantity
+   meanings, dimension units, calibration, and provenance normally
+   live in a sibling README, technical PDF, or text file that
+   Zenodo / CKAN ship alongside the data. HDF5 attributes give a
+   little; NetCDF `units`/`long_name` give more but are often empty;
+   a **GeoTIFF band gives essentially nothing** (no units, no
+   description — the WorldPop population rasters carry none), so
+   whether a pixel is a count, a density, or a class code lives
+   ONLY in the docs. The bundled inventory downloads sidecars into
+   `<out-dir>/_docs/` and inlines short text into the JSON under
+   `documentation[].text_head`. **Before writing the SKILL.md you
+   MUST read every documentation sidecar** (PDFs via `pypdf`, text
+   via the inlined `text_head`, or a script for anything larger).
+
+   **If neither the file nor the docs establish what a
+   variable/band/channel means or how to interpret its values, you
+   MUST ask the user at the Step 4 gate — do not guess.** Put it in
+   the proposal's "Open questions" as a concrete, answerable
+   question ("`jor_ppp_2020_UNadj.tif`: float32, ~100 m pixels,
+   Σ≈10.2 M over valid pixels — is this persons-per-pixel, so that
+   summing inside a polygon gives its population? confirm or
+   correct"), not a vague "unsure about semantics". This applies to
+   every format (HDF5, NetCDF, GeoTIFF) equally. Skills whose
+   semantics were guessed from the file alone are consistently thin
    and mislabelled.
 
 3. **Never load `_inventory.json` wholesale into your context.**
@@ -492,8 +509,8 @@ cheaply:
 
 ### Step 5 — Branch on the group's format, then design the loaders
 
-The inventory reports **`groups[i].format`** — either `hdf5` or
-`netcdf`. The two use different readers and loader shapes:
+The inventory reports **`groups[i].format`** — `hdf5`, `netcdf`, or
+`geotiff`. Each uses a different reader and loader shape:
 
 - **`format: hdf5`** — h5py + a CHANNELS mapping. Follow Steps 5a → 7
   below (the CHANNELS / `load_month` / Igor-time-axis machinery).
@@ -502,13 +519,23 @@ The inventory reports **`groups[i].format`** — either `hdf5` or
   named dimensions, and CF units, so there is no dialect-
   reconciliation or CHANNELS-tuple work — xarray reads the file
   directly.
+- **`format: geotiff`** — rasterio. Use **Step 6c** in place of the
+  CHANNELS steps. A single-band GeoTIFF is a 2D georeferenced array;
+  the value the skill exposes is not "load the pixels" but spatial
+  queries against them — the population/quantity inside a polygon,
+  the value at a point, a clipped window. The georeferencing
+  (`groups[i].global_attrs`: crs, transform, res, bounds, nodata) is
+  what makes those possible.
 
 Both branches sit **after** the Step 4 approval gate. Choosing a
 loader branch is not a reason to revisit whether the gate applies —
 you only reach Step 5 once the user has approved the plan.
 
-Pick the branch per group. A record can even be combined (some HDF5,
-some NetCDF), though that is rare.
+Pick the branch per group. A record can be combined — e.g. GeoTIFF
+rasters plus CSV/GPKG tables (a population raster + admin-boundary
+polygons is the canonical case); build the raster group with Step 6c
+and the tabular group with tabular-skill-builder, in ONE skill when
+they share a CRS / spatial join.
 
 #### Step 5a — Design the CHANNELS mapping (HDF5 only)
 
@@ -712,6 +739,118 @@ do not mutate values in `load()`. The `where` idiom is xarray's
 filter: `ds["PM25"].where(ds["PM25"] >= 0)`.
 
 Then continue to Step 8 to compose the SKILL.md (the NetCDF variant).
+
+### Step 6c — Raster loaders (rasterio) — use INSTEAD of Steps 5a–7
+
+For a group whose `format` is `geotiff`, do NOT build a CHANNELS dict.
+The deliverable is a **spatial-query interface** over the raster, not
+a raw pixel loader. Read the georeferencing from the inventory's
+`groups[i].global_attrs` (crs, transform, res, bounds, nodata,
+band_count) and each band's stats from `datasets_union`.
+
+The emitted skill's How-to-Use block provides these helpers (name
+them for the actual quantity — e.g. `population_in_polygon` when the
+raster is population; keep the generic name as an alias):
+
+```python
+from pathlib import Path
+
+_SKILL_NAME = "<skill-name>"
+_NODATA = <nodata from global_attrs, or None>
+
+def _ensure_raster_deps():
+    """rasterio (+ rasterstats for zonal stats, geopandas for the vector
+    join). None are preinstalled — install on first use."""
+    try:
+        import rasterio, rasterstats, geopandas  # noqa: F401
+    except ImportError:
+        import subprocess, sys
+        subprocess.run([sys.executable, "-m", "pip", "install", "--user",
+                        "rasterio", "rasterstats", "geopandas"], check=True)
+
+def _data_dir():
+    ...   # the portable _data_dir() from the bundled-data rule — bundle
+          # the raster under data/ when small; for a large raster use the
+          # /tmp/<skill-name>-cache lazy-download path (same rule as NetCDF)
+
+def open_raster(<variant arg if >1 raster in the group>):
+    """Open the raster as a rasterio dataset (caller closes it, or use
+    it in a `with`)."""
+    _ensure_raster_deps()
+    import rasterio
+    return rasterio.open(_data_dir() / "<filename>")
+
+def zonal_sum(geom, geom_crs="EPSG:4326"):
+    """Sum the raster's valid pixels inside one polygon. For a
+    persons-per-pixel raster this is the population of the polygon;
+    name the emitted helper for that meaning and keep zonal_sum as an
+    alias. Reprojects the polygon to the raster CRS first; nodata is
+    excluded.
+    """
+    _ensure_raster_deps()
+    import rasterio
+    from rasterio.mask import mask
+    import geopandas as gpd
+    from shapely.geometry import mapping, shape
+    with rasterio.open(_data_dir() / "<filename>") as ds:
+        g = gpd.GeoSeries([geom if hasattr(geom, "geom_type")
+                           else shape(geom)], crs=geom_crs).to_crs(ds.crs)
+        out, _ = mask(ds, [mapping(g.iloc[0])], crop=True, filled=True)
+        band = out[0].astype("float64")
+        nod = ds.nodata
+        import numpy as np
+        valid = band[(band != nod)] if nod is not None else band.ravel()
+        return float(np.nansum(valid))
+
+def zonal_stats(geoms, stats="sum mean count", geom_crs="EPSG:4326"):
+    """Per-feature stats for many polygons at once (rasterstats). Pass a
+    GeoDataFrame/GeoSeries or a list of geometries; returns one dict per
+    feature. Reproject geoms to the raster CRS before calling."""
+    _ensure_raster_deps()
+    from rasterstats import zonal_stats as _zs
+    return _zs(geoms, str(_data_dir() / "<filename>"),
+               stats=stats, nodata=_NODATA)
+
+def sample_at(lon, lat):
+    """Value of the raster at one lon/lat point (raster CRS assumed
+    geographic; reproject the point first if not)."""
+    _ensure_raster_deps()
+    import rasterio
+    with rasterio.open(_data_dir() / "<filename>") as ds:
+        return float(next(ds.sample([(lon, lat)]))[0])
+```
+
+**Loader shape follows the group topology (Step 6).** One raster →
+one `open_raster()` + the query helpers. A multi-raster group that the
+user confirmed is **one quantity in several variants** (the WorldPop
+`constrained` vs `UNadj` case: same grid, same band, different
+estimation method) → add a `variant=` argument selecting the file;
+default to the variant the docs call primary. A multi-raster group
+that is genuinely **different variables on a shared grid** → the user
+will have said so at the gate; emit one helper set per variable.
+
+**Emit a bands/variants table, not a CHANNELS dict.** From
+`global_attrs` + `datasets_union`, write a `## Raster layer` section:
+CRS, resolution, pixel size in metres if known, bounds, nodata, and a
+row per band/variant with its meaning and the pixel-value semantics
+(what one pixel holds; what summing a region yields). The last part
+is the semantics you MUST get from the docs or the user (next rule).
+
+**Pixel-value semantics come from docs or the user, never the file.**
+A GeoTIFF's bands almost never carry a `units`/`description` (the
+WorldPop rasters carry none). Whether a pixel is a count, a density,
+a rate, or a class code — and therefore whether `zonal_sum` is even
+meaningful — is NOT in the file. Establish it from the documentation
+sidecars; if the docs are silent too, this is exactly the missing-
+semantics case: **ask the user at the Step 4 gate** (see the pre-flight
+rule) rather than guessing. State the assumption you settled on in the
+Caveats.
+
+**Data-quality still applies** (Step 8's rule): document the nodata
+value and the valid-pixel fraction from the inventory; the helpers
+already exclude nodata, so never bake a fill value into a sum.
+
+Then continue to Step 8 to compose the SKILL.md (the raster variant).
 
 ### Step 7 — Design the time-axis conversion (HDF5 only)
 
