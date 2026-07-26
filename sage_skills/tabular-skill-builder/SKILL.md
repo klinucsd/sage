@@ -1115,6 +1115,55 @@ structure (same conventions as `arcgis-feature-skill-builder`):
 8. **## How to Use** — a `load_data()` helper that reads the cached
    data file.
 
+   Both loader variants below locate the bundled data through the same
+   portable `_data_dir()` helper the array core uses, so the skill still
+   finds its data after it is promoted to the global registry or its
+   `load_data` is copied into an analysis script — where `__file__`
+   points at the script, not the skill. Emit `_data_dir()` once, then the
+   loader for your format.
+
+   ```python
+   import os
+   from pathlib import Path
+
+   _SKILL_NAME = "<skill-name>"
+
+   def _data_dir():
+       """Locate the bundled data/ directory wherever the skill lives,
+       without baking in an absolute path. Searches, in order: next to a
+       running script; the per-notebook ARGUS output dir
+       `_<stem>_sage_/_skills_/<name>/data`; the cwd and its ancestors;
+       the global registry. The output dir is a *child* of the kernel's
+       cwd, not an ancestor, and `$SAGE_OUTPUT_DIR` is absent from the
+       execute-tool subprocess — so we glob for the `*_sage_` dir beneath
+       each level rather than trusting an ancestor walk or the env var."""
+       name = _SKILL_NAME
+       cands = []
+       def add(p):
+           p = Path(p)
+           if p not in cands:
+               cands.append(p)
+       if "__file__" in globals():
+           add(Path(__file__).resolve().parent / "data")
+       env = os.environ.get("SAGE_OUTPUT_DIR")
+       if env:
+           add(Path(env) / "_skills_" / name / "data")
+       cwd = Path.cwd()
+       for base in (cwd, *cwd.parents):
+           add(base / "_skills_" / name / "data")
+           try:
+               for sage in base.glob("*_sage_"):
+                   add(sage / "_skills_" / name / "data")
+           except OSError:
+               pass
+       add(Path.home() / ".deepagents" / "agent" / "skills" / name / "data")
+       for c in cands:
+           if c.is_dir():
+               return c
+       raise FileNotFoundError(
+           f"bundled data/ for '{name}' not found; searched {[str(c) for c in cands]}")
+   ```
+
    **For spatial skills (`.gpkg` output):** use
    `geopandas.read_file` — it restores the geometry column and CRS
    natively, no dtype-coercion workaround needed.
@@ -1125,9 +1174,8 @@ structure (same conventions as `arcgis-feature-skill-builder`):
 
    def load_data(skill_dir=None):
        """Load the cached spatial skill data as a GeoDataFrame."""
-       if skill_dir is None:
-           skill_dir = Path(__file__).parent
-       return gpd.read_file(Path(skill_dir) / "data" / "<skill-name>.gpkg")
+       data = Path(skill_dir) / "data" if skill_dir else _data_dir()
+       return gpd.read_file(data / "<skill-name>.gpkg")
    ```
 
    **For tabular skills (`.parquet` output):** **use
@@ -1146,9 +1194,8 @@ structure (same conventions as `arcgis-feature-skill-builder`):
        are present. Uses pyarrow.parquet directly to avoid a
        pandas 3.x bug in pd.read_parquet's extension-type loader.
        """
-       if skill_dir is None:
-           skill_dir = Path(__file__).parent
-       p = Path(skill_dir) / "data" / "<skill-name>.parquet"
+       data = Path(skill_dir) / "data" if skill_dir else _data_dir()
+       p = data / "<skill-name>.parquet"
 
        import pyarrow.parquet as pq
        df = pq.read_table(p).to_pandas()
