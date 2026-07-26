@@ -249,31 +249,60 @@ exact `_data_dir()` helper (substituting the real skill name) and
 route every bundled read through it:
 
 ```python
+import os
 from pathlib import Path
 
 _SKILL_NAME = "<skill-name>"
 
 def _data_dir():
-    """Locate the bundled data/ directory relative to the skill, wherever
-    the skill currently lives. Searches the current working tree's
-    `_skills_/<name>/data` and the global registry — no absolute path."""
-    candidates = []
+    """Locate the bundled data/ directory wherever the skill lives, without
+    baking in an absolute path (so it keeps working after the skill is
+    promoted to the global registry or copied elsewhere).
+
+    Search order: next to a running script; the per-notebook ARGUS output
+    dir `_<stem>_sage_/_skills_/<name>/data`; the cwd and its ancestors; the
+    global registry. The output dir is a *child* of the kernel's cwd, not an
+    ancestor of it, and `$SAGE_OUTPUT_DIR` is absent from the execute-tool
+    subprocess — so we glob for the `*_sage_` dir beneath each level rather
+    than relying on an ancestor walk or the environment variable."""
+    name = _SKILL_NAME
+    cands = []
+    def add(p):
+        p = Path(p)
+        if p not in cands:
+            cands.append(p)
+
     # 1. Alongside this skill when it was copied next to a running script.
     if "__file__" in globals():
-        candidates.append(Path(__file__).resolve().parent / "data")
-    # 2. Under any _skills_/<name>/ in the cwd or an ancestor (local skills).
+        add(Path(__file__).resolve().parent / "data")
+
+    # 2. The per-notebook output dir, if the env var happens to be set
+    #    (true in-kernel, absent in an execute-tool subprocess).
+    env = os.environ.get("SAGE_OUTPUT_DIR")
+    if env:
+        add(Path(env) / "_skills_" / name / "data")
+
+    # 3. The cwd and its ancestors. At each level check the level itself AND
+    #    any `*_sage_` output dir nested one step below it — the build writes
+    #    into <notebook-dir>/_<stem>_sage_/_skills_/<name>/data, which is a
+    #    child of the kernel's cwd, so an ancestor-only walk misses it.
     cwd = Path.cwd()
     for base in (cwd, *cwd.parents):
-        candidates.append(base / "_skills_" / _SKILL_NAME / "data")
-    # 3. The global registry (promoted skills).
-    candidates.append(
-        Path.home() / ".deepagents" / "agent" / "skills" / _SKILL_NAME / "data")
-    for c in candidates:
+        add(base / "_skills_" / name / "data")
+        try:
+            for sage in base.glob("*_sage_"):
+                add(sage / "_skills_" / name / "data")
+        except OSError:
+            pass
+
+    # 4. The global registry (promoted skills).
+    add(Path.home() / ".deepagents" / "agent" / "skills" / name / "data")
+
+    for c in cands:
         if c.is_dir():
             return c
     raise FileNotFoundError(
-        f"bundled data/ for '{_SKILL_NAME}' not found; searched "
-        f"{[str(c) for c in candidates]}")
+        f"bundled data/ for '{name}' not found; searched {[str(c) for c in cands]}")
 ```
 
 Do NOT emit `SKILL_DIR = Path("/home/jovyan/work/.../_skills_/...")`
