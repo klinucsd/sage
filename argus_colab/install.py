@@ -60,6 +60,7 @@ _CORE_SKILLS = (
     "arcgis-feature-skill-builder",
     "array-skill-builder",
     "ckan-skill-builder",
+    "local-skill-builder",
     "ndp-search",
     "ndp-skill-builder",
     "repo-skill-builder",

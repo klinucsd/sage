@@ -656,11 +656,28 @@ def print_summary(records, repo_dir, out_json):
 # ---------------------------------------------------------------------------
 
 def main(argv):
-    if len(argv) < 2:
-        print("Usage: python inventory.py <repo-dir>", file=sys.stderr)
+    # Optional NAMED flag --out-json <path> redirects the inventory JSON out of
+    # the input directory. local-skill-builder passes it so a read-in-place
+    # build of a user's own folder writes nothing into that folder. A named
+    # flag (not a positional) deliberately avoids the old argv[2]-as-output
+    # ambiguity noted below. Absent -> default <repo-dir>/_inventory.json.
+    args = list(argv[1:])
+    out_json_override = None
+    if "--out-json" in args:
+        i = args.index("--out-json")
+        if i + 1 < len(args):
+            out_json_override = Path(args[i + 1]).expanduser().resolve()
+            del args[i:i + 2]
+        else:
+            print("Usage: --out-json requires a path", file=sys.stderr)
+            sys.exit(2)
+
+    if not args:
+        print("Usage: python inventory.py <repo-dir> [--out-json <path>]",
+              file=sys.stderr)
         sys.exit(2)
 
-    repo_dir = Path(argv[1]).resolve()
+    repo_dir = Path(args[0]).resolve()
     if not repo_dir.is_dir():
         print(f"Error: not a directory: {repo_dir}", file=sys.stderr)
         sys.exit(2)
@@ -671,11 +688,11 @@ def main(argv):
     # rather than treating them as an output path. Previously the script
     # honored argv[2] as a custom output path, which caused JSON to be
     # written to a file literally named "2" in cwd.
-    if len(argv) > 2:
-        print(f"Warning: ignoring unexpected extra args: {argv[2:]}",
+    if len(args) > 1:
+        print(f"Warning: ignoring unexpected extra args: {args[1:]}",
               file=sys.stderr)
 
-    out_json = repo_dir / "_inventory.json"
+    out_json = out_json_override or (repo_dir / "_inventory.json")
 
     try:
         records = inventory_repo(repo_dir)

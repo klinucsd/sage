@@ -4164,7 +4164,7 @@ try:
         if not urls:
             display(HTML(
                 "<div style='color:#888'>%%skill-build: nothing to build "
-                "(empty cell). List one URL per line.</div>"
+                "(empty cell). List one URL or local path per line.</div>"
             ))
             return
 
@@ -4178,37 +4178,40 @@ try:
         url_list = "\n".join(urls)
         if len(urls) == 1:
             prompt = (
-                "Build an ARGUS skill for the URL below. Use the "
+                "Build an ARGUS skill for the source below. Use the "
                 "appropriate built-in skill-builder meta-skill — match "
-                "the URL's type against the available meta-skills' "
-                "descriptions. For ArcGIS Feature Service URLs, that is "
-                "the `arcgis-feature-skill-builder` skill.\n\n"
+                "the source against the available meta-skills' "
+                "descriptions. A source is usually a URL, but a local "
+                "filesystem path (a directory or file on this machine, "
+                "e.g. `/home/...`, `~/...`, or `./data`) is handled by "
+                "the `local-skill-builder` skill.\n\n"
                 f"{url_list}\n\n"
                 "Save the generated SKILL.md to `_skills_/<skill-name>/` "
                 "in the current working directory. Do not copy it to "
                 "the global skill registry; the next %%ask cell will "
                 "pick it up from `_skills_/` automatically. If no "
-                "built-in skill-builder meta-skill matches the URL's "
-                "type, report the unsupported URL type clearly without "
-                "attempting an improvised build."
+                "built-in skill-builder meta-skill matches the source, "
+                "report it clearly without attempting an improvised "
+                "build."
             )
         else:
             prompt = (
-                "Build ARGUS skills for the URLs below, one skill per "
-                "URL, using the appropriate built-in skill-builder "
-                "meta-skill for each. Match each URL's type against the "
-                "available meta-skills' descriptions; for ArcGIS Feature "
-                "Service URLs, use the `arcgis-feature-skill-builder` "
+                "Build ARGUS skills for the sources below, one skill per "
+                "source, using the appropriate built-in skill-builder "
+                "meta-skill for each. Match each source against the "
+                "available meta-skills' descriptions. A source is usually "
+                "a URL, but a local filesystem path (a directory or file "
+                "on this machine) is handled by the `local-skill-builder` "
                 "skill.\n\n"
                 f"{url_list}\n\n"
                 "Save each generated SKILL.md to "
                 "`_skills_/<skill-name>/` in the current working "
                 "directory. Do not copy any of the generated skills to "
                 "the global skill registry; the next %%ask cell picks "
-                "them up from `_skills_/` automatically. If a URL's "
-                "type does not match any built-in skill-builder "
-                "meta-skill, report it as unsupported and continue with "
-                "the remaining URLs."
+                "them up from `_skills_/` automatically. If a source "
+                "does not match any built-in skill-builder meta-skill, "
+                "report it as unsupported and continue with "
+                "the remaining sources."
             )
 
         # Dispatch through the standard %%ask agent loop. This re-uses
