@@ -305,7 +305,10 @@ except ImportError:
     subprocess.check_call(
         [
             sys.executable, "-m", "pip", "install", "-q",
-            "deepagents-code==0.1.10",
+            # Keep this pin in lockstep with sage/Dockerfile. Colab and the
+            # JupyterHub image running different deepagents versions is how a
+            # bug becomes reproducible on only one surface.
+            "deepagents-code==0.1.54",
             "langchain-mcp-adapters",
             "nest_asyncio",
             "folium", "geopandas", "ipyleaflet", "ipywidgets",
