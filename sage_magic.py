@@ -1879,9 +1879,20 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     # preamble inside the user message. With GLM's weak instruction-following,
     # system-level rules carry materially more weight than user-message rules.
     backend_cls = KernelShellBackend if KernelShellBackend is not None else LocalShellBackend
+    # Raise the shell-command timeout well above deepagents'
+    # DEFAULT_EXECUTE_TIMEOUT (120 s). That default suits interactive coding,
+    # but ARGUS routinely runs commands that legitimately exceed two minutes —
+    # a cold `pip install` of the geo stack, a large dataset download, a
+    # `git clone` during repo skill-build, unpacking a multi-GB archive — and
+    # they were being terminated mid-flight. 3600 s matches the filesystem
+    # middleware's own `max_execute_timeout` ceiling, so it is the largest
+    # value the execute tool will honour. Note this bounds only the SHELL
+    # fallback path; `python …` invocations run in-process in the kernel and
+    # are deliberately unbounded (see KernelShellBackend.execute). The kernel
+    # interrupt remains the escape hatch for a genuinely runaway command.
     create_kwargs: dict = {
         "skills": skills_paths,
-        "backend": backend_cls(virtual_mode=False),
+        "backend": backend_cls(virtual_mode=False, timeout=3600),
         "checkpointer": None,
     }
     if system_prompt:
@@ -2793,6 +2804,7 @@ def _sage_normalize_mcp_config(raw):
                 raise ValueError(
                     f"Server '{name}' uses stdio transport but no command given"
                 )
+            # (stdio has no HTTP/stream timeouts to configure)
             entry = {
                 "transport": "stdio",
                 "command": _sage_interpolate_mcp_env(command),
@@ -2808,6 +2820,22 @@ def _sage_normalize_mcp_config(raw):
         else:
             raise ValueError(
                 f"Server '{name}' has unsupported transport: {transport}"
+            )
+
+        # HTTP-based transports: give computational MCP tools room to finish,
+        # and let a server override either value in its own config.
+        #
+        # The MCP SDK defaults are tuned for quick RPC, not science: sse gives
+        # timeout=5 s / sse_read_timeout=300 s and streamable_http 30 s / 300 s.
+        # `sse_read_timeout` is the ceiling on the whole streamed response, so a
+        # long tool call (e.g. zonal statistics over every county in a state)
+        # was being cut off at 5 minutes no matter what the server did. ARGUS
+        # previously built `entry` from scratch and dropped any timeout the user
+        # supplied, so this was neither generous nor configurable.
+        if transport in ("streamable_http", "sse"):
+            entry.setdefault("timeout", float(cfg.get("timeout", 60)))
+            entry.setdefault(
+                "sse_read_timeout", float(cfg.get("sse_read_timeout", 3600))
             )
 
         normalized[name] = entry
