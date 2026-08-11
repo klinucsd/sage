@@ -54,12 +54,22 @@ RUN apt-get update && apt-get install -y \
 #
 # deepagents-code is the interactive coding agent package (renamed from
 # deepagents-cli starting at 0.2.x; the legacy deepagents-cli 0.2.x is now
-# deployment tooling only). 0.1.10 brings deepagents==0.6.8, langchain-openai,
+# deployment tooling only). 0.1.54 brings deepagents==0.7.5, langchain-openai,
 # langchain-anthropic, langchain-mcp-adapters, and the LangGraph runtime as
 # default deps — no extras needed.
+#
+# Upgraded from 0.1.10 (deepagents 0.6.8) on 2026-07-26. Every ARGUS binding
+# was re-verified against 0.1.54/0.7.5: create_deep_agent still accepts
+# system_prompt/backend/model/tools; LocalShellBackend.execute is still
+# (command, *, timeout=None); backends.protocol.ExecuteResponse,
+# middleware.filesystem.execute_accepts_timeout, deepagents_code.config
+# .create_model, .model_config.ModelConfigError and .sessions
+# .generate_thread_id all unchanged. The one break was apply_sage_patch.py's
+# detect_provider anchor (upstream inserted a Fireworks branch); that anchor is
+# now pinned to the nvidia branch itself and fails the build if it ever rots.
 RUN pip install --no-cache-dir \
     "jupyterlab==4.2.4" "notebook==7.2.2" \
-    "deepagents-code==0.1.10" nest_asyncio folium geopandas matplotlib rasterio \
+    "deepagents-code==0.1.54" nest_asyncio folium geopandas matplotlib rasterio \
     ipywidgets ipyleaflet leafmap plotly pypdf openpyxl tomli-w pyreadr
 
 # Install PDAL via conda before pyforestscan — pip cannot build pdal from source without
@@ -107,7 +117,7 @@ tomli_w.dump({ \
         'providers': { \
             'nrp': { \
                 'class_path': 'langchain_openai:ChatOpenAI', \
-                'models': ['glm-5', 'glm-4.7'], \
+                'models': ['glm-5'], \
                 'api_key_env': 'NRP_API_KEY', \
                 'base_url': 'https://ellm.nrp-nautilus.io/v1', \
                 'params': {'temperature': 0, 'stream_chunk_timeout': 1200.0, 'max_retries': 6}, \
