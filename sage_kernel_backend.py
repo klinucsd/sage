@@ -165,16 +165,16 @@ class KernelShellBackend(LocalShellBackend):
         except Exception:
             self._ipython = None
 
-    def execute(self, command: str, *args, **kwargs) -> ExecuteResponse:
+    def execute(self, command: str, timeout=None, **kwargs) -> ExecuteResponse:
         if self._ipython is None:
-            return super().execute(command, *args, **kwargs)
+            return super().execute(command, timeout=timeout)
 
         if not command or not isinstance(command, str):
-            return super().execute(command, *args, **kwargs)
+            return super().execute(command, timeout=timeout)
 
         parsed = _parse_python_invocation(command)
         if parsed is None:
-            return super().execute(command, *args, **kwargs)
+            return super().execute(command, timeout=timeout)
 
         source, argv = parsed
 
@@ -196,15 +196,19 @@ class KernelShellBackend(LocalShellBackend):
             code = source
             file_path_for_kernel = "<string>"
 
-        # In-kernel execution runs in-process in the live IPython kernel, so
-        # there is no subprocess to bound: any `timeout` (or other) kwarg the
-        # execute tool passes is accepted by the signature above and ignored
-        # here. This is deliberate — it lets the FIRST call succeed instead of
-        # raising `TypeError: unexpected keyword 'timeout'`, which previously
-        # forced the agent's wasteful "retry without the timeout override".
+        # `timeout` is accepted and deliberately IGNORED on this path: in-kernel
+        # execution runs in-process in the live IPython kernel, so there is no
+        # subprocess to bound. The parameter must nonetheless be declared BY NAME
+        # in the signature above, because deepagents gates the feature with
+        # `execute_accepts_timeout()`, which does `"timeout" in
+        # inspect.signature(cls.execute).parameters`. A bare `**kwargs` fails
+        # that check, so the execute tool refused the agent's timeout call with
+        # "this sandbox backend does not support per-command timeout overrides"
+        # and the agent then re-ran the identical command without it — the
+        # wasteful double execution ("Retrying without the timeout parameter").
         return self._run_in_kernel(code, argv, file_path_for_kernel)
 
-    async def aexecute(self, command: str) -> ExecuteResponse:
+    async def aexecute(self, command: str, timeout=None, **kwargs) -> ExecuteResponse:
         """Run on the current (main) thread so run_cell stays on the kernel's thread.
 
         The default protocol dispatches via asyncio.to_thread, which would call
@@ -212,8 +216,17 @@ class KernelShellBackend(LocalShellBackend):
         user_ns access. Sage runs the agent from the main kernel thread inside
         an asyncio loop, so calling execute() directly here keeps run_cell on
         the main thread.
+
+        `timeout` must be accepted here, not just on execute(). ARGUS drives the
+        agent asynchronously, so this is the method the execute tool actually
+        calls; having gated on `execute_accepts_timeout()` (which inspects the
+        SYNC execute) it then does `await aexecute(command, timeout=timeout)`.
+        A signature without `timeout` raises TypeError there — and the tool
+        catches only NotImplementedError/ValueError, so it would surface as a
+        hard failure rather than the old retry. See execute() for why the value
+        is ignored on the in-kernel path.
         """
-        return self.execute(command)
+        return self.execute(command, timeout=timeout, **kwargs)
 
     def _run_in_kernel(
         self, code: str, argv: list[str], file_path: str
