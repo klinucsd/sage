@@ -165,16 +165,16 @@ class KernelShellBackend(LocalShellBackend):
         except Exception:
             self._ipython = None
 
-    def execute(self, command: str) -> ExecuteResponse:
+    def execute(self, command: str, *args, **kwargs) -> ExecuteResponse:
         if self._ipython is None:
-            return super().execute(command)
+            return super().execute(command, *args, **kwargs)
 
         if not command or not isinstance(command, str):
-            return super().execute(command)
+            return super().execute(command, *args, **kwargs)
 
         parsed = _parse_python_invocation(command)
         if parsed is None:
-            return super().execute(command)
+            return super().execute(command, *args, **kwargs)
 
         source, argv = parsed
 
@@ -196,6 +196,12 @@ class KernelShellBackend(LocalShellBackend):
             code = source
             file_path_for_kernel = "<string>"
 
+        # In-kernel execution runs in-process in the live IPython kernel, so
+        # there is no subprocess to bound: any `timeout` (or other) kwarg the
+        # execute tool passes is accepted by the signature above and ignored
+        # here. This is deliberate — it lets the FIRST call succeed instead of
+        # raising `TypeError: unexpected keyword 'timeout'`, which previously
+        # forced the agent's wasteful "retry without the timeout override".
         return self._run_in_kernel(code, argv, file_path_for_kernel)
 
     async def aexecute(self, command: str) -> ExecuteResponse:
