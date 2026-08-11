@@ -2840,6 +2840,21 @@ try:
             print("Usage: %ask <prompt>  or  %%ask in a cell")
             return
 
+        # Text-only guard, appended to the END of every request. A system-prompt
+        # rule against reading images already exists, but text-only models (e.g.
+        # GLM-5.2) still occasionally read a freshly-saved chart PNG to "verify"
+        # it, which crashes the run (`BadRequestError: image not allowed`). The
+        # same instruction is honored 100% of the time when it sits at the end of
+        # the user request (recency > position for these models), so we place it
+        # there automatically instead of relying on the user to append it.
+        prompt = prompt + (
+            "\n\nPlease do not read any PNG or other image files with the "
+            "file-read tool — the language model is text-only and cannot view "
+            "images, and reading a chart image will crash the run. Any chart you "
+            "saved is already shown to the user, so there is no need to open it "
+            "to verify it."
+        )
+
         # Re-check CWD .env at call time (user may have changed directory)
         try:
             from dotenv import load_dotenv as _load
