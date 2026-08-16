@@ -1966,13 +1966,23 @@ async def _run_agent_async(
             def _on_evaluation(ev) -> None:
                 _rubric_evals.append(ev)
 
-            create_kwargs.setdefault("middleware", []).append(
-                RubricMiddleware(
+            with warnings.catch_warnings():
+                # langchain flags RubricMiddleware as beta, and the notice
+                # renders as a pink warning block in every reviewed cell.
+                # Opting into the beta API is a deliberate choice here, so
+                # silence this one notice rather than leaving noise in the
+                # user's notebook. Matched by message so we do not depend on
+                # a private warning class, and scoped so no other warning is
+                # hidden.
+                warnings.filterwarnings(
+                    "ignore", message=r".*RubricMiddleware.*beta.*"
+                )
+                _rubric_mw = RubricMiddleware(
                     model=model,
                     max_iterations=1,
                     on_evaluation=_on_evaluation,
                 )
-            )
+            create_kwargs.setdefault("middleware", []).append(_rubric_mw)
             _review_active = True
         except Exception as _rev_err:  # never let review break the cell
             print(f"[review unavailable: {type(_rev_err).__name__}: {_rev_err}]")
