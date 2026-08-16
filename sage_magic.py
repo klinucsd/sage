@@ -2269,6 +2269,23 @@ async def _run_agent_async(
     return final, tool_counts
 
 
+def _rubric_field(obj, key: str, default=None):
+    """Read `key` from a rubric object regardless of how it is modelled.
+
+    deepagents models RubricEvaluation / CriterionPass / CriterionFail as
+    dict subclasses, so attribute access silently yields nothing — which
+    rendered every verdict as "unknown (0 criteria checked)". GraderResponse,
+    by contrast, is a pydantic model. Try mapping access first, then attribute
+    access, so the display keeps working whichever representation arrives.
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    try:
+        return getattr(obj, key, default)
+    except Exception:
+        return default
+
+
 def _sage_display_review(evals: list) -> None:
     """Render the rubric grader's verdict as a compact block.
 
@@ -2291,9 +2308,9 @@ def _sage_display_review(evals: list) -> None:
         return
 
     ev = evals[-1]
-    result = str(getattr(ev, "result", "") or "unknown")
-    explanation = getattr(ev, "explanation", "") or ""
-    criteria = list(getattr(ev, "criteria", []) or [])
+    result = str(_rubric_field(ev, "result", "") or "unknown")
+    explanation = _rubric_field(ev, "explanation", "") or ""
+    criteria = list(_rubric_field(ev, "criteria", []) or [])
 
     styles = {
         "satisfied": ("#e8f5e9", "#2e7d32", "#1b5e20", "✓", "Review passed"),
@@ -2310,9 +2327,9 @@ def _sage_display_review(evals: list) -> None:
 
     rows = []
     for c in criteria:
-        name = str(getattr(c, "name", "") or "")
-        passed = bool(getattr(c, "passed", False))
-        gap = str(getattr(c, "gap", "") or "")
+        name = str(_rubric_field(c, "name", "") or "")
+        passed = bool(_rubric_field(c, "passed", False))
+        gap = str(_rubric_field(c, "gap", "") or "")
         mark = "✓" if passed else "✗"
         colour = "#2e7d32" if passed else "#d93025"
         detail = (f"<div style='color:#666; margin:1px 0 4px 18px'>{gap}</div>"
