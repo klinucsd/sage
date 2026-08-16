@@ -1825,11 +1825,21 @@ def _render_markdown_with_files(text: str) -> tuple:
 # Agent streaming with tool detail display
 # ---------------------------------------------------------------------------
 
-async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tuple[str, dict]:
+async def _run_agent_async(
+    prompt: str,
+    system_prompt: str | None = None,
+    review: bool = False,
+) -> tuple[str, dict]:
     """Create and stream the agent, displaying tool calls with details.
 
     Returns (final_text, tool_counts) where tool_counts is a dict mapping
     tool name → number of times it was invoked in this cell.
+
+    When `review` is True (from `%%ask --review`), a rubric is passed on the
+    invocation state and deepagents' RubricMiddleware runs a grader sub-agent
+    over the transcript before the run finishes. With `review` False no rubric
+    is passed, and the middleware is documented to be a no-op in that case —
+    so the default path is byte-for-byte the previous behaviour.
     """
     from IPython.display import display, Markdown
 
@@ -1936,6 +1946,37 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
             model.disable_streaming = True
         except Exception:
             pass
+    # --- answer review (%%ask --review) -------------------------------------
+    # RubricMiddleware activates ONLY when a `rubric` is present on the
+    # invocation state; with no rubric its before_agent/after_agent hooks
+    # return without touching state, so it is documented as safe to attach
+    # unconditionally. That means a plain %%ask keeps its existing behaviour
+    # even with the middleware in the stack.
+    #
+    # The grader is given the SAME model instance as the main agent, which
+    # matters on NRP: the streaming flags disabled just above travel with the
+    # object, so the grader sub-agent inherits the vLLM parser workaround
+    # rather than hanging on its own streamed response.
+    _rubric_evals: list = []
+    _review_active = False
+    if review:
+        try:
+            from deepagents import RubricMiddleware
+
+            def _on_evaluation(ev) -> None:
+                _rubric_evals.append(ev)
+
+            create_kwargs.setdefault("middleware", []).append(
+                RubricMiddleware(
+                    model=model,
+                    max_iterations=1,
+                    on_evaluation=_on_evaluation,
+                )
+            )
+            _review_active = True
+        except Exception as _rev_err:  # never let review break the cell
+            print(f"[review unavailable: {type(_rev_err).__name__}: {_rev_err}]")
+
     agent = create_deep_agent(model, **create_kwargs)
 
     config = {"metadata": {"assistant_id": "sage"}}
@@ -1981,8 +2022,19 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     # objects so tool_calls, additional_kwargs (reasoning content),
     # response_metadata (finish_reason), and usage_metadata are all visible.
     _diag_chunks: list = []
+    _agent_input: dict = {"messages": initial_messages}
+    if _review_active:
+        # Skeleton rubric: deliberately minimal. The point of this first cut is
+        # to exercise the grader path end-to-end (cost, latency, NRP streaming)
+        # with criteria that a sound answer already satisfies, so no revision
+        # loop fires. Real criteria are added incrementally from here.
+        _agent_input["rubric"] = (
+            "- The answer directly addresses the question that was asked.\n"
+            "- Any figure, table, or file the answer refers to is one that was "
+            "actually produced during this run.\n"
+        )
     async for chunk in agent.astream(
-        {"messages": initial_messages},
+        _agent_input,
         stream_mode="messages",
         config=config,
     ):
@@ -2202,7 +2254,88 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
             f"font-size:13px; line-height:1.4'>⚠ {msg}</div>"
         ))
 
+    # --- review verdict -----------------------------------------------------
+    # Rendered only when %%ask --review was used. Deliberately explicit about
+    # non-satisfied outcomes: on failed / max_iterations_reached / grader_error
+    # the middleware leaves the answer untouched, so without this the cell
+    # would look exactly like an ordinary (unreviewed) run. A guard that
+    # silently fails open must not be displayed as a passing check.
+    if _review_active:
+        try:
+            _sage_display_review(_rubric_evals)
+        except Exception as _disp_err:
+            print(f"[review display failed: {type(_disp_err).__name__}: {_disp_err}]")
+
     return final, tool_counts
+
+
+def _sage_display_review(evals: list) -> None:
+    """Render the rubric grader's verdict as a compact block.
+
+    `evals` holds every RubricEvaluation seen via the on_evaluation callback;
+    the last one is the outcome. Each carries .result, .explanation and
+    .criteria, where a criterion is {name, passed} plus .gap when it failed.
+    """
+    from IPython.display import display, HTML
+
+    if not evals:
+        # Middleware attached but never graded — e.g. the grader raised before
+        # producing an evaluation. Say so rather than implying a clean pass.
+        display(HTML(
+            "<div style='background:#fff8e1; border-left:3px solid #f0b400; "
+            "padding:6px 10px; margin:6px 0; font-family:-apple-system,sans-serif; "
+            "font-size:12.5px; line-height:1.45'>"
+            "⚠ <b>Review did not run.</b> The answer above has not been checked."
+            "</div>"
+        ))
+        return
+
+    ev = evals[-1]
+    result = str(getattr(ev, "result", "") or "unknown")
+    explanation = getattr(ev, "explanation", "") or ""
+    criteria = list(getattr(ev, "criteria", []) or [])
+
+    styles = {
+        "satisfied": ("#e8f5e9", "#2e7d32", "#1b5e20", "✓", "Review passed"),
+        "needs_revision": ("#fff8e1", "#f0b400", "#8a6d00", "↻", "Revision requested"),
+        "failed": ("#fdecea", "#d93025", "#a50e0e", "✗", "Review failed"),
+        "max_iterations_reached": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
+                                   "Review incomplete — iteration limit reached"),
+        "grader_error": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
+                         "Review did not complete — grader error"),
+    }
+    bg, border, fg, icon, label = styles.get(
+        result, ("#fff8e1", "#f0b400", "#8a6d00", "⚠", f"Review status: {result}")
+    )
+
+    rows = []
+    for c in criteria:
+        name = str(getattr(c, "name", "") or "")
+        passed = bool(getattr(c, "passed", False))
+        gap = str(getattr(c, "gap", "") or "")
+        mark = "✓" if passed else "✗"
+        colour = "#2e7d32" if passed else "#d93025"
+        detail = (f"<div style='color:#666; margin:1px 0 4px 18px'>{gap}</div>"
+                  if gap else "")
+        rows.append(
+            f"<div style='margin:3px 0'><span style='color:{colour}'>{mark}</span> "
+            f"{name}</div>{detail}"
+        )
+
+    # Only show the grader's prose when it adds something beyond the per-criterion
+    # verdicts — on a clean pass it is usually redundant.
+    note = ""
+    if explanation and result != "satisfied":
+        note = (f"<div style='margin-top:6px; color:#555'>{explanation}</div>")
+
+    display(HTML(
+        f"<div style='background:{bg}; border-left:3px solid {border}; "
+        f"padding:6px 10px; margin:6px 0; font-family:-apple-system,sans-serif; "
+        f"font-size:12.5px; line-height:1.45'>"
+        f"<div style='color:{fg}'><b>{icon} {label}</b> "
+        f"<span style='color:#888'>({len(criteria)} criteria checked)</span></div>"
+        f"{''.join(rows)}{note}</div>"
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -2863,6 +2996,18 @@ try:
         Note: use %%ask (cell magic) for prompts containing '?'
         Output files are saved to SAGE_OUTPUT_DIR and displayed automatically.
         """
+        # Flags live on the `%%ask` line, the prompt in the cell body. In cell
+        # mode `line` was previously discarded entirely, so parsing it here
+        # cannot change any existing behaviour. The `%ask <prompt>` line-magic
+        # form is left untouched: there `line` IS the prompt.
+        review = False
+        if cell is not None:
+            _flags = line.split()
+            review = "--review" in _flags
+            _unknown = [f for f in _flags if f not in ("--review",)]
+            if _unknown:
+                print(f"Ignoring unrecognized option(s): {' '.join(_unknown)}")
+
         prompt = cell.strip() if cell else line.strip()
         if not prompt:
             print("Usage: %ask <prompt>  or  %%ask in a cell")
@@ -3457,7 +3602,7 @@ try:
         _loop.set_exception_handler(_suppress_context_errors)
         try:
             final_text, tool_counts = _loop.run_until_complete(
-                _run_agent_async(prompt, system_prompt_text)
+                _run_agent_async(prompt, system_prompt_text, review=review)
             )
         except Exception as _err:
             _loop.set_exception_handler(_orig_exc_handler)
