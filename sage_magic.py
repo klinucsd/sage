@@ -2485,6 +2485,17 @@ def _sage_display_review(evals: list) -> None:
     # every criterion passes, so showing only that says "1 issue corrected"
     # while displaying three ticks and no issue. Carry the original gap text
     # forward, keyed by criterion name (stable — it is the rubric line).
+    # Align the two passes by POSITION, not by name. The grader regenerates the
+    # criterion text on every pass and paraphrases it, so an exact name match
+    # silently finds nothing — which is how "2 issues found and corrected"
+    # rendered above three ticks and no gap text at all. The rubric is a fixed
+    # ordered list, so index i means the same criterion in both passes; names
+    # are kept as a fallback for the case where the counts differ.
+    _orig_by_idx = {}
+    if len(_first) == len(criteria):
+        for _i, _c0 in enumerate(_first):
+            if not _rubric_field(_c0, "passed", False):
+                _orig_by_idx[_i] = str(_rubric_field(_c0, "gap", "") or "")
     _orig_gaps = {
         str(_rubric_field(c, "name", "") or ""): str(_rubric_field(c, "gap", "") or "")
         for c in _first
@@ -2497,17 +2508,18 @@ def _sage_display_review(evals: list) -> None:
         return (head + ".") if head and len(head) < len(name.strip()) else name
 
     rows = []
-    for c in criteria:
+    for _idx, c in enumerate(criteria):
         name = str(_rubric_field(c, "name", "") or "")
         passed = bool(_rubric_field(c, "passed", False))
         gap = str(_rubric_field(c, "gap", "") or "")
-        was_fixed = passed and name in _orig_gaps
+        _orig_gap = _orig_by_idx.get(_idx, _orig_gaps.get(name))
+        was_fixed = passed and _orig_gap is not None
         if was_fixed:
             mark, colour = "✓", "#2e7d32"
             badge = ("<span style='color:#8a6d00; background:#fff8e1; "
                      "border-radius:3px; padding:0 5px; margin-left:6px; "
                      "font-size:0.9em'>corrected</span>")
-            gap = _orig_gaps[name] or gap
+            gap = _orig_gap or gap
         else:
             mark = "✓" if passed else "✗"
             colour = "#2e7d32" if passed else "#d93025"
