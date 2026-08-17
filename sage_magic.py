@@ -1964,6 +1964,9 @@ async def _run_agent_async(
     _SAGE_LAST_REVIEW = None
 
     _rubric_evals: list = []
+    # Draft answers withdrawn after a needs_revision verdict, kept as a
+    # fallback in case the revision never produces a replacement.
+    _superseded: list[str] = []
     _review_active = False
     if review:
         try:
@@ -1985,7 +1988,19 @@ async def _run_agent_async(
                 # so blanking it — which an earlier version did — erased the
                 # whole story of the run for no benefit.
                 if _rubric_field(ev, "result") == "needs_revision":
+                    # Stash, never destroy. If the replacement fails to arrive
+                    # the draft is restored at the end, so the user is never
+                    # left with no answer at all.
+                    _superseded.append("".join(text_buffer))
                     text_buffer.clear()
+                    # Put the stream dedup state where a flush would leave it.
+                    # Clearing the buffer behind the loop's back left it mid-
+                    # message, and the replacement text was then dropped as a
+                    # duplicate — which is how a successful revision produced
+                    # an empty final answer.
+                    _had_tool_after_text[0] = True
+                    _skip_msg_id[0] = None
+                    _cur_text_msg_id[0] = None
 
             with warnings.catch_warnings():
                 # langchain flags RubricMiddleware as beta, and the notice
@@ -2242,6 +2257,12 @@ async def _run_agent_async(
     # text. Detect by finding the first ~30 chars of the accumulated text appearing
     # again starting from the midpoint.
     final = "".join(text_buffer).strip()
+    if not final and _superseded:
+        # The grader asked for a revision and the replacement never materialised.
+        # Showing the superseded draft is worse than showing the corrected
+        # answer, but far better than showing nothing — the analysis ran, the
+        # files were written, and the user asked a question.
+        final = _superseded[-1].strip()
     if len(final) > 60:
         half = len(final) // 2
         marker = final[:30]
