@@ -1964,6 +1964,9 @@ async def _run_agent_async(
     _SAGE_LAST_REVIEW = None
 
     _rubric_evals: list = []
+    # Display handles for narration blocks published during a reviewed run, so
+    # they can be withdrawn if the grader supersedes them.
+    _review_handles: list = []
     _review_active = False
     if review:
         try:
@@ -1971,6 +1974,23 @@ async def _run_agent_async(
 
             def _on_evaluation(ev) -> None:
                 _rubric_evals.append(ev)
+                # A needs_revision verdict means everything the agent has said
+                # so far is about to be superseded. Withdraw it now, before the
+                # replacement arrives, so the cell never shows two answers.
+                #
+                # Two separate places hold superseded text: blocks already
+                # rendered (held by display handle so they can be blanked) and
+                # text still sitting in the buffer, which would otherwise be
+                # concatenated with the corrected answer into `final`.
+                if _rubric_field(ev, "result") == "needs_revision":
+                    from IPython.display import Markdown as _Md
+                    for _h in _review_handles:
+                        try:
+                            _h.update(_Md(""))
+                        except Exception:
+                            pass
+                    _review_handles.clear()
+                    text_buffer.clear()
 
             with warnings.catch_warnings():
                 # langchain flags RubricMiddleware as beta, and the notice
@@ -1983,27 +2003,26 @@ async def _run_agent_async(
                 warnings.filterwarnings(
                     "ignore", message=r".*RubricMiddleware.*beta.*"
                 )
-                # max_iterations gates REVISION, not grading. Deliberately 1,
-                # which makes the review FLAG-ONLY: the first verdict exhausts
-                # the budget, so a needs_revision terminates and the answer
-                # stands as written.
+                # max_iterations gates REVISION, not grading. 2 gives the
+                # agent one chance to act on the grader's feedback.
                 #
-                # 2 was tried and reverted. Letting the agent revise produced
-                # two answers and four map blocks in one cell, plus sections
-                # titled "Revisions" and "Rubric criteria check" written into
-                # the user-facing output — the review machinery leaking into
-                # the analysis. It also degraded the grading itself: with two
-                # candidate answers in the transcript the grader lost track of
-                # which one it was judging and failed a criterion that had
-                # passed when there was only one.
+                # Flag-only (1) was tried and rejected on product grounds: an
+                # ARGUS user is a domain scientist who asked a question, not a
+                # reviewer. Handing them a flawed answer plus a critique puts
+                # the judgement on the person least equipped to make it, and is
+                # more work than reading the generated code. If the review
+                # cannot improve the answer it should not exist.
                 #
-                # Flag-only keeps the notebook a single coherent narrative and
-                # keeps the error visible rather than silently patched, which
-                # is the better property for critical work anyway.
+                # Revision was ugly on the first attempt — two answers, four
+                # maps, and "Revisions"/"Rubric criteria check" sections in the
+                # user-facing output. Those are handled here: superseded output
+                # is withdrawn as soon as the grader asks for a revision (see
+                # _flush_text / _on_evaluation), and the agent is told to emit a
+                # clean replacement report rather than a changelog.
                 _rubric_mw = RubricMiddleware(
                     model=model,
                     system_prompt=_SAGE_GRADER_SYSTEM_PROMPT,
-                    max_iterations=1,
+                    max_iterations=2,
                     on_evaluation=_on_evaluation,
                 )
             create_kwargs.setdefault("middleware", []).append(_rubric_mw)
@@ -2036,9 +2055,20 @@ async def _run_agent_async(
         # JupyterLab doesn't serve arbitrary filesystem paths.
         if text_buffer:
             text = _fix_glm_markdown("".join(text_buffer))
-            found, _ = _render_markdown_with_files(text)
-            if not found:
-                display(Markdown(text))
+            if _review_active:
+                # Under review this block may be superseded moments from now,
+                # so publish it behind a display handle that _on_evaluation can
+                # blank. File references are deliberately NOT expanded here:
+                # re-rendering a map for text that is about to be withdrawn is
+                # what produced duplicate maps. The surviving answer is rendered
+                # once, with its files, by the caller at end of cell.
+                _h = display(Markdown(text), display_id=True)
+                if _h is not None:
+                    _review_handles.append(_h)
+            else:
+                found, _ = _render_markdown_with_files(text)
+                if not found:
+                    display(Markdown(text))
             text_buffer.clear()
         _had_tool_after_text[0] = True
         _skip_msg_id[0] = None
@@ -2405,43 +2435,45 @@ def _sage_display_review(evals: list) -> None:
     explanation = _rubric_field(ev, "explanation", "") or ""
     criteria = list(_rubric_field(ev, "criteria", []) or [])
 
-    # Report what happened to the ANSWER, not the state of the grading loop.
-    # With max_iterations=1 the review is flag-only: a needs_revision verdict
-    # terminates as max_iterations_reached, so "iteration limit reached" would
-    # be the label on every genuine catch — technically true, and useless to
-    # the reader. What matters is that issues were found and the answer above
-    # was not corrected.
+    # Describe what happened to the ANSWER, in the reader's terms — not the
+    # state of the grading loop. "max_iterations_reached" is an implementation
+    # detail; "1 issue corrected" is what the scientist actually needs to know.
     _n_failed = sum(1 for c in criteria if not _rubric_field(c, "passed", False))
-    # Evaluations past the first mean the agent was sent back with feedback.
-    # Surface that even on a pass: an answer that was silently corrected still
-    # tells the reader something — the agent got it wrong the first time — and
-    # hiding that would trade away the provenance this guard exists to give.
+    # More than one evaluation means the agent was sent back with feedback and
+    # the answer above is the corrected one. Report the issues found on the
+    # FIRST pass, since those are what got fixed — the final pass shows them
+    # passing, which would otherwise read as "nothing was wrong".
     _n_rev = max(0, len(evals) - 1)
-    _rev_note = (f" after {_n_rev} revision{'s' if _n_rev != 1 else ''}"
-                 if _n_rev else "")
+    _first = list(_rubric_field(evals[0], "criteria", []) or []) if evals else []
+    _n_fixed = sum(1 for c in _first if not _rubric_field(c, "passed", False))
 
     if result == "satisfied":
         bg, border, fg, icon = "#e8f5e9", "#2e7d32", "#1b5e20", "✓"
-        label = "Review passed" + _rev_note
+        if _n_rev and _n_fixed:
+            label = (f"{_n_fixed} issue{'s' if _n_fixed != 1 else ''} found and "
+                     f"corrected")
+        else:
+            label = "no issues found"
     elif result in ("needs_revision", "failed", "max_iterations_reached") and _n_failed:
+        # Honest and muted. Never a green tick over an answer still known to be
+        # wrong — that is the one outcome that would make the guard harmful.
         bg, border, fg, icon = "#fff8e1", "#f0b400", "#8a6d00", "⚠"
-        _tail = ("still unresolved after revision" if _n_rev
-                 else "answer not revised")
-        label = (f"Review found {_n_failed} issue"
-                 f"{'s' if _n_failed != 1 else ''} — {_tail}")
+        _tail = ("could not be fully corrected" if _n_rev
+                 else "found; answer not revised")
+        label = (f"{_n_failed} issue{'s' if _n_failed != 1 else ''} {_tail}")
     else:
         styles = {
-            "satisfied": ("#e8f5e9", "#2e7d32", "#1b5e20", "✓", "Review passed"),
+            "satisfied": ("#e8f5e9", "#2e7d32", "#1b5e20", "✓", "no issues found"),
             "needs_revision": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
-                               "Review requested changes — answer not revised"),
-            "failed": ("#fdecea", "#d93025", "#a50e0e", "✗", "Review failed"),
+                               "changes requested; answer not revised"),
+            "failed": ("#fdecea", "#d93025", "#a50e0e", "✗", "review failed"),
             "max_iterations_reached": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
-                                       "Review ended without a clear verdict"),
+                                       "ended without a clear verdict"),
             "grader_error": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
-                             "Review did not complete — grader error"),
+                             "did not complete (grader error)"),
         }
         bg, border, fg, icon, label = styles.get(
-            result, ("#fff8e1", "#f0b400", "#8a6d00", "⚠", f"Review status: {result}")
+            result, ("#fff8e1", "#f0b400", "#8a6d00", "⚠", f"status: {result}")
         )
 
     rows = []
@@ -2464,13 +2496,20 @@ def _sage_display_review(evals: list) -> None:
     if explanation and result != "satisfied":
         note = (f"<div style='margin-top:6px; color:#555'>{explanation}</div>")
 
+    # Rendered like a tool card: one quiet summary line, details behind a
+    # disclosure triangle. The reader is a scientist who asked a question, not
+    # a reviewer — the corrected answer is the product, and the review is
+    # provenance available on demand rather than something they must read.
     display(HTML(
-        f"<div style='background:{bg}; border-left:3px solid {border}; "
-        f"padding:6px 10px; margin:6px 0; font-family:-apple-system,sans-serif; "
-        f"font-size:12.5px; line-height:1.45'>"
-        f"<div style='color:{fg}'><b>{icon} {label}</b> "
-        f"<span style='color:#888'>({len(criteria)} criteria checked)</span></div>"
-        f"{''.join(rows)}{note}</div>"
+        f"<details style='background:{bg}; border-left:3px solid {border}; "
+        f"padding:5px 10px; margin:3px 0 12px 0; "
+        f"font-family:-apple-system,sans-serif; font-size:0.85em; "
+        f"line-height:1.45'>"
+        f"<summary style='color:{fg}; cursor:pointer'>"
+        f"🔍 <b>Review</b> — {icon} {label} "
+        f"<span style='color:#888'>({len(criteria)} criteria)</span></summary>"
+        f"<div style='margin-top:6px'>{''.join(rows)}{note}</div>"
+        f"</details>"
     ))
 
 
@@ -3685,6 +3724,30 @@ try:
             f"USGS services often return Web Mercator (EPSG:3857), FEMA NSI returns WGS84 (EPSG:4326), "
             f"EPT point clouds are commonly EPSG:3857, state-plane data can be any of hundreds of codes."
         )
+
+        # Appended only for reviewed cells. Without it the agent treats review
+        # feedback as a conversation turn and answers it — emitting sections
+        # like "Revisions" and "Rubric criteria check", which exposes the review
+        # machinery to a user who never asked for a review and should not have
+        # to know one happened.
+        if review:
+            system_prompt_text += (
+                "\n\nREVISION RULE — you may receive feedback on a draft answer "
+                "identifying specific problems with it. When that happens, "
+                "reply with a COMPLETE, self-contained final report that "
+                "replaces the draft entirely: the whole answer as the reader "
+                "should see it, with the problems fixed.\n"
+                "Do NOT write a changelog, a list of corrections, a 'Revisions' "
+                "or 'What changed' section, or any commentary about the "
+                "feedback, the criteria, or the review itself. The reader is a "
+                "scientist who asked a question and is owed a correct answer, "
+                "not an account of how it was produced. Your revised report "
+                "must read exactly as though it were right the first time.\n"
+                "Correct the substance, not just the wording — if a number is "
+                "wrong, recompute it from the data rather than restating it; if "
+                "coverage is narrower than the question, say plainly in the "
+                "report what is and is not included."
+            )
 
         # Snapshot output folder before run
         before = _snapshot(SAGE_OUTPUT_DIR)
