@@ -1983,10 +1983,18 @@ async def _run_agent_async(
                 warnings.filterwarnings(
                     "ignore", message=r".*RubricMiddleware.*beta.*"
                 )
+                # max_iterations gates REVISION, not grading: at 1 the first
+                # verdict already exhausts the budget, so a needs_revision
+                # terminates immediately and the answer stands (flag-only). At
+                # 2 the agent gets one chance to act on the grader's feedback.
+                # Raised experimentally to observe what a revision round does
+                # to notebook output — whether the agent merely rewrites the
+                # prose or re-runs the analysis, and whether charts/maps get
+                # rendered twice.
                 _rubric_mw = RubricMiddleware(
                     model=model,
                     system_prompt=_SAGE_GRADER_SYSTEM_PROMPT,
-                    max_iterations=1,
+                    max_iterations=2,
                     on_evaluation=_on_evaluation,
                 )
             create_kwargs.setdefault("middleware", []).append(_rubric_mw)
@@ -2382,10 +2390,23 @@ def _sage_display_review(evals: list) -> None:
     # the reader. What matters is that issues were found and the answer above
     # was not corrected.
     _n_failed = sum(1 for c in criteria if not _rubric_field(c, "passed", False))
-    if result in ("needs_revision", "failed", "max_iterations_reached") and _n_failed:
+    # Evaluations past the first mean the agent was sent back with feedback.
+    # Surface that even on a pass: an answer that was silently corrected still
+    # tells the reader something — the agent got it wrong the first time — and
+    # hiding that would trade away the provenance this guard exists to give.
+    _n_rev = max(0, len(evals) - 1)
+    _rev_note = (f" after {_n_rev} revision{'s' if _n_rev != 1 else ''}"
+                 if _n_rev else "")
+
+    if result == "satisfied":
+        bg, border, fg, icon = "#e8f5e9", "#2e7d32", "#1b5e20", "✓"
+        label = "Review passed" + _rev_note
+    elif result in ("needs_revision", "failed", "max_iterations_reached") and _n_failed:
         bg, border, fg, icon = "#fff8e1", "#f0b400", "#8a6d00", "⚠"
+        _tail = ("still unresolved after revision" if _n_rev
+                 else "answer not revised")
         label = (f"Review found {_n_failed} issue"
-                 f"{'s' if _n_failed != 1 else ''} — answer not revised")
+                 f"{'s' if _n_failed != 1 else ''} — {_tail}")
     else:
         styles = {
             "satisfied": ("#e8f5e9", "#2e7d32", "#1b5e20", "✓", "Review passed"),
