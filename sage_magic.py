@@ -2481,18 +2481,42 @@ def _sage_display_review(evals: list) -> None:
             result, ("#fff8e1", "#f0b400", "#8a6d00", "⚠", f"status: {result}")
         )
 
+    # What was actually WRONG lives in the first evaluation; by the final one
+    # every criterion passes, so showing only that says "1 issue corrected"
+    # while displaying three ticks and no issue. Carry the original gap text
+    # forward, keyed by criterion name (stable — it is the rubric line).
+    _orig_gaps = {
+        str(_rubric_field(c, "name", "") or ""): str(_rubric_field(c, "gap", "") or "")
+        for c in _first
+        if not _rubric_field(c, "passed", False)
+    }
+
+    def _short(name: str) -> str:
+        """Criterion names are whole rubric lines. Show the first sentence."""
+        head = name.split(". ")[0].strip().rstrip(".")
+        return (head + ".") if head and len(head) < len(name.strip()) else name
+
     rows = []
     for c in criteria:
         name = str(_rubric_field(c, "name", "") or "")
         passed = bool(_rubric_field(c, "passed", False))
         gap = str(_rubric_field(c, "gap", "") or "")
-        mark = "✓" if passed else "✗"
-        colour = "#2e7d32" if passed else "#d93025"
+        was_fixed = passed and name in _orig_gaps
+        if was_fixed:
+            mark, colour = "✓", "#2e7d32"
+            badge = ("<span style='color:#8a6d00; background:#fff8e1; "
+                     "border-radius:3px; padding:0 5px; margin-left:6px; "
+                     "font-size:0.9em'>corrected</span>")
+            gap = _orig_gaps[name] or gap
+        else:
+            mark = "✓" if passed else "✗"
+            colour = "#2e7d32" if passed else "#d93025"
+            badge = ""
         detail = (f"<div style='color:#666; margin:1px 0 4px 18px'>{gap}</div>"
                   if gap else "")
         rows.append(
             f"<div style='margin:3px 0'><span style='color:{colour}'>{mark}</span> "
-            f"{name}</div>{detail}"
+            f"{_short(name)}{badge}</div>{detail}"
         )
 
     # Only show the grader's prose when it adds something beyond the per-criterion
