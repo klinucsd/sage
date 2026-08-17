@@ -1979,6 +1979,7 @@ async def _run_agent_async(
                 )
                 _rubric_mw = RubricMiddleware(
                     model=model,
+                    system_prompt=_SAGE_GRADER_SYSTEM_PROMPT,
                     max_iterations=1,
                     on_evaluation=_on_evaluation,
                 )
@@ -2034,14 +2035,37 @@ async def _run_agent_async(
     _diag_chunks: list = []
     _agent_input: dict = {"messages": initial_messages}
     if _review_active:
-        # Skeleton rubric: deliberately minimal. The point of this first cut is
-        # to exercise the grader path end-to-end (cost, latency, NRP streaming)
-        # with criteria that a sound answer already satisfies, so no revision
-        # loop fires. Real criteria are added incrementally from here.
+        # Criteria are judged by the grader from the transcript alone — no tools
+        # needed, no domain expertise assumed. They target two failure modes
+        # seen in practice:
+        #
+        #   Internal contradiction — the agent writes an analysis incrementally
+        #   and by the conclusion has lost track of what it established, e.g.
+        #   showing three values and then concluding from two. Visible on a
+        #   careful read, which is precisely what a fresh pass over the finished
+        #   text provides.
+        #
+        #   Undisclosed narrowing — the more dangerous case, because the answer
+        #   is internally perfect and simply covers less than it appears to. A
+        #   question about "schools" answered from a public-schools dataset, or
+        #   about "Southern California" from three counties. The skill's own
+        #   declared scope is in the transcript (the agent read its SKILL.md),
+        #   so the grader can compare it against what was asked.
+        #
+        # The rule is DISCLOSURE, not completeness: partial coverage is fine and
+        # often unavoidable, but it has to be stated.
         _agent_input["rubric"] = (
             "- The answer directly addresses the question that was asked.\n"
-            "- Any figure, table, or file the answer refers to is one that was "
-            "actually produced during this run.\n"
+            "- The answer is internally consistent: counts, totals and "
+            "enumerations agree with what the answer itself shows, and the "
+            "conclusion does not contradict results stated earlier in the same "
+            "answer.\n"
+            "- The scope of the answer matches the scope of the question, and "
+            "any narrowing is stated explicitly. This includes narrowing that "
+            "comes from the data source rather than the analysis: if the "
+            "question asks about a category but the source covers only part of "
+            "it, or records were missing, filtered, suppressed or dropped, the "
+            "answer says so instead of presenting the remainder as the whole.\n"
         )
     async for chunk in agent.astream(
         _agent_input,
@@ -2277,6 +2301,29 @@ async def _run_agent_async(
             print(f"[review display failed: {type(_disp_err).__name__}: {_disp_err}]")
 
     return final, tool_counts
+
+
+_SAGE_GRADER_SYSTEM_PROMPT = (
+    "You are reviewing the final answer of a data-analysis run before it is "
+    "shown to a scientist. You have the full transcript: the question, the "
+    "code that was written and executed, the tool output, any documentation "
+    "the agent read, and the answer itself.\n"
+    "\n"
+    "Judge only what the transcript supports. You are not re-doing the "
+    "analysis and you are not being asked whether you would have approached it "
+    "differently — a different but defensible method is not a failure.\n"
+    "\n"
+    "Restraint matters more than thoroughness. A reviewer that raises doubts "
+    "on every answer trains the reader to ignore it, which is worse than no "
+    "review at all. Mark a criterion failed only when you can point to the "
+    "specific text or result that violates it. If you are unsure, or the "
+    "evidence is not in the transcript, pass the criterion. Narrowing that the "
+    "answer already discloses is a pass, not a failure — the requirement is "
+    "that limits be stated, not that coverage be complete.\n"
+    "\n"
+    "When something does fail, say concretely what is wrong and where, so it "
+    "can be corrected without guesswork."
+)
 
 
 def _rubric_field(obj, key: str, default=None):
