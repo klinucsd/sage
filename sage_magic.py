@@ -1983,18 +1983,27 @@ async def _run_agent_async(
                 warnings.filterwarnings(
                     "ignore", message=r".*RubricMiddleware.*beta.*"
                 )
-                # max_iterations gates REVISION, not grading: at 1 the first
-                # verdict already exhausts the budget, so a needs_revision
-                # terminates immediately and the answer stands (flag-only). At
-                # 2 the agent gets one chance to act on the grader's feedback.
-                # Raised experimentally to observe what a revision round does
-                # to notebook output — whether the agent merely rewrites the
-                # prose or re-runs the analysis, and whether charts/maps get
-                # rendered twice.
+                # max_iterations gates REVISION, not grading. Deliberately 1,
+                # which makes the review FLAG-ONLY: the first verdict exhausts
+                # the budget, so a needs_revision terminates and the answer
+                # stands as written.
+                #
+                # 2 was tried and reverted. Letting the agent revise produced
+                # two answers and four map blocks in one cell, plus sections
+                # titled "Revisions" and "Rubric criteria check" written into
+                # the user-facing output — the review machinery leaking into
+                # the analysis. It also degraded the grading itself: with two
+                # candidate answers in the transcript the grader lost track of
+                # which one it was judging and failed a criterion that had
+                # passed when there was only one.
+                #
+                # Flag-only keeps the notebook a single coherent narrative and
+                # keeps the error visible rather than silently patched, which
+                # is the better property for critical work anyway.
                 _rubric_mw = RubricMiddleware(
                     model=model,
                     system_prompt=_SAGE_GRADER_SYSTEM_PROMPT,
-                    max_iterations=2,
+                    max_iterations=1,
                     on_evaluation=_on_evaluation,
                 )
             create_kwargs.setdefault("middleware", []).append(_rubric_mw)
@@ -2326,6 +2335,19 @@ _SAGE_GRADER_SYSTEM_PROMPT = (
     "Judge only what the transcript supports. You are not re-doing the "
     "analysis and you are not being asked whether you would have approached it "
     "differently — a different but defensible method is not a failure.\n"
+    "\n"
+    "What you are judging is the FINAL answer: the last substantive message "
+    "addressed to the user. Everything before it — the running narration "
+    "between tool calls, any earlier draft, and the raw output of the tools "
+    "themselves — is context showing how the answer was produced. It is not "
+    "the answer, and its wording is not the answer's wording.\n"
+    "\n"
+    "Tool output in the transcript is frequently abbreviated: long tables and "
+    "file dumps are cut off for length, sometimes mid-row and sometimes with "
+    "an explicit truncation marker. That is a limit of the transcript, never a "
+    "defect in the answer. Do not conclude that a list is incomplete because "
+    "the transcript shows it cut off — judge completeness only from what the "
+    "final answer itself presents.\n"
     "\n"
     "Restraint matters more than thoroughness. A reviewer that raises doubts "
     "on every answer trains the reader to ignore it, which is worse than no "
