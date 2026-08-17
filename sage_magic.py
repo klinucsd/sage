@@ -2289,18 +2289,19 @@ async def _run_agent_async(
         ))
 
     # --- review verdict -----------------------------------------------------
-    # Rendered only when %%ask --review was used. Deliberately explicit about
-    # non-satisfied outcomes: on failed / max_iterations_reached / grader_error
-    # the middleware leaves the answer untouched, so without this the cell
-    # would look exactly like an ordinary (unreviewed) run. A guard that
-    # silently fails open must not be displayed as a passing check.
-    if _review_active:
-        try:
-            _sage_display_review(_rubric_evals)
-        except Exception as _disp_err:
-            print(f"[review display failed: {type(_disp_err).__name__}: {_disp_err}]")
+    # Stashed rather than displayed here: this function returns before the
+    # caller renders the final report, so displaying inline put the verdict
+    # ABOVE the answer it judges. `ask()` renders it once the report is out.
+    global _SAGE_LAST_REVIEW
+    _SAGE_LAST_REVIEW = _rubric_evals if _review_active else None
 
     return final, tool_counts
+
+
+# Verdict from the most recent %%ask --review, handed from _run_agent_async to
+# ask() so it can be rendered after the final report rather than before it.
+# None when the last run had no review.
+_SAGE_LAST_REVIEW: list | None = None
 
 
 _SAGE_GRADER_SYSTEM_PROMPT = (
@@ -2369,18 +2370,31 @@ def _sage_display_review(evals: list) -> None:
     explanation = _rubric_field(ev, "explanation", "") or ""
     criteria = list(_rubric_field(ev, "criteria", []) or [])
 
-    styles = {
-        "satisfied": ("#e8f5e9", "#2e7d32", "#1b5e20", "✓", "Review passed"),
-        "needs_revision": ("#fff8e1", "#f0b400", "#8a6d00", "↻", "Revision requested"),
-        "failed": ("#fdecea", "#d93025", "#a50e0e", "✗", "Review failed"),
-        "max_iterations_reached": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
-                                   "Review incomplete — iteration limit reached"),
-        "grader_error": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
-                         "Review did not complete — grader error"),
-    }
-    bg, border, fg, icon, label = styles.get(
-        result, ("#fff8e1", "#f0b400", "#8a6d00", "⚠", f"Review status: {result}")
-    )
+    # Report what happened to the ANSWER, not the state of the grading loop.
+    # With max_iterations=1 the review is flag-only: a needs_revision verdict
+    # terminates as max_iterations_reached, so "iteration limit reached" would
+    # be the label on every genuine catch — technically true, and useless to
+    # the reader. What matters is that issues were found and the answer above
+    # was not corrected.
+    _n_failed = sum(1 for c in criteria if not _rubric_field(c, "passed", False))
+    if result in ("needs_revision", "failed", "max_iterations_reached") and _n_failed:
+        bg, border, fg, icon = "#fff8e1", "#f0b400", "#8a6d00", "⚠"
+        label = (f"Review found {_n_failed} issue"
+                 f"{'s' if _n_failed != 1 else ''} — answer not revised")
+    else:
+        styles = {
+            "satisfied": ("#e8f5e9", "#2e7d32", "#1b5e20", "✓", "Review passed"),
+            "needs_revision": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
+                               "Review requested changes — answer not revised"),
+            "failed": ("#fdecea", "#d93025", "#a50e0e", "✗", "Review failed"),
+            "max_iterations_reached": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
+                                       "Review ended without a clear verdict"),
+            "grader_error": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
+                             "Review did not complete — grader error"),
+        }
+        bg, border, fg, icon, label = styles.get(
+            result, ("#fff8e1", "#f0b400", "#8a6d00", "⚠", f"Review status: {result}")
+        )
 
     rows = []
     for c in criteria:
@@ -3833,6 +3847,14 @@ try:
         # parsed in `_render_markdown_with_files`. There is no fallback that
         # stacks the output directory — if the agent did not specify map
         # layers in its response, none are rendered.
+
+        # Review verdict last, so it reads as a judgement OF the answer above
+        # rather than a preamble to it. Never allowed to fail the cell.
+        if _SAGE_LAST_REVIEW is not None:
+            try:
+                _sage_display_review(_SAGE_LAST_REVIEW)
+            except Exception as _disp_err:
+                print(f"[review display failed: {type(_disp_err).__name__}: {_disp_err}]")
 
     del ask  # keep IPython namespace clean
 
