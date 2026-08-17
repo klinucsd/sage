@@ -1957,6 +1957,12 @@ async def _run_agent_async(
     # matters on NRP: the streaming flags disabled just above travel with the
     # object, so the grader sub-agent inherits the vLLM parser workaround
     # rather than hanging on its own streamed response.
+    # Cleared up front, not just on the success path: if this run raises before
+    # the verdict is stashed, the previous cell's evaluation must not survive
+    # and be rendered against this cell's answer.
+    global _SAGE_LAST_REVIEW
+    _SAGE_LAST_REVIEW = None
+
     _rubric_evals: list = []
     _review_active = False
     if review:
@@ -2292,7 +2298,6 @@ async def _run_agent_async(
     # Stashed rather than displayed here: this function returns before the
     # caller renders the final report, so displaying inline put the verdict
     # ABOVE the answer it judges. `ask()` renders it once the report is out.
-    global _SAGE_LAST_REVIEW
     _SAGE_LAST_REVIEW = _rubric_evals if _review_active else None
 
     return final, tool_counts
