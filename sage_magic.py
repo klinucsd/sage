@@ -2031,7 +2031,7 @@ async def _run_agent_async(
                 # clean replacement report rather than a changelog.
                 _rubric_mw = RubricMiddleware(
                     model=model,
-                    system_prompt=_SAGE_GRADER_SYSTEM_PROMPT,
+                    system_prompt=_sage_grader_system_prompt(prompt),
                     max_iterations=2,
                     on_evaluation=_on_evaluation,
                 )
@@ -2361,6 +2361,15 @@ async def _run_agent_async(
 _SAGE_LAST_REVIEW: list | None = None
 
 
+_SAGE_TEXT_ONLY_GUARD = (
+    "\n\nPlease do not read any PNG or other image files with the "
+    "file-read tool — the language model is text-only and cannot view "
+    "images, and reading a chart image will crash the run. Any chart you "
+    "saved is already shown to the user, so there is no need to open it "
+    "to verify it."
+)
+
+
 _SAGE_GRADER_SYSTEM_PROMPT = (
     "You are reviewing the final answer of a data-analysis run before it is "
     "shown to a scientist. You have the full transcript: the question, the "
@@ -2377,14 +2386,16 @@ _SAGE_GRADER_SYSTEM_PROMPT = (
     "themselves — is context showing how the answer was produced. It is not "
     "the answer, and its wording is not the answer's wording.\n"
     "\n"
-    "The question you judge it against is the LAST user message, and only "
-    "that one. This is an ongoing session: earlier user messages are questions "
-    "from previous notebook cells that were already answered separately, and "
-    "they are present only so you can understand references like \"those "
-    "fires\" or \"the previous step\". The current answer is NOT required to "
-    "re-address them, and an answer is not incomplete for leaving out material "
-    "that belongs to an earlier question. Never ask for content the last "
-    "message did not request.\n"
+    "The question under review is quoted verbatim below. Judge the answer "
+    "against THAT question and nothing else. This is an ongoing session, so "
+    "the transcript also contains questions from earlier notebook cells and, "
+    "after a revision, your own previous feedback delivered as a user message "
+    "— none of those is the question. Earlier questions were already answered "
+    "in their own cells and are present only so you can resolve references "
+    "like \"those fires\" or \"the previous step\". An answer is not "
+    "incomplete for omitting material that belongs to an earlier question, "
+    "and you must never ask for content the quoted question did not "
+    "request.\n"
     "\n"
     "Tool output in the transcript is frequently abbreviated: long tables and "
     "file dumps are cut off for length, sometimes mid-row and sometimes with "
@@ -2404,6 +2415,28 @@ _SAGE_GRADER_SYSTEM_PROMPT = (
     "When something does fail, say concretely what is wrong and where, so it "
     "can be corrected without guesswork."
 )
+
+
+def _sage_grader_system_prompt(question: str) -> str:
+    """Grader instructions with the question under review quoted verbatim.
+
+    Positional descriptions of the question do not survive this setting. ARGUS
+    passes the whole session as history so the agent has cross-cell memory, and
+    RubricMiddleware delivers its own feedback as a user message — so after a
+    revision the "last user message" is the grader's previous critique, not the
+    question. Telling the grader to look at a position therefore points it at
+    the wrong text, and it goes hunting for a real question elsewhere in the
+    transcript (observed: it graded a schools answer against the previous
+    cell's "show all wildfires" and demanded content nobody asked for).
+    Quoting the question removes the ambiguity entirely.
+    """
+    q = (question or "").replace(_SAGE_TEXT_ONLY_GUARD, "").strip()
+    return (
+        _SAGE_GRADER_SYSTEM_PROMPT
+        + "\n\n=== THE QUESTION UNDER REVIEW ===\n"
+        + q
+        + "\n=== END OF QUESTION ===\n"
+    )
 
 
 def _rubric_field(obj, key: str, default=None):
@@ -3245,13 +3278,7 @@ try:
         # same instruction is honored 100% of the time when it sits at the end of
         # the user request (recency > position for these models), so we place it
         # there automatically instead of relying on the user to append it.
-        prompt = prompt + (
-            "\n\nPlease do not read any PNG or other image files with the "
-            "file-read tool — the language model is text-only and cannot view "
-            "images, and reading a chart image will crash the run. Any chart you "
-            "saved is already shown to the user, so there is no need to open it "
-            "to verify it."
-        )
+        prompt = prompt + _SAGE_TEXT_ONLY_GUARD
 
         # Re-check CWD .env at call time (user may have changed directory)
         try:
