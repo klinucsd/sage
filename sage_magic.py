@@ -1964,9 +1964,6 @@ async def _run_agent_async(
     _SAGE_LAST_REVIEW = None
 
     _rubric_evals: list = []
-    # Display handles for narration blocks published during a reviewed run, so
-    # they can be withdrawn if the grader supersedes them.
-    _review_handles: list = []
     _review_active = False
     if review:
         try:
@@ -1974,22 +1971,20 @@ async def _run_agent_async(
 
             def _on_evaluation(ev) -> None:
                 _rubric_evals.append(ev)
-                # A needs_revision verdict means everything the agent has said
-                # so far is about to be superseded. Withdraw it now, before the
-                # replacement arrives, so the cell never shows two answers.
+                # Drop the draft answer the grader just rejected.
                 #
-                # Two separate places hold superseded text: blocks already
-                # rendered (held by display handle so they can be blanked) and
-                # text still sitting in the buffer, which would otherwise be
-                # concatenated with the corrected answer into `final`.
+                # At this moment the draft is still sitting in text_buffer,
+                # unrendered: _flush_text only runs immediately before a tool
+                # call, and the agent had stopped calling tools when it produced
+                # the draft. Clearing the buffer therefore removes it both from
+                # the cell (it is never displayed) and from `final`, where it
+                # would otherwise be concatenated with the corrected answer.
+                #
+                # Narration already on screen is deliberately left alone. It
+                # describes tool calls that really happened and were not undone,
+                # so blanking it — which an earlier version did — erased the
+                # whole story of the run for no benefit.
                 if _rubric_field(ev, "result") == "needs_revision":
-                    from IPython.display import Markdown as _Md
-                    for _h in _review_handles:
-                        try:
-                            _h.update(_Md(""))
-                        except Exception:
-                            pass
-                    _review_handles.clear()
                     text_buffer.clear()
 
             with warnings.catch_warnings():
@@ -2055,20 +2050,9 @@ async def _run_agent_async(
         # JupyterLab doesn't serve arbitrary filesystem paths.
         if text_buffer:
             text = _fix_glm_markdown("".join(text_buffer))
-            if _review_active:
-                # Under review this block may be superseded moments from now,
-                # so publish it behind a display handle that _on_evaluation can
-                # blank. File references are deliberately NOT expanded here:
-                # re-rendering a map for text that is about to be withdrawn is
-                # what produced duplicate maps. The surviving answer is rendered
-                # once, with its files, by the caller at end of cell.
-                _h = display(Markdown(text), display_id=True)
-                if _h is not None:
-                    _review_handles.append(_h)
-            else:
-                found, _ = _render_markdown_with_files(text)
-                if not found:
-                    display(Markdown(text))
+            found, _ = _render_markdown_with_files(text)
+            if not found:
+                display(Markdown(text))
             text_buffer.clear()
         _had_tool_after_text[0] = True
         _skip_msg_id[0] = None
