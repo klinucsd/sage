@@ -2107,13 +2107,18 @@ async def _run_agent_async(
         # The rule is DISCLOSURE, not completeness: partial coverage is fine and
         # often unavoidable, but it has to be stated.
         _agent_input["rubric"] = (
-            "- The answer directly addresses the question that was asked.\n"
+            "- The answer directly addresses the question that was asked. If "
+            "the available data cannot support part of the question, an answer "
+            "that says so plainly — and gives whatever part IS supported — "
+            "satisfies this criterion; the missing part must not be required.\n"
             "- The answer is internally consistent: counts, totals and "
             "enumerations agree with what the answer itself shows, and the "
             "conclusion does not contradict results stated earlier in the same "
             "answer.\n"
             "- The scope of the answer matches the scope of the question, and "
-            "any narrowing is stated explicitly. This includes narrowing that "
+            "any narrowing is stated explicitly; a narrowing the answer states "
+            "PASSES this criterion, since the requirement is disclosure and not "
+            "complete coverage. This includes narrowing that "
             "comes from the data source rather than the analysis: if the "
             "question asks about a category but the source covers only part of "
             "it, or records were missing, filtered, suppressed or dropped, the "
