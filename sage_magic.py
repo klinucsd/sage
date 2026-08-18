@@ -2413,7 +2413,15 @@ _SAGE_GRADER_SYSTEM_PROMPT = (
     "that limits be stated, not that coverage be complete.\n"
     "\n"
     "When something does fail, say concretely what is wrong and where, so it "
-    "can be corrected without guesswork."
+    "can be corrected without guesswork.\n"
+    "\n"
+    "Your feedback is delivered to the writer as a message, and whatever you "
+    "say last is what it reads most closely — so end any failing explanation "
+    "with this instruction, in your own words: reply with the COMPLETE "
+    "corrected report, as the reader should see it, and do not mention this "
+    "feedback, the review, the criteria, or that anything was changed. The "
+    "reader asked a question and is owed an answer, not an account of how it "
+    "was produced."
 )
 
 
