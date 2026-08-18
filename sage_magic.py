@@ -1825,11 +1825,21 @@ def _render_markdown_with_files(text: str) -> tuple:
 # Agent streaming with tool detail display
 # ---------------------------------------------------------------------------
 
-async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tuple[str, dict]:
+async def _run_agent_async(
+    prompt: str,
+    system_prompt: str | None = None,
+    review: bool = False,
+) -> tuple[str, dict]:
     """Create and stream the agent, displaying tool calls with details.
 
     Returns (final_text, tool_counts) where tool_counts is a dict mapping
     tool name → number of times it was invoked in this cell.
+
+    When `review` is True (from `%%ask --review`), a rubric is passed on the
+    invocation state and deepagents' RubricMiddleware runs a grader sub-agent
+    over the transcript before the run finishes. With `review` False no rubric
+    is passed, and the middleware is documented to be a no-op in that case —
+    so the default path is byte-for-byte the previous behaviour.
     """
     from IPython.display import display, Markdown
 
@@ -1936,6 +1946,100 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
             model.disable_streaming = True
         except Exception:
             pass
+    # --- answer review (%%ask --review) -------------------------------------
+    # RubricMiddleware activates ONLY when a `rubric` is present on the
+    # invocation state; with no rubric its before_agent/after_agent hooks
+    # return without touching state, so it is documented as safe to attach
+    # unconditionally. That means a plain %%ask keeps its existing behaviour
+    # even with the middleware in the stack.
+    #
+    # The grader is given the SAME model instance as the main agent, which
+    # matters on NRP: the streaming flags disabled just above travel with the
+    # object, so the grader sub-agent inherits the vLLM parser workaround
+    # rather than hanging on its own streamed response.
+    # Cleared up front, not just on the success path: if this run raises before
+    # the verdict is stashed, the previous cell's evaluation must not survive
+    # and be rendered against this cell's answer.
+    global _SAGE_LAST_REVIEW
+    _SAGE_LAST_REVIEW = None
+
+    _rubric_evals: list = []
+    # Draft answers withdrawn after a needs_revision verdict, kept as a
+    # fallback in case the revision never produces a replacement.
+    _superseded: list[str] = []
+    _review_active = False
+    if review:
+        try:
+            from deepagents import RubricMiddleware
+
+            def _on_evaluation(ev) -> None:
+                _rubric_evals.append(ev)
+                # Drop the draft answer the grader just rejected.
+                #
+                # At this moment the draft is still sitting in text_buffer,
+                # unrendered: _flush_text only runs immediately before a tool
+                # call, and the agent had stopped calling tools when it produced
+                # the draft. Clearing the buffer therefore removes it both from
+                # the cell (it is never displayed) and from `final`, where it
+                # would otherwise be concatenated with the corrected answer.
+                #
+                # Narration already on screen is deliberately left alone. It
+                # describes tool calls that really happened and were not undone,
+                # so blanking it — which an earlier version did — erased the
+                # whole story of the run for no benefit.
+                if _rubric_field(ev, "result") == "needs_revision":
+                    # Stash, never destroy. If the replacement fails to arrive
+                    # the draft is restored at the end, so the user is never
+                    # left with no answer at all.
+                    _superseded.append("".join(text_buffer))
+                    text_buffer.clear()
+                    # Put the stream dedup state where a flush would leave it.
+                    # Clearing the buffer behind the loop's back left it mid-
+                    # message, and the replacement text was then dropped as a
+                    # duplicate — which is how a successful revision produced
+                    # an empty final answer.
+                    _had_tool_after_text[0] = True
+                    _skip_msg_id[0] = None
+                    _cur_text_msg_id[0] = None
+
+            with warnings.catch_warnings():
+                # langchain flags RubricMiddleware as beta, and the notice
+                # renders as a pink warning block in every reviewed cell.
+                # Opting into the beta API is a deliberate choice here, so
+                # silence this one notice rather than leaving noise in the
+                # user's notebook. Matched by message so we do not depend on
+                # a private warning class, and scoped so no other warning is
+                # hidden.
+                warnings.filterwarnings(
+                    "ignore", message=r".*RubricMiddleware.*beta.*"
+                )
+                # max_iterations gates REVISION, not grading. 2 gives the
+                # agent one chance to act on the grader's feedback.
+                #
+                # Flag-only (1) was tried and rejected on product grounds: an
+                # ARGUS user is a domain scientist who asked a question, not a
+                # reviewer. Handing them a flawed answer plus a critique puts
+                # the judgement on the person least equipped to make it, and is
+                # more work than reading the generated code. If the review
+                # cannot improve the answer it should not exist.
+                #
+                # Revision was ugly on the first attempt — two answers, four
+                # maps, and "Revisions"/"Rubric criteria check" sections in the
+                # user-facing output. Those are handled here: superseded output
+                # is withdrawn as soon as the grader asks for a revision (see
+                # _flush_text / _on_evaluation), and the agent is told to emit a
+                # clean replacement report rather than a changelog.
+                _rubric_mw = RubricMiddleware(
+                    model=model,
+                    system_prompt=_sage_grader_system_prompt(prompt),
+                    max_iterations=2,
+                    on_evaluation=_on_evaluation,
+                )
+            create_kwargs.setdefault("middleware", []).append(_rubric_mw)
+            _review_active = True
+        except Exception as _rev_err:  # never let review break the cell
+            print(f"[review unavailable: {type(_rev_err).__name__}: {_rev_err}]")
+
     agent = create_deep_agent(model, **create_kwargs)
 
     config = {"metadata": {"assistant_id": "sage"}}
@@ -1981,8 +2085,47 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     # objects so tool_calls, additional_kwargs (reasoning content),
     # response_metadata (finish_reason), and usage_metadata are all visible.
     _diag_chunks: list = []
+    _agent_input: dict = {"messages": initial_messages}
+    if _review_active:
+        # Criteria are judged by the grader from the transcript alone — no tools
+        # needed, no domain expertise assumed. They target two failure modes
+        # seen in practice:
+        #
+        #   Internal contradiction — the agent writes an analysis incrementally
+        #   and by the conclusion has lost track of what it established, e.g.
+        #   showing three values and then concluding from two. Visible on a
+        #   careful read, which is precisely what a fresh pass over the finished
+        #   text provides.
+        #
+        #   Undisclosed narrowing — the more dangerous case, because the answer
+        #   is internally perfect and simply covers less than it appears to. A
+        #   question about "schools" answered from a public-schools dataset, or
+        #   about "Southern California" from three counties. The skill's own
+        #   declared scope is in the transcript (the agent read its SKILL.md),
+        #   so the grader can compare it against what was asked.
+        #
+        # The rule is DISCLOSURE, not completeness: partial coverage is fine and
+        # often unavoidable, but it has to be stated.
+        _agent_input["rubric"] = (
+            "- The answer directly addresses the question that was asked. If "
+            "the available data cannot support part of the question, an answer "
+            "that says so plainly — and gives whatever part IS supported — "
+            "satisfies this criterion; the missing part must not be required.\n"
+            "- The answer is internally consistent: counts, totals and "
+            "enumerations agree with what the answer itself shows, and the "
+            "conclusion does not contradict results stated earlier in the same "
+            "answer.\n"
+            "- The scope of the answer matches the scope of the question, and "
+            "any narrowing is stated explicitly; a narrowing the answer states "
+            "PASSES this criterion, since the requirement is disclosure and not "
+            "complete coverage. This includes narrowing that "
+            "comes from the data source rather than the analysis: if the "
+            "question asks about a category but the source covers only part of "
+            "it, or records were missing, filtered, suppressed or dropped, the "
+            "answer says so instead of presenting the remainder as the whole.\n"
+        )
     async for chunk in agent.astream(
-        {"messages": initial_messages},
+        _agent_input,
         stream_mode="messages",
         config=config,
     ):
@@ -2119,6 +2262,12 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
     # text. Detect by finding the first ~30 chars of the accumulated text appearing
     # again starting from the midpoint.
     final = "".join(text_buffer).strip()
+    if not final and _superseded:
+        # The grader asked for a revision and the replacement never materialised.
+        # Showing the superseded draft is worse than showing the corrected
+        # answer, but far better than showing nothing — the analysis ran, the
+        # files were written, and the user asked a question.
+        final = _superseded[-1].strip()
     if len(final) > 60:
         half = len(final) // 2
         marker = final[:30]
@@ -2202,7 +2351,280 @@ async def _run_agent_async(prompt: str, system_prompt: str | None = None) -> tup
             f"font-size:13px; line-height:1.4'>⚠ {msg}</div>"
         ))
 
+    # --- review verdict -----------------------------------------------------
+    # Stashed rather than displayed here: this function returns before the
+    # caller renders the final report, so displaying inline put the verdict
+    # ABOVE the answer it judges. `ask()` renders it once the report is out.
+    _SAGE_LAST_REVIEW = _rubric_evals if _review_active else None
+
     return final, tool_counts
+
+
+# Verdict from the most recent %%ask --review, handed from _run_agent_async to
+# ask() so it can be rendered after the final report rather than before it.
+# None when the last run had no review.
+_SAGE_LAST_REVIEW: list | None = None
+
+
+_SAGE_TEXT_ONLY_GUARD = (
+    "\n\nPlease do not read any PNG or other image files with the "
+    "file-read tool — the language model is text-only and cannot view "
+    "images, and reading a chart image will crash the run. Any chart you "
+    "saved is already shown to the user, so there is no need to open it "
+    "to verify it."
+)
+
+
+_SAGE_GRADER_SYSTEM_PROMPT = (
+    "You are reviewing the final answer of a data-analysis run before it is "
+    "shown to a scientist. You have the full transcript: the question, the "
+    "code that was written and executed, the tool output, any documentation "
+    "the agent read, and the answer itself.\n"
+    "\n"
+    "Judge only what the transcript supports. You are not re-doing the "
+    "analysis and you are not being asked whether you would have approached it "
+    "differently — a different but defensible method is not a failure.\n"
+    "\n"
+    "What you are judging is the FINAL answer: the last substantive message "
+    "addressed to the user. Everything before it — the running narration "
+    "between tool calls, any earlier draft, and the raw output of the tools "
+    "themselves — is context showing how the answer was produced. It is not "
+    "the answer, and its wording is not the answer's wording.\n"
+    "\n"
+    "The question under review is quoted verbatim below. Judge the answer "
+    "against THAT question and nothing else. This is an ongoing session, so "
+    "the transcript also contains questions from earlier notebook cells and, "
+    "after a revision, your own previous feedback delivered as a user message "
+    "— none of those is the question. Earlier questions were already answered "
+    "in their own cells and are present only so you can resolve references "
+    "like \"those fires\" or \"the previous step\". An answer is not "
+    "incomplete for omitting material that belongs to an earlier question, "
+    "and you must never ask for content the quoted question did not "
+    "request.\n"
+    "\n"
+    "The answer is rendered for the user, not read as raw text. A line of the "
+    "form `![caption](/path/to/file)` is not a broken link — the notebook "
+    "renders it in place: a `.geojson` becomes an interactive map, a `.png` or "
+    "`.jpg` becomes the chart or image itself. When an answer embeds such a "
+    "reference, the user SEES that map or figure. Never fault an answer for "
+    "failing to show a map, chart or image that it embeds this way, and never "
+    "describe such a reference as a file path presented in place of a "
+    "visual.\n"
+    "\n"
+    "An answer that cannot be given from the available data, and says so, is a "
+    "CORRECT answer. If the data needed for a requested comparison does not "
+    "exist — no post-period records, a field that is absent, coverage that "
+    "stops short — then reporting that clearly, with whatever partial result "
+    "is meaningful, fully addresses the question. Do not fail such an answer "
+    "for not producing the missing half; demanding it would push the writer to "
+    "invent numbers, which is far worse than an honest gap. This applies to "
+    "every criterion, not only the one about scope.\n"
+    "\n"
+    "Tool output in the transcript is frequently abbreviated: long tables and "
+    "file dumps are cut off for length, sometimes mid-row and sometimes with "
+    "an explicit truncation marker. That is a limit of the transcript, never a "
+    "defect in the answer. Do not conclude that a list is incomplete because "
+    "the transcript shows it cut off — judge completeness only from what the "
+    "final answer itself presents.\n"
+    "\n"
+    "Restraint matters more than thoroughness. A reviewer that raises doubts "
+    "on every answer trains the reader to ignore it, which is worse than no "
+    "review at all. Mark a criterion failed only when you can point to the "
+    "specific text or result that violates it. If you are unsure, or the "
+    "evidence is not in the transcript, pass the criterion. Narrowing that the "
+    "answer already discloses is a pass, not a failure — the requirement is "
+    "that limits be stated, not that coverage be complete.\n"
+    "\n"
+    "When something does fail, say concretely what is wrong and where, so it "
+    "can be corrected without guesswork.\n"
+    "\n"
+    "Your feedback is delivered to the writer as a message, and whatever you "
+    "say last is what it reads most closely — so end any failing explanation "
+    "with this instruction, in your own words: reply with the COMPLETE "
+    "corrected report, as the reader should see it, and do not mention this "
+    "feedback, the review, the criteria, or that anything was changed. The "
+    "reader asked a question and is owed an answer, not an account of how it "
+    "was produced."
+)
+
+
+def _sage_grader_system_prompt(question: str) -> str:
+    """Grader instructions with the question under review quoted verbatim.
+
+    Positional descriptions of the question do not survive this setting. ARGUS
+    passes the whole session as history so the agent has cross-cell memory, and
+    RubricMiddleware delivers its own feedback as a user message — so after a
+    revision the "last user message" is the grader's previous critique, not the
+    question. Telling the grader to look at a position therefore points it at
+    the wrong text, and it goes hunting for a real question elsewhere in the
+    transcript (observed: it graded a schools answer against the previous
+    cell's "show all wildfires" and demanded content nobody asked for).
+    Quoting the question removes the ambiguity entirely.
+    """
+    q = (question or "").replace(_SAGE_TEXT_ONLY_GUARD, "").strip()
+    return (
+        _SAGE_GRADER_SYSTEM_PROMPT
+        + "\n\n=== THE QUESTION UNDER REVIEW ===\n"
+        + q
+        + "\n=== END OF QUESTION ===\n"
+    )
+
+
+def _rubric_field(obj, key: str, default=None):
+    """Read `key` from a rubric object regardless of how it is modelled.
+
+    deepagents models RubricEvaluation / CriterionPass / CriterionFail as
+    dict subclasses, so attribute access silently yields nothing — which
+    rendered every verdict as "unknown (0 criteria checked)". GraderResponse,
+    by contrast, is a pydantic model. Try mapping access first, then attribute
+    access, so the display keeps working whichever representation arrives.
+    """
+    if isinstance(obj, dict):
+        return obj.get(key, default)
+    try:
+        return getattr(obj, key, default)
+    except Exception:
+        return default
+
+
+def _sage_display_review(evals: list) -> None:
+    """Render the rubric grader's verdict as a compact block.
+
+    `evals` holds every RubricEvaluation seen via the on_evaluation callback;
+    the last one is the outcome. Each carries .result, .explanation and
+    .criteria, where a criterion is {name, passed} plus .gap when it failed.
+    """
+    from IPython.display import display, HTML
+
+    if not evals:
+        # Middleware attached but never graded — e.g. the grader raised before
+        # producing an evaluation. Say so rather than implying a clean pass.
+        display(HTML(
+            "<div style='background:#fff8e1; border-left:3px solid #f0b400; "
+            "padding:6px 10px; margin:6px 0; font-family:-apple-system,sans-serif; "
+            "font-size:12.5px; line-height:1.45'>"
+            "⚠ <b>Review did not run.</b> The answer above has not been checked."
+            "</div>"
+        ))
+        return
+
+    ev = evals[-1]
+    result = str(_rubric_field(ev, "result", "") or "unknown")
+    explanation = _rubric_field(ev, "explanation", "") or ""
+    criteria = list(_rubric_field(ev, "criteria", []) or [])
+
+    # Describe what happened to the ANSWER, in the reader's terms — not the
+    # state of the grading loop. "max_iterations_reached" is an implementation
+    # detail; "1 issue corrected" is what the scientist actually needs to know.
+    _n_failed = sum(1 for c in criteria if not _rubric_field(c, "passed", False))
+    # More than one evaluation means the agent was sent back with feedback and
+    # the answer above is the corrected one. Report the issues found on the
+    # FIRST pass, since those are what got fixed — the final pass shows them
+    # passing, which would otherwise read as "nothing was wrong".
+    _n_rev = max(0, len(evals) - 1)
+    _first = list(_rubric_field(evals[0], "criteria", []) or []) if evals else []
+    _n_fixed = sum(1 for c in _first if not _rubric_field(c, "passed", False))
+
+    if result == "satisfied":
+        bg, border, fg, icon = "#e8f5e9", "#2e7d32", "#1b5e20", "✓"
+        if _n_rev and _n_fixed:
+            label = (f"{_n_fixed} issue{'s' if _n_fixed != 1 else ''} found and "
+                     f"corrected")
+        else:
+            label = "no issues found"
+    elif result in ("needs_revision", "failed", "max_iterations_reached") and _n_failed:
+        # Honest and muted. Never a green tick over an answer still known to be
+        # wrong — that is the one outcome that would make the guard harmful.
+        bg, border, fg, icon = "#fff8e1", "#f0b400", "#8a6d00", "⚠"
+        _tail = ("could not be fully corrected" if _n_rev
+                 else "found; answer not revised")
+        label = (f"{_n_failed} issue{'s' if _n_failed != 1 else ''} {_tail}")
+    else:
+        styles = {
+            "satisfied": ("#e8f5e9", "#2e7d32", "#1b5e20", "✓", "no issues found"),
+            "needs_revision": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
+                               "changes requested; answer not revised"),
+            "failed": ("#fdecea", "#d93025", "#a50e0e", "✗", "review failed"),
+            "max_iterations_reached": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
+                                       "ended without a clear verdict"),
+            "grader_error": ("#fff8e1", "#f0b400", "#8a6d00", "⚠",
+                             "did not complete (grader error)"),
+        }
+        bg, border, fg, icon, label = styles.get(
+            result, ("#fff8e1", "#f0b400", "#8a6d00", "⚠", f"status: {result}")
+        )
+
+    # What was actually WRONG lives in the first evaluation; by the final one
+    # every criterion passes, so showing only that says "1 issue corrected"
+    # while displaying three ticks and no issue. Carry the original gap text
+    # forward, keyed by criterion name (stable — it is the rubric line).
+    # Align the two passes by POSITION, not by name. The grader regenerates the
+    # criterion text on every pass and paraphrases it, so an exact name match
+    # silently finds nothing — which is how "2 issues found and corrected"
+    # rendered above three ticks and no gap text at all. The rubric is a fixed
+    # ordered list, so index i means the same criterion in both passes; names
+    # are kept as a fallback for the case where the counts differ.
+    _orig_by_idx = {}
+    if len(_first) == len(criteria):
+        for _i, _c0 in enumerate(_first):
+            if not _rubric_field(_c0, "passed", False):
+                _orig_by_idx[_i] = str(_rubric_field(_c0, "gap", "") or "")
+    _orig_gaps = {
+        str(_rubric_field(c, "name", "") or ""): str(_rubric_field(c, "gap", "") or "")
+        for c in _first
+        if not _rubric_field(c, "passed", False)
+    }
+
+    def _short(name: str) -> str:
+        """Criterion names are whole rubric lines. Show the first sentence."""
+        head = name.split(". ")[0].strip().rstrip(".")
+        return (head + ".") if head and len(head) < len(name.strip()) else name
+
+    rows = []
+    for _idx, c in enumerate(criteria):
+        name = str(_rubric_field(c, "name", "") or "")
+        passed = bool(_rubric_field(c, "passed", False))
+        gap = str(_rubric_field(c, "gap", "") or "")
+        _orig_gap = _orig_by_idx.get(_idx, _orig_gaps.get(name))
+        was_fixed = passed and _orig_gap is not None
+        if was_fixed:
+            mark, colour = "✓", "#2e7d32"
+            badge = ("<span style='color:#8a6d00; background:#fff8e1; "
+                     "border-radius:3px; padding:0 5px; margin-left:6px; "
+                     "font-size:0.9em'>corrected</span>")
+            gap = _orig_gap or gap
+        else:
+            mark = "✓" if passed else "✗"
+            colour = "#2e7d32" if passed else "#d93025"
+            badge = ""
+        detail = (f"<div style='color:#666; margin:1px 0 4px 18px'>{gap}</div>"
+                  if gap else "")
+        rows.append(
+            f"<div style='margin:3px 0'><span style='color:{colour}'>{mark}</span> "
+            f"{_short(name)}{badge}</div>{detail}"
+        )
+
+    # Only show the grader's prose when it adds something beyond the per-criterion
+    # verdicts — on a clean pass it is usually redundant.
+    note = ""
+    if explanation and result != "satisfied":
+        note = (f"<div style='margin-top:6px; color:#555'>{explanation}</div>")
+
+    # Rendered like a tool card: one quiet summary line, details behind a
+    # disclosure triangle. The reader is a scientist who asked a question, not
+    # a reviewer — the corrected answer is the product, and the review is
+    # provenance available on demand rather than something they must read.
+    display(HTML(
+        f"<details style='background:{bg}; border-left:3px solid {border}; "
+        f"padding:5px 10px; margin:3px 0 12px 0; "
+        f"font-family:-apple-system,sans-serif; font-size:0.85em; "
+        f"line-height:1.45'>"
+        f"<summary style='color:{fg}; cursor:pointer'>"
+        f"🔍 <b>Review</b> — {icon} {label} "
+        f"<span style='color:#888'>({len(criteria)} criteria)</span></summary>"
+        f"<div style='margin-top:6px'>{''.join(rows)}{note}</div>"
+        f"</details>"
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -2863,6 +3285,18 @@ try:
         Note: use %%ask (cell magic) for prompts containing '?'
         Output files are saved to SAGE_OUTPUT_DIR and displayed automatically.
         """
+        # Flags live on the `%%ask` line, the prompt in the cell body. In cell
+        # mode `line` was previously discarded entirely, so parsing it here
+        # cannot change any existing behaviour. The `%ask <prompt>` line-magic
+        # form is left untouched: there `line` IS the prompt.
+        review = False
+        if cell is not None:
+            _flags = line.split()
+            review = "--review" in _flags
+            _unknown = [f for f in _flags if f not in ("--review",)]
+            if _unknown:
+                print(f"Ignoring unrecognized option(s): {' '.join(_unknown)}")
+
         prompt = cell.strip() if cell else line.strip()
         if not prompt:
             print("Usage: %ask <prompt>  or  %%ask in a cell")
@@ -2875,13 +3309,7 @@ try:
         # same instruction is honored 100% of the time when it sits at the end of
         # the user request (recency > position for these models), so we place it
         # there automatically instead of relying on the user to append it.
-        prompt = prompt + (
-            "\n\nPlease do not read any PNG or other image files with the "
-            "file-read tool — the language model is text-only and cannot view "
-            "images, and reading a chart image will crash the run. Any chart you "
-            "saved is already shown to the user, so there is no need to open it "
-            "to verify it."
-        )
+        prompt = prompt + _SAGE_TEXT_ONLY_GUARD
 
         # Re-check CWD .env at call time (user may have changed directory)
         try:
@@ -3047,6 +3475,24 @@ try:
             f"script (DEM rasterization, CHM calculation, EPT download, etc.) without first reading any "
             f"skill SKILL.md whose description matches the task — the skill exists precisely to prevent "
             f"reinvention.\n"
+            f"DATA SOURCE RULE — never silently substitute a different data source for the one a "
+            f"skill documents. Endpoints, service URLs, org ids and dataset names in a SKILL.md are "
+            f"part of what the answer MEANS: a different service has different fields, different "
+            f"coverage and different vintage, so swapping it changes the answer while leaving it "
+            f"looking perfectly plausible.\n"
+            f"  1. COPY the URL out of SKILL.md — do not retype it from memory. Transcription slips "
+            f"of a single character are a recurring failure, and they are invisible: the run still "
+            f"'works', against the wrong data.\n"
+            f"  2. If a documented endpoint appears to fail, your FIRST hypothesis is a typo in the "
+            f"URL you built, not an outage. Diff your URL against SKILL.md character by character "
+            f"before anything else. Many services — ArcGIS among them — answer a malformed URL with "
+            f"HTTP 200 and the error INSIDE the JSON body ('Invalid URL'), or with a non-JSON body "
+            f"that surfaces as a JSON decode error; both read exactly like a decommissioned "
+            f"service.\n"
+            f"  3. If the documented source genuinely fails after you have verified the URL, SAY SO "
+            f"in your answer and stop. Do not go hunting for an alternative service. Reporting that "
+            f"the documented source is unavailable is a correct, useful answer; quietly answering "
+            f"from some other dataset is not.\n"
             f"KERNEL VARIABLE NAME RULE — when `EXISTING KERNEL VARIABLES` lists a variable, your code "
             f"MUST use that exact name with `globals().get(...)`. Do NOT hardcode conventional names "
             f"like `USER_BBOX` if the registry shows a different name (e.g., `CONUS_BBOX`, `STORM_BBOX`). "
@@ -3294,6 +3740,25 @@ try:
             f"change what code gets written on the next run, it does not "
             f"belong in the file.\n"
             f"\n"
+            f"NEVER record the state of a remote service. Whether a host is "
+            f"reachable, whether an endpoint returned an error, whether a "
+            f"service 'has moved' or 'is down', a timeout, a rate limit, an "
+            f"expired credential — these describe the world at one moment, "
+            f"not how to use the data, and they are wrong as often as they "
+            f"are right. NEVER write a lesson that redirects a skill to a "
+            f"different URL, host, or dataset than the one its SKILL.md "
+            f"documents.\n"
+            f"Before concluding that a documented endpoint is dead, re-read "
+            f"the URL in SKILL.md character by character and compare it with "
+            f"the one you actually requested. Copy it; do not retype it. Many "
+            f"services — ArcGIS among them — answer a malformed URL with HTTP "
+            f"200 and an error INSIDE the JSON body (e.g. 'Invalid URL'), "
+            f"which reads exactly like a decommissioned service but is really "
+            f"a typo in the request you built. A transcription slip that "
+            f"silently swaps in a different dataset is far more damaging than "
+            f"a failed request, because the run still succeeds and the answer "
+            f"still looks right.\n"
+            f"\n"
             f"FILE FORMAT — exactly two body sections:\n"
             f"  ## What Doesn't Work\n"
             f"  - **<short title>**\n"
@@ -3405,6 +3870,30 @@ try:
             f"EPT point clouds are commonly EPSG:3857, state-plane data can be any of hundreds of codes."
         )
 
+        # Appended only for reviewed cells. Without it the agent treats review
+        # feedback as a conversation turn and answers it — emitting sections
+        # like "Revisions" and "Rubric criteria check", which exposes the review
+        # machinery to a user who never asked for a review and should not have
+        # to know one happened.
+        if review:
+            system_prompt_text += (
+                "\n\nREVISION RULE — you may receive feedback on a draft answer "
+                "identifying specific problems with it. When that happens, "
+                "reply with a COMPLETE, self-contained final report that "
+                "replaces the draft entirely: the whole answer as the reader "
+                "should see it, with the problems fixed.\n"
+                "Do NOT write a changelog, a list of corrections, a 'Revisions' "
+                "or 'What changed' section, or any commentary about the "
+                "feedback, the criteria, or the review itself. The reader is a "
+                "scientist who asked a question and is owed a correct answer, "
+                "not an account of how it was produced. Your revised report "
+                "must read exactly as though it were right the first time.\n"
+                "Correct the substance, not just the wording — if a number is "
+                "wrong, recompute it from the data rather than restating it; if "
+                "coverage is narrower than the question, say plainly in the "
+                "report what is and is not included."
+            )
+
         # Snapshot output folder before run
         before = _snapshot(SAGE_OUTPUT_DIR)
 
@@ -3457,7 +3946,7 @@ try:
         _loop.set_exception_handler(_suppress_context_errors)
         try:
             final_text, tool_counts = _loop.run_until_complete(
-                _run_agent_async(prompt, system_prompt_text)
+                _run_agent_async(prompt, system_prompt_text, review=review)
             )
         except Exception as _err:
             _loop.set_exception_handler(_orig_exc_handler)
@@ -3614,6 +4103,14 @@ try:
         # parsed in `_render_markdown_with_files`. There is no fallback that
         # stacks the output directory — if the agent did not specify map
         # layers in its response, none are rendered.
+
+        # Review verdict last, so it reads as a judgement OF the answer above
+        # rather than a preamble to it. Never allowed to fail the cell.
+        if _SAGE_LAST_REVIEW is not None:
+            try:
+                _sage_display_review(_SAGE_LAST_REVIEW)
+            except Exception as _disp_err:
+                print(f"[review display failed: {type(_disp_err).__name__}: {_disp_err}]")
 
     del ask  # keep IPython namespace clean
 
