@@ -297,6 +297,67 @@ def _init_learnings_dir() -> str:
 SAGE_LEARNINGS_DIR = _init_learnings_dir()
 
 
+def _load_review_rules() -> str:
+    """Read system-level additions to the %%ask --review rubric, if this
+    deployment ships any.
+
+    Deliberately SYSTEM-LEVEL ONLY — not session- or user-configurable. There
+    is no env var override (an env var could be set from inside a notebook
+    cell via `os.environ[...]`, which would defeat the point) and no magic
+    command or %%ask lever that touches this. The path is fixed and can only
+    be populated by baking a file into the image at build time (a Dockerfile
+    COPY), exactly like config.toml — so `%%ask --review` means the same
+    thing for every user of a given image, and re-running a shared notebook
+    on that same image reviews it the same way every time.
+
+    This exists for ARGUS derivatives that need domain-specific review
+    criteria without forking sage_magic.py — e.g. ARGUS-FEDER (fusion
+    diagnostics) adding checks for acausal filtering or missing control
+    windows, which the base three criteria (question/consistency/scope) have
+    no way to know about. A base ARGUS or NDP image never creates this file,
+    so review there runs with only the three built-in criteria — unchanged
+    behaviour, this function returns "" and the caller appends nothing.
+
+    Content format matches the base rubric exactly: one criterion per line,
+    each a "- ..." bullet, so it drops straight into the same rubric string
+    RubricMiddleware consumes — which is documented as a newline-delimited
+    checklist. A criterion word-wrapped across several physical lines (the
+    natural way to hand-author a readable long sentence in the .md file)
+    would otherwise silently become several incomplete checklist items
+    instead of one, so wrapped continuation lines are rejoined onto the
+    bullet they belong to before this returns. No other syntax is
+    interpreted: a line starts a new criterion iff it begins with "- ".
+    """
+    path = Path.home() / ".deepagents" / "review_rules.md"
+    try:
+        raw = path.read_text()
+    except FileNotFoundError:
+        return ""
+    except Exception as e:
+        # Fail open: a deployment-config problem should degrade to the base
+        # criteria, never break the review feature or the cell.
+        print(f"[review rules: could not read {path}: "
+              f"{type(e).__name__}: {e} — using built-in criteria only]")
+        return ""
+
+    lines: list[str] = []
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("- ") or not lines:
+            lines.append(line)
+        else:
+            # A wrapped continuation of the previous bullet, not a new one.
+            lines[-1] += " " + line
+    return "\n".join(lines)
+
+
+# Read once at kernel start, not per-cell: this is deployment configuration,
+# fixed for the life of the image, not something that flexes during a session.
+SAGE_REVIEW_RULES = _load_review_rules()
+
+
 def _sage_build_learnings_skills_set() -> set:
     """Return the set of skill names that currently have a Learnings.md
     file under SAGE_LEARNINGS_DIR.
@@ -2124,6 +2185,12 @@ async def _run_agent_async(
             "it, or records were missing, filtered, suppressed or dropped, the "
             "answer says so instead of presenting the remainder as the whole.\n"
         )
+        # System-level extension point (ARGUS-FEDER, etc.) — see
+        # _load_review_rules() for why this has no session-level override.
+        # A base ARGUS/NDP image never ships review_rules.md, so
+        # SAGE_REVIEW_RULES is "" there and this is a no-op.
+        if SAGE_REVIEW_RULES:
+            _agent_input["rubric"] += SAGE_REVIEW_RULES + "\n"
     async for chunk in agent.astream(
         _agent_input,
         stream_mode="messages",
