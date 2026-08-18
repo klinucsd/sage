@@ -113,11 +113,11 @@ from pathlib import Path; \
 p = Path('/home/jovyan/.deepagents/config.toml'); \
 tomli_w.dump({ \
     'models': { \
-        'default': 'nrp:glm-5', \
+        'default': 'nrp:deepseek-v4-flash', \
         'providers': { \
             'nrp': { \
                 'class_path': 'langchain_openai:ChatOpenAI', \
-                'models': ['glm-5'], \
+                'models': ['deepseek-v4-flash', 'glm-5'], \
                 'api_key_env': 'NRP_API_KEY', \
                 'base_url': 'https://ellm.nrp-nautilus.io/v1', \
                 'params': {'temperature': 0, 'stream_chunk_timeout': 1200.0, 'max_retries': 6}, \
