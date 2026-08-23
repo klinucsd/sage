@@ -2,7 +2,14 @@
 
 All notable changes to the Sage Docker image are documented here.
 
+> Entries between v1.2.13 and v1.5.4 were not recorded here at the time; the
+> git history on `main` is authoritative for that range.
+
 ---
+
+## v1.5.4 — 2026-08-22
+- **Generated scripts and intermediate files are no longer deleted.** `deepseek-v4-flash` routinely called the `delete` tool at the end of a cell — sometimes removing every script it had written — before presenting its final report; `glm-5` and `gpt` never did. This was not a model error: ARGUS had never stated what should happen to code and intermediate data once an answer exists, so cleaning up was a defensible reading of an unstated requirement. The requirement is ARGUS's, because those files are how a user inspects and verifies the work behind an answer. Adds a `FILE DELETION RULE` to the agent system prompt, naming the `delete` tool explicitly. Verified across a full `ndp_skill_build` run in which the agent wrote and edited eight scripts and deleted none.
+- **`%%ask --review` shows a progress line while the answer is being revised.** A revision is a second full agent pass, and the rejected draft has already been withdrawn, so the cell went silent with no sign anything was happening. On a `needs_revision` verdict the cell now prints one quiet line at the moment the pause begins (`Review found 2 issues — revising the answer…`). Fires only on a revision, never on a clean pass. Additive display only — no display handle is held across the revision, since handle manipulation in that callback previously produced empty cells and a desynced dedup state.
 
 ## v1.2.13 — 2026-05-26
 - **Stop the agent over-using `_sage_progress` in ad-hoc scripts.** Removed the `_sage_progress` mention from the system prompt. The agent had begun emitting progress lines (e.g. "Searching NDP: …") into short ad-hoc scripts that don't warrant live output. Skills that genuinely need progress (`ndp-projects`, `ndp-workspaces`, wildfire batch) call `_sage_progress` in their own code, so project/workspace downloads keep streaming progress — but ad-hoc scripts now stay quiet.
