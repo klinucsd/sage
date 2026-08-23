@@ -2062,6 +2062,37 @@ async def _run_agent_async(
                     _had_tool_after_text[0] = True
                     _skip_msg_id[0] = None
                     _cur_text_msg_id[0] = None
+                    # Say why the cell is about to go quiet. A revision is a
+                    # second full agent run, and the draft has just been
+                    # withdrawn, so until the replacement lands there is
+                    # nothing on screen and no sign anything is happening.
+                    #
+                    # Additive display ONLY — no handle is captured here and
+                    # nothing already on screen is touched. Rewriting or
+                    # clearing this line later would mean holding a display
+                    # handle across the revision, and manipulating handles in
+                    # this callback is what previously produced empty cells
+                    # and a desynced dedup state. The line is left in place
+                    # afterwards for the same reason narration is: it records
+                    # something that really happened.
+                    try:
+                        _n_gaps = sum(
+                            1 for _c in (_rubric_field(ev, "criteria", []) or [])
+                            if not _rubric_field(_c, "passed", False)
+                        )
+                        _what = (
+                            f"found {_n_gaps} issue{'s' if _n_gaps != 1 else ''}"
+                            if _n_gaps else "requested changes"
+                        )
+                        from IPython.display import display as _d, HTML as _H
+                        _d(_H(
+                            "<div style='color:#8a6d00; font-size:0.8em; "
+                            "font-style:italic; margin:2px 0 8px 0; "
+                            "font-family:-apple-system,sans-serif'>"
+                            f"🔍 Review {_what} — revising the answer…</div>"
+                        ))
+                    except Exception:
+                        pass  # a progress line must never break the run
 
             with warnings.catch_warnings():
                 # langchain flags RubricMiddleware as beta, and the notice
