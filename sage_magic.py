@@ -2214,7 +2214,33 @@ async def _run_agent_async(
             "comes from the data source rather than the analysis: if the "
             "question asks about a category but the source covers only part of "
             "it, or records were missing, filtered, suppressed or dropped, the "
-            "answer says so instead of presenting the remainder as the whole.\n"
+            "answer says so instead of presenting the remainder as the whole. "
+            # The clause below closes a real gap the base wording licensed.
+            # "a narrowing the answer states PASSES this criterion" is
+            # satisfied by a single passing mention, so an answer titled
+            # "Schools within 1 mile of a wildfire" that names "public
+            # schools" once in a method sentence and says "schools" in its
+            # title and every conclusion was PASSED by the base text — the
+            # narrowing is technically stated and substantively hidden.
+            # Wording is byte-identical to the WEN-OKN deployment, where it
+            # caught exactly that answer on exactly that question; keeping it
+            # identical means criterion 3 now reads the same in every
+            # deployment. Note the last sentence is the carve-out that keeps
+            # it from firing when the question already asked for the subset.
+            "In particular, when the question names a broad category (for "
+            "example schools, facilities, wells, or rivers) but the analysis "
+            "used a skill or dataset that covers only a subset of it -- "
+            "public schools are a subset of schools; monitoring wells are a "
+            "subset of wells; a source limited to certain states or years is "
+            "a subset of the whole -- the answer must state plainly that it "
+            "covers only that subset and what is left out. Naming the "
+            "narrower term once in passing does NOT satisfy this: an answer "
+            "that writes 'public schools' in a method sentence while its "
+            "title and conclusions say 'schools' has not disclosed the "
+            "narrowing, and fails. Raise this ONLY when the question's term "
+            "is clearly broader than the data used; if the question already "
+            "asked for the subset, or the data genuinely covers the whole "
+            "category, this passes.\n"
         )
         # System-level extension point (ARGUS-FEDER, etc.) — see
         # _load_review_rules() for why this has no session-level override.

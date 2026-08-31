@@ -94,6 +94,7 @@ COPY sage_kernel_backend.py /tmp/build/
 COPY jupyter_server_config.py /tmp/build/
 COPY jupyter_config.py /tmp/build/
 COPY jupyterlab_overrides.json /tmp/build/
+COPY review_rules.md /tmp/build/
 
 # -----------------------------------------------------------------------------
 # Step 3: Apply Sage Patches to config.py
@@ -126,6 +127,14 @@ tomli_w.dump({ \
     } \
 }, open(p, 'wb')); \
 print('Written', p)"
+
+# Deployment-level additions to the %%ask --review rubric, appended to the
+# three base criteria by _load_review_rules() at kernel start. Criteria 4-6
+# originated in ARGUS-FEDER and criterion 7 in the WEN-OKN app; all four are
+# domain-general and are byte-identical across the three deployments, so a
+# reviewed answer means the same thing in each. Must land before the chown
+# below, which is what makes it readable by jovyan.
+RUN cp /tmp/build/review_rules.md /home/jovyan/.deepagents/review_rules.md
 
 # Install KernelShellBackend as an importable module in site-packages
 RUN cp /tmp/build/sage_kernel_backend.py \
