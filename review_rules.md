@@ -1,6 +1,11 @@
 - Whenever the answer reports a number of items used after any filtering,
   screening or selection step, it must also state the number considered
   before that step. Reporting only the surviving count fails this criterion.
+  This applies however the filter was expressed: a WHERE clause or query
+  predicate sent to the source is a filtering step, and the number considered
+  before it is the count the source holds without that predicate. If that
+  total was never retrieved and cannot be, the answer says so rather than
+  omitting it.
 - A screening or selection criterion must not be measured on the same
   quantity over a time interval that overlaps the interval the answer reports
   as its result. If the screening interval does overlap the reported

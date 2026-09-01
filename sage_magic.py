@@ -2206,7 +2206,20 @@ async def _run_agent_async(
             "- The answer is internally consistent: counts, totals and "
             "enumerations agree with what the answer itself shows, and the "
             "conclusion does not contradict results stated earlier in the same "
-            "answer.\n"
+            "answer. "
+            # Third widening of a criterion's named scope in this rubric, same
+            # shape as the two before it ("stated earlier" missing a later
+            # table; "summary or conclusion" missing body tables). A grader
+            # reading "counts, totals and enumerations" literally passed a
+            # table introduced as "top 5" that listed six rows — the caption
+            # is none of those three things. Naming captions explicitly is the
+            # fix that worked both previous times. The closing clause matters:
+            # without it the grader reasons "every figure is right" and passes.
+            "This includes labels and headings: a caption, header, or "
+            "introductory phrase must agree with the content it introduces -- "
+            "a table introduced as 'top 5' that lists six rows, or 'the three "
+            "counties' followed by four, fails even when every individual "
+            "figure is correct.\n"
             "- The scope of the answer matches the scope of the question, and "
             "any narrowing is stated explicitly; a narrowing the answer states "
             "PASSES this criterion, since the requirement is disclosure and not "
