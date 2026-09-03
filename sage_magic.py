@@ -2033,6 +2033,66 @@ async def _run_agent_async(
         try:
             from deepagents import RubricMiddleware
 
+            def _display_review_start(iteration: int) -> None:
+                """Announce that grading has begun, before the pause it causes.
+
+                `on_evaluation` is the only callback RubricMiddleware offers,
+                and it fires when a grading pass FINISHES. The pause the user
+                actually waits through is the pass itself: the agent has gone
+                quiet, the grader is reading a transcript that can run to
+                hundreds of thousands of characters, and nothing is on screen
+                to say so. Kai reported waiting without knowing a review was
+                running at all.
+                """
+                try:
+                    from IPython.display import display as _d, HTML as _H
+                    if iteration:
+                        _msg = ("Re-checking the corrected answer against the "
+                                "review criteria&hellip;")
+                    else:
+                        _msg = ("Reviewing the answer against the review "
+                                "criteria &mdash; this can take a minute or "
+                                "two on a long task&hellip;")
+                    _d(_H(
+                        "<div style='color:#8a6d00; font-size:0.8em; "
+                        "font-style:italic; margin:2px 0 8px 0; "
+                        "font-family:-apple-system,sans-serif'>"
+                        f"&#128269; {_msg}</div>"
+                    ))
+                except Exception:
+                    pass  # a progress line must never break the run
+
+            class _SageRubricMiddleware(RubricMiddleware):
+                """RubricMiddleware that says when a grading pass starts.
+
+                Overrides the two agent hooks solely to emit a line before
+                delegating; all grading behaviour is the parent's. The guard
+                mirrors the parent's own no-op condition (`state["rubric"]`
+                absent means this run is not reviewed), so an unreviewed cell
+                stays silent. Both the sync and async hooks are covered
+                because ARGUS drives the agent asynchronously today but the
+                sync path is the one the parent documents.
+                """
+
+                @property
+                def name(self) -> str:
+                    # AgentMiddleware.name defaults to the class name and is
+                    # used to label this middleware's node in the agent graph.
+                    # Pin it to the parent's so traces and graph structure are
+                    # identical to unmodified RubricMiddleware; the subclass
+                    # exists only to emit a line.
+                    return "RubricMiddleware"
+
+                def after_agent(self, state, runtime):  # noqa: ANN001
+                    if state.get("rubric"):
+                        _display_review_start(state.get("_rubric_iterations", 0) or 0)
+                    return super().after_agent(state, runtime)
+
+                async def aafter_agent(self, state, runtime):  # noqa: ANN001
+                    if state.get("rubric"):
+                        _display_review_start(state.get("_rubric_iterations", 0) or 0)
+                    return await super().aafter_agent(state, runtime)
+
             def _on_evaluation(ev) -> None:
                 _rubric_evals.append(ev)
                 # Drop the draft answer the grader just rejected.
@@ -2121,7 +2181,7 @@ async def _run_agent_async(
                 # is withdrawn as soon as the grader asks for a revision (see
                 # _flush_text / _on_evaluation), and the agent is told to emit a
                 # clean replacement report rather than a changelog.
-                _rubric_mw = RubricMiddleware(
+                _rubric_mw = _SageRubricMiddleware(
                     model=model,
                     system_prompt=_sage_grader_system_prompt(prompt),
                     max_iterations=2,
@@ -2250,7 +2310,19 @@ async def _run_agent_async(
             "narrower term once in passing does NOT satisfy this: an answer "
             "that writes 'public schools' in a method sentence while its "
             "title and conclusions say 'schools' has not disclosed the "
-            "narrowing, and fails. Raise this ONLY when the question's term "
+            "narrowing, and fails. "
+            # The clause below says WHERE the disclosure has to appear. Without
+            # it the criterion passed a report titled "Schools Within 1 Mile of
+            # California Wildfires" that used "public schools" only inside its
+            # summary paragraph — the narrowing was stated, but not anywhere a
+            # reader skimming the title and conclusions would meet it. Same
+            # "name the form explicitly" fix as criterion 2's caption clause.
+            "The disclosure must appear where a reader who reads only the "
+            "title, the headings and the conclusions would see it: a title or "
+            "heading that names the broad category while the analysis covers "
+            "only a subset fails this criterion even when the body uses the "
+            "narrower term. "
+            "Raise this ONLY when the question's term "
             "is clearly broader than the data used; if the question already "
             "asked for the subset, or the data genuinely covers the whole "
             "category, this passes.\n"
