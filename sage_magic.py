@@ -2093,6 +2093,27 @@ async def _run_agent_async(
                         _display_review_start(state.get("_rubric_iterations", 0) or 0)
                     return await super().aafter_agent(state, runtime)
 
+            # Carry the parent's jump metadata onto the overrides.
+            #
+            # This is load-bearing, not cosmetic. LangGraph decides whether a
+            # hook may redirect control by reading `__can_jump_to__` off the
+            # hook METHOD (`langchain/agents/factory.py:_get_can_jump_to`).
+            # RubricMiddleware.after_agent carries ["model"], which is what
+            # creates the conditional edge back to the model node — the edge
+            # the revision loop travels. A plain override does not inherit
+            # that attribute, so without this the graph is built with only
+            # `after_agent -> __end__`: the grader still requests a revision
+            # and the agent is never re-entered, which shows up as the verdict
+            # "1 issue found; answer not revised". Copy from the parent rather
+            # than hardcoding ["model"] so this tracks upstream if the set of
+            # destinations changes.
+            for _hook in ("after_agent", "aafter_agent"):
+                _parent_hook = getattr(RubricMiddleware, _hook, None)
+                _sub_hook = getattr(_SageRubricMiddleware, _hook, None)
+                _jumps = getattr(_parent_hook, "__can_jump_to__", None)
+                if _jumps is not None and _sub_hook is not None:
+                    _sub_hook.__can_jump_to__ = _jumps
+
             def _on_evaluation(ev) -> None:
                 _rubric_evals.append(ev)
                 # Drop the draft answer the grader just rejected.
@@ -2307,21 +2328,20 @@ async def _run_agent_async(
             "subset of wells; a source limited to certain states or years is "
             "a subset of the whole -- the answer must state plainly that it "
             "covers only that subset and what is left out. Naming the "
-            "narrower term once in passing does NOT satisfy this: an answer "
-            "that writes 'public schools' in a method sentence while its "
-            "title and conclusions say 'schools' has not disclosed the "
-            "narrowing, and fails. "
+            "narrower term somewhere in the body does NOT satisfy this, "
+            "however many times it appears. "
             # The clause below says WHERE the disclosure has to appear. Without
             # it the criterion passed a report titled "Schools Within 1 Mile of
             # California Wildfires" that used "public schools" only inside its
             # summary paragraph — the narrowing was stated, but not anywhere a
             # reader skimming the title and conclusions would meet it. Same
             # "name the form explicitly" fix as criterion 2's caption clause.
-            "The disclosure must appear where a reader who reads only the "
-            "title, the headings and the conclusions would see it: a title or "
-            "heading that names the broad category while the analysis covers "
-            "only a subset fails this criterion even when the body uses the "
-            "narrower term. "
+            "The test is the TITLE: if the report is titled with the broad "
+            "category while the analysis covers only a subset, this criterion "
+            "FAILS, no matter how clearly the body says otherwise. A report "
+            "analysing public schools must be titled 'Public schools ...', "
+            "not 'Schools ...'; one covering a single state must not be "
+            "titled as though it covered the country. "
             "Raise this ONLY when the question's term "
             "is clearly broader than the data used; if the question already "
             "asked for the subset, or the data genuinely covers the whole "
