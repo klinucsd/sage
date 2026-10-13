@@ -1925,7 +1925,10 @@ async def _run_agent_async(
         print(f"Error: {e}")
         return ""
     model = result.model
-    result.apply_to_settings()
+    # Renamed from apply_to_settings() in deepagents-code 0.1.84; same job,
+    # committing this result's metadata (context limit, retry budget,
+    # unsupported modalities) to the process-wide runtime state.
+    result.apply_to_runtime_state()
 
     # Discover installed skills.
     # IMPORTANT: deepagents 0.6.8's SkillsMiddleware expects `skills=` to be
