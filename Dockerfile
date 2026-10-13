@@ -116,6 +116,15 @@ RUN mkdir -p /home/jovyan/.deepagents/agent/skills && \
     cp -r /tmp/build/skills/* /home/jovyan/.deepagents/agent/skills/
 
 # Write NRP provider config to jovyan's config.toml
+#
+# `mcp.tool_timeout` replaces the per-server `sse_read_timeout` ARGUS used to
+# set. Under langchain-mcp-adapters that key was how a long computational MCP
+# call (zonal statistics over every county in a state) got an hour instead of
+# the SDK's 5-minute ceiling. fastmcp's transports take no timeout argument at
+# all, so that key is now inert and the budget comes from this option instead.
+# 900 s is the maximum deepagents accepts — MCP_TOOL_TIMEOUT_CEILING — so the
+# previous 3600 s is no longer reachable; anything above 900 is rejected and
+# silently falls back to the 120 s default, which would cut long calls short.
 RUN python -c "\
 import tomli_w; \
 from pathlib import Path; \
@@ -132,7 +141,8 @@ tomli_w.dump({ \
                 'params': {'temperature': 0, 'stream_chunk_timeout': 1200.0, 'max_retries': 6}, \
             } \
         } \
-    } \
+    }, \
+    'mcp': {'tool_timeout': 900.0}, \
 }, open(p, 'wb')); \
 print('Written', p)"
 

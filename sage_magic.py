@@ -3826,16 +3826,22 @@ def _sage_normalize_mcp_config(raw):
                 f"Server '{name}' has unsupported transport: {transport}"
             )
 
-        # HTTP-based transports: give computational MCP tools room to finish,
-        # and let a server override either value in its own config.
+        # HTTP-based transports: pass through whatever timeouts a server config
+        # supplies, but do NOT rely on them.
         #
-        # The MCP SDK defaults are tuned for quick RPC, not science: sse gives
-        # timeout=5 s / sse_read_timeout=300 s and streamable_http 30 s / 300 s.
-        # `sse_read_timeout` is the ceiling on the whole streamed response, so a
-        # long tool call (e.g. zonal statistics over every county in a state)
-        # was being cut off at 5 minutes no matter what the server did. ARGUS
-        # previously built `entry` from scratch and dropped any timeout the user
-        # supplied, so this was neither generous nor configurable.
+        # These keys were how ARGUS gave a long computational MCP call (zonal
+        # statistics over every county in a state) room to finish under
+        # langchain-mcp-adapters, where `sse_read_timeout` bounded the whole
+        # streamed response and the SDK default cut it off at 5 minutes.
+        # fastmcp's transports accept no timeout argument at all
+        # (StreamableHttpTransport takes url/headers/auth/client-factory/verify
+        # and nothing else), so since the 0.7.24 upgrade these are inert.
+        #
+        # The budget for one MCP tool call now comes from `mcp.tool_timeout` in
+        # ~/.deepagents/config.toml, which the image ships at 900 s. They are
+        # still forwarded because they cost nothing, remain meaningful to any
+        # other consumer of this normalized config, and would start working
+        # again if fastmcp reinstates per-transport timeouts.
         if transport in ("streamable_http", "sse"):
             entry.setdefault("timeout", float(cfg.get("timeout", 60)))
             entry.setdefault(
