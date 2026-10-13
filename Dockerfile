@@ -54,22 +54,30 @@ RUN apt-get update && apt-get install -y \
 #
 # deepagents-code is the interactive coding agent package (renamed from
 # deepagents-cli starting at 0.2.x; the legacy deepagents-cli 0.2.x is now
-# deployment tooling only). 0.1.54 brings deepagents==0.7.5, langchain-openai,
-# langchain-anthropic, langchain-mcp-adapters, and the LangGraph runtime as
-# default deps — no extras needed.
+# deployment tooling only). 0.1.84 brings deepagents==0.7.24, langchain-openai,
+# langchain-anthropic, fastmcp, and the LangGraph runtime as default deps —
+# no extras needed.
 #
-# Upgraded from 0.1.10 (deepagents 0.6.8) on 2026-07-26. Every ARGUS binding
-# was re-verified against 0.1.54/0.7.5: create_deep_agent still accepts
-# system_prompt/backend/model/tools; LocalShellBackend.execute is still
-# (command, *, timeout=None); backends.protocol.ExecuteResponse,
-# middleware.filesystem.execute_accepts_timeout, deepagents_code.config
-# .create_model, .model_config.ModelConfigError and .sessions
-# .generate_thread_id all unchanged. The one break was apply_sage_patch.py's
-# detect_provider anchor (upstream inserted a Fireworks branch); that anchor is
-# now pinned to the nvidia branch itself and fails the build if it ever rots.
+# Upgraded from 0.1.54 (deepagents 0.7.5) on 2026-10-13. All 15 ARGUS bindings
+# were re-probed inside the built image against 0.1.84/0.7.24 before the bump:
+# create_deep_agent still accepts system_prompt/backend/tools/middleware/
+# checkpointer/skills; LocalShellBackend.execute is still (command, *,
+# timeout=None); backends.protocol.ExecuteResponse, middleware.filesystem
+# .execute_accepts_timeout, deepagents_code.config.create_model and
+# .detect_provider, .model_config.ModelConfigError / PROVIDER_API_KEY_ENV /
+# clear_caches, and .sessions.generate_thread_id are all unchanged. The
+# RubricMiddleware bindings %%ask --review depends on survive too, including
+# after_agent.__can_jump_to__ == ["model"] — the attribute that builds the
+# conditional edge the revision loop travels.
+#
+# The one break was MCP. At 0.1.71 upstream swapped langchain-mcp-adapters for
+# fastmcp and moved to mcp>=2; langchain-mcp-adapters 0.3.2 (the latest, with
+# no newer release) pins mcp<2 and fails to import against mcp 2.x. There is no
+# version pair giving 0.7.24 and the old adapter, so %%mcp now calls
+# deepagents-code's own loader instead — see sage_magic.py's %%mcp magic.
 RUN pip install --no-cache-dir \
     "jupyterlab==4.2.4" "notebook==7.2.2" \
-    "deepagents-code==0.1.54" nest_asyncio folium geopandas matplotlib rasterio \
+    "deepagents-code==0.1.84" nest_asyncio folium geopandas matplotlib rasterio \
     ipywidgets ipyleaflet leafmap plotly pypdf openpyxl tomli-w tomlkit pyreadr
 
 # Install PDAL via conda before pyforestscan — pip cannot build pdal from source without

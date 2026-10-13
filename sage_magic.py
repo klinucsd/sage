@@ -697,7 +697,6 @@ _SAGE_INTERNAL_FILES = {
 # Tools are stored per-server so MERGE semantics can replace one server's
 # tools without touching others.
 _SAGE_MCP_TOOLS_BY_SERVER: dict = {}  # server name → list of BaseTool
-_SAGE_MCP_CLIENT = None
 _SAGE_MCP_SERVERS: dict = {}          # server name → normalized config
 
 
@@ -3730,7 +3729,7 @@ def _sage_interpolate_mcp_env(s):
 
 
 def _sage_normalize_mcp_config(raw):
-    """Normalize Claude Desktop / VS Code / Gemini MCP config to MultiServerMCPClient format.
+    """Normalize Claude Desktop / VS Code / Gemini MCP config to mcpServers format.
 
     Accepts:
       - {"mcpServers": {name: cfg}}    (Claude Desktop wrapper; optional)
@@ -5193,7 +5192,7 @@ try:
         """
         import html as _html
         from IPython.display import display, HTML
-        global _SAGE_MCP_TOOLS_BY_SERVER, _SAGE_MCP_SERVERS, _SAGE_MCP_CLIENT
+        global _SAGE_MCP_TOOLS_BY_SERVER, _SAGE_MCP_SERVERS
 
         def _esc(s):
             return _html.escape(str(s), quote=False)
@@ -5222,21 +5221,54 @@ try:
             display(HTML("<i style='color:#888'>No servers found in %%mcp body.</i>"))
             return
 
-        from langchain_mcp_adapters.client import MultiServerMCPClient
+        # deepagents-code's own loader, not langchain-mcp-adapters: upstream
+        # moved its MCP stack to fastmcp at deepagents-code 0.1.71 and now
+        # requires mcp>=2, while langchain-mcp-adapters (0.3.2, latest) pins
+        # mcp<2 and fails to import against it. This returns the same LangChain
+        # BaseTool objects create_deep_agent() already takes.
+        from deepagents_code.mcp_tools import resolve_and_load_mcp_tools
 
         loaded_tools_by_server: dict = {}  # server name → list of tools
         loaded_servers: dict = {}
         failures: list = []
 
+        # stateless=True keeps the previous semantics: a fresh session per tool
+        # call and no session manager to own, so nothing has to be kept alive
+        # between cells or torn down on %reset.
         _loop = asyncio.get_event_loop()
-        for name, server_cfg in servers.items():
-            try:
-                _client = MultiServerMCPClient({name: server_cfg})
-                _tools = _loop.run_until_complete(_client.get_tools())
-                loaded_tools_by_server[name] = _tools
-                loaded_servers[name] = server_cfg
-            except Exception as e:
+        try:
+            _mcp_tools, _mcp_mgr, _mcp_infos = _loop.run_until_complete(
+                resolve_and_load_mcp_tools(
+                    additional_configs=({"mcpServers": servers},),
+                    stateless=True,
+                )
+            )
+        except Exception as e:
+            _mcp_tools, _mcp_infos = [], []
+            for name in servers:
                 failures.append((name, str(e)))
+
+        # Keep only the servers THIS cell named. resolve_and_load_mcp_tools also
+        # merges MCP configs auto-discovered from standard locations, and a
+        # stray .mcp.json in someone's work directory must not quietly become
+        # agent tools on a shared JupyterHub. Tool names are server-prefixed
+        # (wenokn_compute_zonal_stats), so matching by name is unambiguous.
+        _info_by_name = {i.name: i for i in _mcp_infos}
+        for name, server_cfg in servers.items():
+            info = _info_by_name.get(name)
+            if info is None:
+                failures.append((name, "server did not load"))
+                continue
+            # Per-server failures come back as status on the info record rather
+            # than as exceptions -- one bad server never hides the others.
+            if str(info.status) != "ok":
+                failures.append((name, info.error or f"status: {info.status}"))
+                continue
+            _want = {t.name for t in info.tools}
+            loaded_tools_by_server[name] = [
+                t for t in _mcp_tools if t.name in _want
+            ]
+            loaded_servers[name] = server_cfg
 
         # MERGE this cell's loaded servers into the kernel-scoped registry.
         # Per-server replace: if a server name was already registered, the
@@ -5252,7 +5284,6 @@ try:
             _SAGE_MCP_TOOLS_BY_SERVER = {
                 **_SAGE_MCP_TOOLS_BY_SERVER, **loaded_tools_by_server
             }
-            _SAGE_MCP_CLIENT = MultiServerMCPClient(_SAGE_MCP_SERVERS)
 
         loaded_tool_count = sum(len(t) for t in loaded_tools_by_server.values())
         total_servers = len(_SAGE_MCP_SERVERS)
