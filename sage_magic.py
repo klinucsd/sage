@@ -513,6 +513,17 @@ if not isinstance(_sys.stderr, _AsyncioNoiseFilter):
 warnings.filterwarnings("ignore", message="coroutine '.*' was never awaited")
 warnings.filterwarnings("ignore", message="Enable tracemalloc")
 
+# fastmcp's proxy logs an INFO line on EVERY MCP tool call ("Proxy detected
+# connected client - reusing existing session for all requests"), which lands
+# in the cell output and buries the agent's own narration on an MCP-heavy
+# notebook. The condition it warns about is concurrent use of one session; an
+# ARGUS kernel runs a single agent at a time, so it does not apply here.
+#
+# Scoped to this one logger rather than the whole fastmcp namespace, and only
+# INFO is lifted — genuine warnings and errors from the proxy still surface.
+import logging as _logging
+_logging.getLogger("fastmcp.server.providers.proxy").setLevel(_logging.WARNING)
+
 del _sys
 
 
