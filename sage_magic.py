@@ -1425,7 +1425,13 @@ def _display_combined_map(
 
         # Background tile layers (first = default)
         folium.TileLayer("OpenStreetMap", name="Street Map").add_to(m)
-        folium.TileLayer("CartoDB.Positron", name="Light", show=False).add_to(m)
+        # Esri's light grey canvas, not CartoDB.Positron: Carto began requiring
+        # an API key, and unkeyed requests still return HTTP 200 — serving a
+        # tile stamped "API KEY REQUIRED" instead of map data. So the layer did
+        # not fail, it silently rendered a watermark, and folium only emitted a
+        # UserWarning. This is keyless and fills the same role (a neutral base
+        # under coloured data), from the provider the next two layers use.
+        folium.TileLayer("Esri.WorldGrayCanvas", name="Light", show=False).add_to(m)
         folium.TileLayer("Esri.WorldTopoMap", name="Topographic", show=False).add_to(m)
         folium.TileLayer("Esri.WorldImagery", name="Satellite", show=False).add_to(m)
 
