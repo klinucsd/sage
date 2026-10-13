@@ -3338,6 +3338,340 @@ except Exception:
 
 
 # ---------------------------------------------------------------------------
+# %model — read and change the configured LLM
+# ---------------------------------------------------------------------------
+# Choosing a model otherwise means editing ~/.deepagents/config.toml in a
+# terminal, which is a poor ask of a domain scientist who opened a notebook.
+#
+# These helpers UPDATE the file rather than regenerate it. That is not a
+# stylistic preference: the shipped [models.providers.nrp.params] carries
+# `stream_chunk_timeout = 1200.0` and `max_retries = 6`, which are the reason
+# NRP calls do not hang forever, and deepagents itself writes a `recent` key
+# into the same file. Rewriting from flags would silently discard both, and
+# the symptom -- NRP getting slower and flakier -- would point nowhere near
+# the cell that caused it.
+
+_MODEL_CONFIG_PATH = Path.home() / ".deepagents" / "config.toml"
+
+# Only used to rebuild the block if it has been lost AND no backup exists.
+_MODEL_SHIPPED_DEFAULT = "nrp:deepseek-v4-flash"
+_MODEL_SHIPPED_NRP = {
+    "class_path": "langchain_openai:ChatOpenAI",
+    "models": ["deepseek-v4-flash", "glm-5"],
+    "api_key_env": "NRP_API_KEY",
+    "base_url": "https://ellm.nrp-nautilus.io/v1",
+    "params": {"temperature": 0, "stream_chunk_timeout": 1200.0, "max_retries": 6},
+}
+
+
+def _model_tomlkit():
+    """tomlkit, or a clear error. It round-trips comments and layout; the
+    stdlib tomllib cannot write at all."""
+    try:
+        import tomlkit
+        return tomlkit
+    except ImportError:  # pragma: no cover
+        raise RuntimeError(
+            "%model needs the 'tomlkit' package to edit config.toml safely"
+        )
+
+
+def _model_load(path=None):
+    tomlkit = _model_tomlkit()
+    p = Path(path or _MODEL_CONFIG_PATH)
+    if not p.exists():
+        return tomlkit.document()
+    return tomlkit.parse(p.read_text())
+
+
+def _model_invalidate():
+    """Drop deepagents' cached view of config.toml.
+
+    `create_model()` does NOT re-read the file per call: model_config keeps a
+    module-level `_default_config_cache`, so a kernel that has already built a
+    model keeps serving the old one no matter what the file says. Verified in
+    the image -- write the file, call create_model again, still the previous
+    model. deepagents exposes clear_caches() for exactly this (it backs its own
+    /reload), so %model can take effect on the next cell instead of demanding
+    a kernel restart.
+    """
+    try:
+        from deepagents_code import model_config
+        model_config.clear_caches()
+    except Exception:
+        pass
+
+
+def _model_save(doc, path=None):
+    """Write the document back, taking a one-time backup the first time.
+
+    The backup is what lets `--default` restore the real NRP block (params and
+    all) rather than a reconstruction, if the file is ever hand-edited down.
+    """
+    tomlkit = _model_tomlkit()
+    p = Path(path or _MODEL_CONFIG_PATH)
+    backup = Path(str(p) + ".orig")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    if p.exists() and not backup.exists():
+        backup.write_text(p.read_text())
+    p.write_text(tomlkit.dumps(doc))
+    _model_invalidate()
+
+
+def _model_providers(doc):
+    return doc.get("models", {}).get("providers", {}) or {}
+
+
+def _model_ensure_providers(doc):
+    tomlkit = _model_tomlkit()
+    if "models" not in doc:
+        doc["models"] = tomlkit.table()
+    if "providers" not in doc["models"]:
+        doc["models"]["providers"] = tomlkit.table(is_super_table=True)
+    return doc["models"]["providers"]
+
+
+def _model_detect(model_name):
+    """Ask deepagents which provider a bare model name resolves to, and which
+    env var that provider takes.
+
+    A bare `default = "gpt-5.6"` has no provider block to read, so without this
+    the display would show a model and nothing else -- no endpoint, no
+    credential, no way to see that OPENAI_API_KEY is what will be wanted.
+    Mirrors the resolution `create_model()` will actually perform rather than
+    keeping a second table here to drift out of step.
+    """
+    try:
+        from deepagents_code.config import detect_provider
+        from deepagents_code.model_config import PROVIDER_API_KEY_ENV
+    except Exception:
+        return (None, None)
+    try:
+        provider = detect_provider(model_name)
+    except Exception:
+        return (None, None)
+    return (provider, PROVIDER_API_KEY_ENV.get(provider) if provider else None)
+
+
+def _model_key_env_for(provider):
+    """The env var a built-in provider takes, for providers that need no block.
+
+    `openai:gpt-5.6` is fully resolvable with no [models.providers.openai]
+    section, so the file has no api_key_env to read -- but the credential check
+    is the most useful thing %model reports, so get it from deepagents' table.
+    """
+    if not provider:
+        return None
+    try:
+        from deepagents_code.model_config import PROVIDER_API_KEY_ENV
+    except Exception:
+        return None
+    return PROVIDER_API_KEY_ENV.get(provider)
+
+
+def _model_current(path=None):
+    """What is configured now, plus the one thing the file cannot say:
+    whether the credential it names is actually set in THIS kernel."""
+    doc = _model_load(path)
+    models = doc.get("models", {}) or {}
+    spec = str(models.get("default") or "")
+    detected = False
+    if ":" in spec:
+        provider = spec.split(":", 1)[0]
+    else:
+        # No provider block to read -- resolve it the way deepagents will.
+        provider, _ = _model_detect(spec) if spec else (None, None)
+        detected = bool(provider)
+    block = dict(_model_providers(doc).get(provider, {})) if provider else {}
+    api_key_env = block.get("api_key_env") or _model_key_env_for(provider)
+    return {
+        "spec": spec or "(not set)",
+        "provider": provider,
+        "provider_detected": detected,
+        "base_url": block.get("base_url"),
+        "api_key_env": api_key_env,
+        "key_present": bool(os.environ.get(api_key_env)) if api_key_env else None,
+        "known_providers": sorted(_model_providers(doc).keys()),
+        "path": str(Path(path or _MODEL_CONFIG_PATH)),
+    }
+
+
+def _model_set_default(spec, path=None):
+    tomlkit = _model_tomlkit()
+    doc = _model_load(path)
+    if "models" not in doc:
+        doc["models"] = tomlkit.table()
+    doc["models"]["default"] = spec
+    _model_save(doc, path)
+
+
+def _model_upsert_provider(provider, url=None, api_key_env=None, model=None,
+                           path=None):
+    """Add or update ONE provider block. Every other block, and this block's
+    existing params, are left as they are."""
+    tomlkit = _model_tomlkit()
+    doc = _model_load(path)
+    providers = _model_ensure_providers(doc)
+    if provider not in providers:
+        blk = tomlkit.table()
+        blk["class_path"] = "langchain_openai:ChatOpenAI"
+        providers[provider] = blk
+    blk = providers[provider]
+    if url:
+        blk["base_url"] = url
+    if api_key_env:
+        blk["api_key_env"] = api_key_env
+    if model:
+        listed = [str(m) for m in (blk.get("models", []) or [])]
+        if model not in listed:
+            listed.append(model)
+        blk["models"] = listed
+    _model_save(doc, path)
+
+
+def _model_restore_default(path=None):
+    """Back to the shipped NRP default.
+
+    Usually a one-key change, because provider blocks are never overwritten.
+    If the nrp block has gone missing, prefer the backup over the constants --
+    the backup is what the image actually shipped.
+    """
+    tomlkit = _model_tomlkit()
+    doc = _model_load(path)
+    source = "default key only"
+    if "nrp" not in _model_providers(doc):
+        backup = Path(str(Path(path or _MODEL_CONFIG_PATH)) + ".orig")
+        recovered = False
+        if backup.exists():
+            try:
+                bdoc = tomlkit.parse(backup.read_text())
+                if "nrp" in _model_providers(bdoc):
+                    _model_ensure_providers(doc)["nrp"] = _model_providers(bdoc)["nrp"]
+                    source, recovered = "restored nrp block from backup", True
+            except Exception:
+                pass
+        if not recovered:
+            blk = tomlkit.table()
+            for k in ("class_path", "models", "api_key_env", "base_url"):
+                blk[k] = _MODEL_SHIPPED_NRP[k]
+            params = tomlkit.table()
+            for k, v in _MODEL_SHIPPED_NRP["params"].items():
+                params[k] = v
+            blk["params"] = params
+            _model_ensure_providers(doc)["nrp"] = blk
+            source = "rebuilt nrp block from shipped values"
+    if "models" not in doc:
+        doc["models"] = tomlkit.table()
+    doc["models"]["default"] = _MODEL_SHIPPED_DEFAULT
+    _model_save(doc, path)
+    return source
+
+
+_MODEL_USAGE = (
+    "%model                                   show the current configuration\n"
+    "%model --default                         back to the shipped NRP default\n"
+    "%model --name <spec> [--url <url>] [--api-key-env <VAR>] [--provider <p>]"
+)
+
+
+def _model_parse_args(line):
+    """Parse the flags. Returns (action, kwargs). Raises ValueError with a
+    message meant to be read by someone who is not a programmer."""
+    import shlex
+    toks = shlex.split(line or "")
+    if not toks:
+        return ("show", {})
+    if toks == ["--default"]:
+        return ("default", {})
+
+    known = {"--name", "--url", "--api-key-env", "--provider"}
+    out = {}
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t not in known:
+            raise ValueError(f"unrecognized option {t!r}.\n{_MODEL_USAGE}")
+        if i + 1 >= len(toks):
+            raise ValueError(f"{t} needs a value.\n{_MODEL_USAGE}")
+        out[t.lstrip("-").replace("-", "_")] = toks[i + 1]
+        i += 2
+
+    if "name" not in out:
+        raise ValueError(f"--name is required when setting a model.\n{_MODEL_USAGE}")
+
+    name = out["name"]
+    provider = out.get("provider")
+    model = name
+    explicit = bool(provider)
+    if ":" in name:
+        prefix, model = name.split(":", 1)
+        provider = provider or prefix
+        explicit = True
+    if (out.get("url") or out.get("api_key_env")) and not provider:
+        # A block is needed to hold the url or the env var, so it needs a name.
+        # Derive it from the model's leading word -- glm-5.3 -> glm, gpt-5.6 ->
+        # gpt -- NOT from deepagents' detect_provider(): that maps glm-5.3 to
+        # `nrp`, so a z.ai url would be written straight into the NRP block and
+        # break it. A fresh name cannot collide with a tuned block by accident.
+        import re as _re
+        m = _re.match(r"[A-Za-z]+", model)
+        provider = (m.group(0).lower() if m else "custom")
+    spec = f"{provider}:{model}" if provider else model
+    return ("set", {"spec": spec, "provider": provider, "model": model,
+                    "provider_explicit": explicit,
+                    "url": out.get("url"), "api_key_env": out.get("api_key_env")})
+
+
+def _model_render(info, note=None):
+    """Show the resolved configuration, and flag a missing credential.
+
+    Every value is escaped: these come from a config file the user edits, and
+    the usage text carries <spec>-style placeholders that a browser would
+    otherwise swallow as unknown tags.
+    """
+    from html import escape
+    from IPython.display import display, HTML
+    rows = [("model", f'<code>{escape(info["spec"])}</code>')]
+    if info["provider"]:
+        suffix = ('  <span style="color:#888">(resolved from the model name)'
+                  '</span>' if info.get("provider_detected") else "")
+        rows.append(("provider",
+                     f'<code>{escape(info["provider"])}</code>{suffix}'))
+    if info["base_url"]:
+        rows.append(("endpoint", f'<code>{escape(info["base_url"])}</code>'))
+    if info["api_key_env"]:
+        env = escape(info["api_key_env"])
+        if info["key_present"]:
+            state = f'<code>{env}</code> <span style="color:#4caf50">is set</span>'
+        else:
+            state = (f'<code>{env}</code> <span style="color:#d32f2f">'
+                     f'is NOT set in this kernel</span>')
+        rows.append(("api key", state))
+    if info["known_providers"]:
+        rows.append(("configured",
+                     f'<code>{escape(", ".join(info["known_providers"]))}</code>'))
+    rows.append(("config file", f'<code>{escape(info["path"])}</code>'))
+
+    body = "".join(
+        f'<tr><td style="padding:1px 10px 1px 0; color:#888; '
+        f'vertical-align:top">{k}</td><td style="padding:1px 0">{v}</td></tr>'
+        for k, v in rows
+    )
+    head = (f'<div style="margin-bottom:3px">{escape(note)}</div>'
+            if note else "")
+    display(HTML(
+        f'<div style="font-size:0.9em; line-height:1.45">{head}'
+        f'<table style="border-collapse:collapse">{body}</table></div>'
+    ))
+    if info["api_key_env"] and not info["key_present"]:
+        display(HTML(
+            f'<div style="font-size:0.85em; color:#d32f2f; margin-top:4px">'
+            f'Set <code>{escape(info["api_key_env"])}</code> in this kernel\'s '
+            f'environment before the next <code>%%ask</code>, or the run will '
+            f'fail on credentials.</div>'
+        ))
+
+# ---------------------------------------------------------------------------
 # MCP config helpers (used by %%mcp magic)
 # ---------------------------------------------------------------------------
 
@@ -4366,6 +4700,99 @@ try:
         from IPython.display import display, HTML
         display(HTML('<div style="color:#888; font-size:0.9em;">Tool output display: <b>off</b></div>'))
     del tool_output_off
+
+    @register_line_magic
+    def model(line):
+        """Show or change the LLM this notebook talks to.
+
+        Usage:
+            %model
+                Show the configured model, its endpoint, and whether its API
+                key is present in this kernel.
+
+            %model --default
+                Back to the image default, nrp:deepseek-v4-flash.
+
+            %model --name openai:gpt-5.5 --api-key-env OPENAI_API_KEY
+            %model --name zai:glm-5 --url https://api.z.ai/api/coding/paas/v4 \
+                   --api-key-env ZAI_API_KEY
+                Point at a model. Write it as provider:model; the provider
+                names a block in config.toml and is yours to choose.
+
+        The setting lives in ~/.deepagents/config.toml, so it outlives the
+        kernel and is shared by every notebook on this pod -- run %model to
+        see what is active before assuming. It takes effect on the next
+        %%ask; no restart is needed, because the model is built per cell.
+        """
+        from html import escape
+        from IPython.display import display, HTML
+        # Also on a read: the file may have been hand-edited since this kernel
+        # built its model, and a report that does not match what the next
+        # %%ask will use is worse than no report.
+        _model_invalidate()
+        try:
+            action, kw = _model_parse_args(line)
+        except ValueError as e:
+            display(HTML(
+                '<pre style="color:#d32f2f; font-size:0.85em; '
+                'white-space:pre-wrap; margin:0">%s</pre>' % escape(str(e))
+            ))
+            return
+
+        try:
+            if action == "show":
+                _model_render(_model_current())
+                return
+            if action == "default":
+                how = _model_restore_default()
+                _model_render(_model_current(), note=f"Restored the default ({how}).")
+                return
+            note = "Model set."
+            if kw["provider"] and (kw["url"] or kw["api_key_env"]):
+                # Guard the derived case only: naming a block explicitly means
+                # you meant to change it, but a name we invented must not land
+                # on top of someone else's endpoint.
+                if not kw["provider_explicit"] and kw["url"]:
+                    existing = _model_providers(_model_load()).get(kw["provider"])
+                    if existing and existing.get("base_url") not in (None, kw["url"]):
+                        display(HTML(
+                            '<div style="color:#d32f2f; font-size:0.85em">'
+                            'There is already a provider called <code>%s</code>'
+                            ' pointing at <code>%s</code>. Pass '
+                            '<code>--provider &lt;name&gt;</code> to choose a '
+                            'different name, or use that one deliberately.'
+                            '</div>' % (escape(kw["provider"]),
+                                        escape(str(existing.get("base_url"))))
+                        ))
+                        return
+                _model_upsert_provider(
+                    kw["provider"], url=kw["url"],
+                    api_key_env=kw["api_key_env"], model=kw["model"],
+                )
+                if not kw["provider_explicit"]:
+                    note = (f'Model set. Named the provider '
+                            f'"{kw["provider"]}" -- pass --provider to choose '
+                            f'another name.')
+            spec = kw["spec"]
+            if not kw["provider"]:
+                # A bare name is resolved at run time by prefix-matching the
+                # providers' model lists, which is invisible in the file and
+                # can surprise: "glm-5" listed under nrp captures glm-5.3 and
+                # even glm-9. Write what it resolves to, so the file says which
+                # provider it means and the choice cannot drift later.
+                detected, _ = _model_detect(kw["model"])
+                if detected:
+                    spec = f'{detected}:{kw["model"]}'
+                    note = f'Model set, resolved to {spec}.'
+            _model_set_default(spec)
+            _model_render(_model_current(), note=note)
+        except Exception as e:
+            display(HTML(
+                '<div style="color:#d32f2f; font-size:0.85em">'
+                'Could not update the configuration: %s: %s</div>'
+                % (type(e).__name__, e)
+            ))
+    del model  # keep IPython namespace clean
 
     @register_line_magic
     def reset(line):
