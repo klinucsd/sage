@@ -199,13 +199,14 @@ if _llm_config:
     """).strip()
 
     _appended_params = []
+    _chatopenai_providers = []
     for _provider_name, _provider in (
         _parsed.get("models", {}).get("providers", {}).items()
     ):
-        if (
-            _provider.get("class_path") == "langchain_openai:ChatOpenAI"
-            and "params" not in _provider
-        ):
+        if _provider.get("class_path") != "langchain_openai:ChatOpenAI":
+            continue
+        _chatopenai_providers.append(_provider_name)
+        if "params" not in _provider:
             _appended_params.append(
                 f"\n\n[models.providers.{_provider_name}.params]\n"
                 f"{_default_chatopenai_params}"
@@ -216,9 +217,18 @@ if _llm_config:
     # and builds the model with max_retries=0, leaving the budget to a
     # middleware that ARGUS installs itself (see sage_magic.py). Only added
     # when the user has not set one.
-    _appended_retries = (
-        "" if "retries" in _parsed else "\n\n[retries]\nmax_retries = 6\n"
-    )
+    #
+    # The per-provider `param` entries name the constructor kwarg that turns
+    # off each SDK's own retry loop. A custom class_path provider is unknown
+    # to deepagents-code, so without this it leaves the OpenAI client at its
+    # default of 2 retries nested inside the 6 above — ~18 attempts against
+    # an endpoint being retried because it is already flaky.
+    if "retries" in _parsed:
+        _appended_retries = ""
+    else:
+        _appended_retries = "\n\n[retries]\nmax_retries = 6\n"
+        for _name in _chatopenai_providers:
+            _appended_retries += f'\n[retries.{_name}]\nparam = "max_retries"\n'
 
     _config_content = (
         _user_toml + "".join(_appended_params) + _appended_retries + "\n"

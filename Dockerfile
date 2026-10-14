@@ -124,6 +124,15 @@ RUN mkdir -p /home/jovyan/.deepagents/agent/skills && \
 # that middleware itself (see sage_magic.py), and it reads the budget from
 # this key.
 #
+# `[retries.nrp] param` is what stops the two retry loops multiplying. `nrp`
+# is a custom `class_path` provider, so deepagents-code does not know which
+# constructor kwarg disables its SDK retry loop and leaves it alone — the
+# OpenAI client then keeps its own default of 2 INSIDE each of the 6 above,
+# ~18 attempts against an endpoint we are retrying precisely because it is
+# flaky. Naming the kwarg lets dcode send the disable value, so the SDK loop
+# goes to 0 and the budget is the middleware's alone. Verified in-image:
+# ChatOpenAI.max_retries == 0, underlying openai client == 0, budget == 6.
+#
 # `mcp.tool_timeout` does NOT bound %%ask's MCP calls — it is set here only
 # for the deepagents-code CLI, should anyone run it inside this image.
 #
@@ -159,7 +168,7 @@ tomli_w.dump({ \
         } \
     }, \
     'mcp': {'tool_timeout': 900.0}, \
-    'retries': {'max_retries': 6}, \
+    'retries': {'max_retries': 6, 'nrp': {'param': 'max_retries'}}, \
 }, open(p, 'wb')); \
 print('Written', p)"
 
