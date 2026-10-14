@@ -1434,7 +1434,16 @@ def _display_combined_map(
         m = folium.Map(location=center, zoom_start=4, tiles=None)
 
         # Background tile layers (first = default)
-        folium.TileLayer("OpenStreetMap", name="Street Map").add_to(m)
+        #
+        # Esri's street map, not OpenStreetMap: OSM's tile servers refuse
+        # embedded third-party apps under their tile usage policy, returning
+        # a tile that reads "Access blocked. App is not following the tile
+        # usage policy" in place of map data. It is the default layer, so the
+        # whole map came up blocked. The URL and the emitted Leaflet options
+        # were both correct — this is the provider refusing the browser, not
+        # something ARGUS can fix by asking differently, and a notebook shared
+        # with colleagues would hit it on every machine.
+        folium.TileLayer("Esri.WorldStreetMap", name="Street Map").add_to(m)
         # Esri's light grey canvas, not CartoDB.Positron: Carto began requiring
         # an API key, and unkeyed requests still return HTTP 200 — serving a
         # tile stamped "API KEY REQUIRED" instead of map data. So the layer did
