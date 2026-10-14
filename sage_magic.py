@@ -2132,6 +2132,15 @@ async def _run_agent_async(
                     # here puts the delivery instruction in the writer's own
                     # message, in the final position.
                     #
+                    # The instruction's own wording matters as much as its
+                    # position. A first draft said "reply with the COMPLETE
+                    # corrected report"; the next revision opened "Here is the
+                    # complete corrected report." — naming the artifact hands
+                    # the model a noun phrase to announce. It is now phrased
+                    # as a constraint on the first characters of the reply
+                    # (start with the title heading, nothing before it), which
+                    # leaves nothing to introduce.
+                    #
                     # Not a hook, so unlike `after_agent` this override needs
                     # no `__can_jump_to__` fix-up; the parent reaches it
                     # through `self`, so the subclass version is the one used.
@@ -2726,16 +2735,20 @@ _SAGE_GRADER_SYSTEM_PROMPT = (
 
 
 _SAGE_REVISION_DELIVERY = (
-    "Deliver the revision as the report itself. Reply with the COMPLETE "
-    "corrected report, exactly as the reader should see it — title, method, "
-    "findings and all — and nothing else.\n"
+    "Your entire reply is the report itself — complete, exactly as the reader "
+    "should see it: title, method, findings and all, with every correction "
+    "already folded in.\n"
     "\n"
     "The reader never saw the feedback above and must not learn that it "
-    "exists. Do not mention the review, the grader, the criteria, or that "
-    "anything was changed, and do not open with a note about what you "
-    "corrected. In particular, never restate a figure you are removing in "
-    "order to explain why it is gone — repeating it in a preamble leaves it "
-    "on the page, which is the opposite of the correction."
+    "exists. Do not mention the review, the grader or the criteria, and never "
+    "restate a figure you are removing in order to explain why it is gone — "
+    "repeating it in a preamble leaves it on the page, which is the opposite "
+    "of the correction.\n"
+    "\n"
+    "Start your reply with the report's own first line, its title heading. "
+    "Nothing may come before it: no preamble, no sentence introducing what "
+    "follows, no note about what you verified, corrected or confirmed. The "
+    "first characters you write are the heading."
 )
 
 
