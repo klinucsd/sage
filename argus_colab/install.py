@@ -359,6 +359,22 @@ if "/content" not in sys.path:
     sys.path.insert(0, "/content")
 print(f"  ✓ Downloaded sage_magic.py + sage_kernel_backend.py from {_ARGUS_REF}")
 
+# The deployment-level review criteria, which the Docker image installs with
+# its own `cp` step. Without this file `_load_review_rules()` finds nothing
+# and `%%ask --review` silently grades against the 3 base criteria instead of
+# 7 -- silently because a 3-criterion review looks like a working review. The
+# four extra criteria are the ones shared with ARGUS-FEDER and WEN-OKN, so a
+# Colab reviewed answer did not mean what a JupyterHub one meant.
+_rules_path = pathlib.Path("~/.deepagents/review_rules.md").expanduser()
+_rules_path.parent.mkdir(parents=True, exist_ok=True)
+try:
+    urllib.request.urlretrieve(f"{_ARGUS_BASE}/review_rules.md", _rules_path)
+    print(f"  ✓ Installed review_rules.md ({_rules_path})")
+except Exception as _rules_err:
+    # Not fatal: --review still runs on the 3 base criteria.
+    print(f"  · Could not fetch review_rules.md ({_rules_err}); "
+          f"%%ask --review will use the 3 base criteria")
+
 # ---------------------------------------------------------------------------
 # Step 4b: Install core skills into ~/.deepagents/agent/skills/
 # ---------------------------------------------------------------------------
