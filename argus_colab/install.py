@@ -307,13 +307,19 @@ except ImportError:
             sys.executable, "-m", "pip", "install", "-q",
             # Keep this pin in lockstep with sage/Dockerfile. Colab and the
             # JupyterHub image running different deepagents versions is how a
-            # bug becomes reproducible on only one surface.
-            "deepagents-code==0.1.54",
-            "langchain-mcp-adapters",
+            # bug becomes reproducible on only one surface — and this file
+            # downloads sage_magic.py from main, so a stale pin here does not
+            # merely diverge, it runs new code against an old library.
+            "deepagents-code==0.1.84",
+            # NOT langchain-mcp-adapters. deepagents-code moved %%mcp onto
+            # fastmcp at 0.1.71 and needs mcp>=2; the adapter's latest release
+            # pins mcp<2, so installing it here would drag mcp back down and
+            # break fastmcp. %%mcp now loads through deepagents-code's own
+            # loader, which needs nothing extra.
             "nest_asyncio",
             "folium", "geopandas", "ipyleaflet", "ipywidgets",
             "matplotlib", "rasterio", "leafmap", "plotly",
-            "pypdf", "openpyxl", "tomli-w",
+            "pypdf", "openpyxl", "tomli-w", "tomlkit",
         ],
     )
     print("  ✓ ARGUS dependencies installed")
