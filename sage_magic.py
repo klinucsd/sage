@@ -2112,6 +2112,35 @@ async def _run_agent_async(
                         _display_review_start(state.get("_rubric_iterations", 0) or 0)
                     return await super().aafter_agent(state, runtime)
 
+                @staticmethod
+                def _revision_prompt(evaluation) -> str:  # noqa: ANN001
+                    # Tell the writer directly how the revision is to be
+                    # delivered.
+                    #
+                    # _SAGE_GRADER_SYSTEM_PROMPT already asks the grader to end
+                    # its explanation with this instruction, but that route is
+                    # second-hand: it arrives only if the grader chooses to
+                    # relay it, and it lands mid-message inside "Grader
+                    # feedback:" rather than last. The parent's own closing
+                    # line — "respond when you believe the rubric is
+                    # satisfied" — is what the writer reads last, and it reads
+                    # as an invitation to report back. Observed on a schools
+                    # answer: the revision opened "The grader's two points are
+                    # clear: …" and, in explaining them, reprinted the very
+                    # fabricated per-fire figures the criterion had just
+                    # ordered removed, leaving them on the page. Appending
+                    # here puts the delivery instruction in the writer's own
+                    # message, in the final position.
+                    #
+                    # Not a hook, so unlike `after_agent` this override needs
+                    # no `__can_jump_to__` fix-up; the parent reaches it
+                    # through `self`, so the subclass version is the one used.
+                    return (
+                        RubricMiddleware._revision_prompt(evaluation)
+                        + "\n\n"
+                        + _SAGE_REVISION_DELIVERY
+                    )
+
             # Carry the parent's jump metadata onto the overrides.
             #
             # This is load-bearing, not cosmetic. LangGraph decides whether a
@@ -2693,6 +2722,20 @@ _SAGE_GRADER_SYSTEM_PROMPT = (
     "feedback, the review, the criteria, or that anything was changed. The "
     "reader asked a question and is owed an answer, not an account of how it "
     "was produced."
+)
+
+
+_SAGE_REVISION_DELIVERY = (
+    "Deliver the revision as the report itself. Reply with the COMPLETE "
+    "corrected report, exactly as the reader should see it — title, method, "
+    "findings and all — and nothing else.\n"
+    "\n"
+    "The reader never saw the feedback above and must not learn that it "
+    "exists. Do not mention the review, the grader, the criteria, or that "
+    "anything was changed, and do not open with a note about what you "
+    "corrected. In particular, never restate a figure you are removing in "
+    "order to explain why it is gone — repeating it in a preamble leaves it "
+    "on the page, which is the opposite of the correction."
 )
 
 
