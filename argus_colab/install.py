@@ -32,10 +32,12 @@ is just the easy entry point.
 
 What the installer adds to your config automatically:
   - For every langchain_openai:ChatOpenAI provider WITHOUT a [params] block,
-    we append sensible defaults: temperature=0, stream_chunk_timeout=1200,
-    max_retries=6. These work better for agentic flows than ChatOpenAI's
-    defaults. If you specify your own [models.providers.<name>.params]
-    block, your values win — we don't override.
+    we append sensible defaults: temperature=0, stream_chunk_timeout=1200.
+    These work better for agentic flows than ChatOpenAI's defaults. If you
+    specify your own [models.providers.<name>.params] block, your values win
+    — we don't override.
+  - A [retries] block with max_retries=6, unless you already have one. The
+    retry budget moved out of the provider params in deepagents-code 0.1.84.
 """
 
 import json
@@ -194,7 +196,6 @@ if _llm_config:
     _default_chatopenai_params = textwrap.dedent("""
         temperature = 0
         stream_chunk_timeout = 1200.0
-        max_retries = 6
     """).strip()
 
     _appended_params = []
@@ -210,7 +211,18 @@ if _llm_config:
                 f"{_default_chatopenai_params}"
             )
 
-    _config_content = _user_toml + "".join(_appended_params) + "\n"
+    # The retry budget lives under [retries], not in a provider's params.
+    # deepagents-code 0.1.84 strips params.max_retries at model construction
+    # and builds the model with max_retries=0, leaving the budget to a
+    # middleware that ARGUS installs itself (see sage_magic.py). Only added
+    # when the user has not set one.
+    _appended_retries = (
+        "" if "retries" in _parsed else "\n\n[retries]\nmax_retries = 6\n"
+    )
+
+    _config_content = (
+        _user_toml + "".join(_appended_params) + _appended_retries + "\n"
+    )
     _config_path.write_text(_config_content)
     if _appended_params:
         print(

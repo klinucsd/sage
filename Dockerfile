@@ -117,6 +117,13 @@ RUN mkdir -p /home/jovyan/.deepagents/agent/skills && \
 
 # Write NRP provider config to jovyan's config.toml
 #
+# `max_retries` belongs under `[retries]`, NOT in the provider's `params`.
+# deepagents-code 0.1.84 moved the retry budget from the provider SDK to a
+# middleware: a `params.max_retries` is now stripped at model construction
+# with a warning, and the model is built with `max_retries=0`. ARGUS installs
+# that middleware itself (see sage_magic.py), and it reads the budget from
+# this key.
+#
 # `mcp.tool_timeout` does NOT bound %%ask's MCP calls — it is set here only
 # for the deepagents-code CLI, should anyone run it inside this image.
 #
@@ -147,11 +154,12 @@ tomli_w.dump({ \
                 'models': ['deepseek-v4-flash', 'glm-5'], \
                 'api_key_env': 'NRP_API_KEY', \
                 'base_url': 'https://ellm.nrp-nautilus.io/v1', \
-                'params': {'temperature': 0, 'stream_chunk_timeout': 1200.0, 'max_retries': 6}, \
+                'params': {'temperature': 0, 'stream_chunk_timeout': 1200.0}, \
             } \
         } \
     }, \
     'mcp': {'tool_timeout': 900.0}, \
+    'retries': {'max_retries': 6}, \
 }, open(p, 'wb')); \
 print('Written', p)"
 

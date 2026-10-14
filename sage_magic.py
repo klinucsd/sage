@@ -1987,6 +1987,32 @@ async def _run_agent_async(
     }
     if system_prompt:
         create_kwargs["system_prompt"] = system_prompt
+
+    # Restore the model retry budget.
+    #
+    # deepagents-code 0.1.84 took retries away from the provider SDK and gave
+    # them to a middleware: `create_model` now constructs the chat model with
+    # `max_retries=0` and logs "Ignoring max_retries=N ... dcode's model-node
+    # middleware owns the retry budget". That middleware is installed by
+    # deepagents-code's OWN agent factory, which ARGUS does not use — it builds
+    # with `create_deep_agent`. So the SDK loop was disabled and nothing
+    # replaced it, leaving ARGUS on ZERO retries against an endpoint that
+    # flakes (the whole reason v1.2.12 set 6 in the first place). Verified on
+    # the v1.5.6 image: `create_model(...).model.max_retries == 0` and the
+    # agent graph carried no retry node.
+    #
+    # Install the middleware ARGUS was assumed to have. `model_retries` comes
+    # off the ModelResult, so it honours `[retries] max_retries` in
+    # config.toml and the per-provider `[retries.<provider>]` override.
+    try:
+        from deepagents_code.model_retry import CodeModelRetryMiddleware
+
+        create_kwargs.setdefault("middleware", []).append(
+            CodeModelRetryMiddleware(max_retries=result.model_retries)
+        )
+    except Exception as _retry_err:  # never let this break a cell
+        print(f"[model retries unavailable: {type(_retry_err).__name__}: {_retry_err}]")
+
     # Merge in any MCP tools registered via %%mcp earlier in this kernel
     # session. Adds to (does not replace) the built-in skill toolset.
     _mcp_tools = _sage_mcp_all_tools()
@@ -3420,7 +3446,7 @@ except Exception:
 #
 # These helpers UPDATE the file rather than regenerate it. That is not a
 # stylistic preference: the shipped [models.providers.nrp.params] carries
-# `stream_chunk_timeout = 1200.0` and `max_retries = 6`, which are the reason
+# `stream_chunk_timeout = 1200.0`, which is one reason
 # NRP calls do not hang forever, and deepagents itself writes a `recent` key
 # into the same file. Rewriting from flags would silently discard both, and
 # the symptom -- NRP getting slower and flakier -- would point nowhere near
@@ -3435,7 +3461,7 @@ _MODEL_SHIPPED_NRP = {
     "models": ["deepseek-v4-flash", "glm-5"],
     "api_key_env": "NRP_API_KEY",
     "base_url": "https://ellm.nrp-nautilus.io/v1",
-    "params": {"temperature": 0, "stream_chunk_timeout": 1200.0, "max_retries": 6},
+    "params": {"temperature": 0, "stream_chunk_timeout": 1200.0},
 }
 
 
