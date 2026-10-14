@@ -54,23 +54,31 @@ RUN apt-get update && apt-get install -y \
 #
 # deepagents-code is the interactive coding agent package (renamed from
 # deepagents-cli starting at 0.2.x; the legacy deepagents-cli 0.2.x is now
-# deployment tooling only). 0.1.54 brings deepagents==0.7.5, langchain-openai,
-# langchain-anthropic, langchain-mcp-adapters, and the LangGraph runtime as
-# default deps — no extras needed.
+# deployment tooling only). 0.1.84 brings deepagents==0.7.24, langchain-openai,
+# langchain-anthropic, fastmcp, and the LangGraph runtime as default deps —
+# no extras needed.
 #
-# Upgraded from 0.1.10 (deepagents 0.6.8) on 2026-07-26. Every ARGUS binding
-# was re-verified against 0.1.54/0.7.5: create_deep_agent still accepts
-# system_prompt/backend/model/tools; LocalShellBackend.execute is still
-# (command, *, timeout=None); backends.protocol.ExecuteResponse,
-# middleware.filesystem.execute_accepts_timeout, deepagents_code.config
-# .create_model, .model_config.ModelConfigError and .sessions
-# .generate_thread_id all unchanged. The one break was apply_sage_patch.py's
-# detect_provider anchor (upstream inserted a Fireworks branch); that anchor is
-# now pinned to the nvidia branch itself and fails the build if it ever rots.
+# Upgraded from 0.1.54 (deepagents 0.7.5) on 2026-10-13. All 15 ARGUS bindings
+# were re-probed inside the built image against 0.1.84/0.7.24 before the bump:
+# create_deep_agent still accepts system_prompt/backend/tools/middleware/
+# checkpointer/skills; LocalShellBackend.execute is still (command, *,
+# timeout=None); backends.protocol.ExecuteResponse, middleware.filesystem
+# .execute_accepts_timeout, deepagents_code.config.create_model and
+# .detect_provider, .model_config.ModelConfigError / PROVIDER_API_KEY_ENV /
+# clear_caches, and .sessions.generate_thread_id are all unchanged. The
+# RubricMiddleware bindings %%ask --review depends on survive too, including
+# after_agent.__can_jump_to__ == ["model"] — the attribute that builds the
+# conditional edge the revision loop travels.
+#
+# The one break was MCP. At 0.1.71 upstream swapped langchain-mcp-adapters for
+# fastmcp and moved to mcp>=2; langchain-mcp-adapters 0.3.2 (the latest, with
+# no newer release) pins mcp<2 and fails to import against mcp 2.x. There is no
+# version pair giving 0.7.24 and the old adapter, so %%mcp now calls
+# deepagents-code's own loader instead — see sage_magic.py's %%mcp magic.
 RUN pip install --no-cache-dir \
     "jupyterlab==4.2.4" "notebook==7.2.2" \
-    "deepagents-code==0.1.54" nest_asyncio folium geopandas matplotlib rasterio \
-    ipywidgets ipyleaflet leafmap plotly pypdf openpyxl tomli-w pyreadr
+    "deepagents-code==0.1.84" nest_asyncio folium geopandas matplotlib rasterio \
+    ipywidgets ipyleaflet leafmap plotly pypdf openpyxl tomli-w tomlkit pyreadr
 
 # Install PDAL via conda before pyforestscan — pip cannot build pdal from source without
 # the system PDAL library, and pyforestscan pulls it in as a dependency.
@@ -94,6 +102,7 @@ COPY sage_kernel_backend.py /tmp/build/
 COPY jupyter_server_config.py /tmp/build/
 COPY jupyter_config.py /tmp/build/
 COPY jupyterlab_overrides.json /tmp/build/
+COPY review_rules.md /tmp/build/
 
 # -----------------------------------------------------------------------------
 # Step 3: Apply Sage Patches to config.py
@@ -107,6 +116,24 @@ RUN mkdir -p /home/jovyan/.deepagents/agent/skills && \
     cp -r /tmp/build/skills/* /home/jovyan/.deepagents/agent/skills/
 
 # Write NRP provider config to jovyan's config.toml
+#
+# `mcp.tool_timeout` does NOT bound %%ask's MCP calls — it is set here only
+# for the deepagents-code CLI, should anyone run it inside this image.
+#
+# The option is read by `mcp_tool_middleware`, which deepagents-code installs
+# in its own agent factory. ARGUS builds its agent with `create_deep_agent`
+# and attaches MCP tools itself, so that middleware is never in the graph;
+# deleting this block entirely changes nothing for a notebook (verified — a
+# 150 s call still completed, where the 120 s default would have cut it).
+# 900 is MCP_TOOL_TIMEOUT_CEILING, the maximum deepagents accepts: the safest
+# value to leave here in case ARGUS ever does route through that factory.
+#
+# What actually reaches the wire is fastmcp's httpx default,
+# Timeout(connect=30, read=300), where `read` is a between-bytes timeout
+# rather than a wall-clock budget. Long calls are therefore NOT capped —
+# 330 s and 1000 s tool calls both returned clean on deepagents 0.7.24. The
+# 5-minute cut v1.5.2 worked around was the same 300 acting as a hard total
+# cap under langchain-mcp-adapters; fastmcp does not treat it that way.
 RUN python -c "\
 import tomli_w; \
 from pathlib import Path; \
@@ -123,9 +150,18 @@ tomli_w.dump({ \
                 'params': {'temperature': 0, 'stream_chunk_timeout': 1200.0, 'max_retries': 6}, \
             } \
         } \
-    } \
+    }, \
+    'mcp': {'tool_timeout': 900.0}, \
 }, open(p, 'wb')); \
 print('Written', p)"
+
+# Deployment-level additions to the %%ask --review rubric, appended to the
+# three base criteria by _load_review_rules() at kernel start. Criteria 4-6
+# originated in ARGUS-FEDER and criterion 7 in the WEN-OKN app; all four are
+# domain-general and are byte-identical across the three deployments, so a
+# reviewed answer means the same thing in each. Must land before the chown
+# below, which is what makes it readable by jovyan.
+RUN cp /tmp/build/review_rules.md /home/jovyan/.deepagents/review_rules.md
 
 # Install KernelShellBackend as an importable module in site-packages
 RUN cp /tmp/build/sage_kernel_backend.py \
