@@ -3893,11 +3893,27 @@ def _sage_normalize_mcp_config(raw):
         # (StreamableHttpTransport takes url/headers/auth/client-factory/verify
         # and nothing else), so since the 0.7.24 upgrade these are inert.
         #
-        # The budget for one MCP tool call now comes from `mcp.tool_timeout` in
-        # ~/.deepagents/config.toml, which the image ships at 900 s. They are
-        # still forwarded because they cost nothing, remain meaningful to any
-        # other consumer of this normalized config, and would start working
-        # again if fastmcp reinstates per-transport timeouts.
+        # Nothing ARGUS sets bounds a tool call's duration today. The obvious
+        # candidate, `mcp.tool_timeout` in ~/.deepagents/config.toml, does NOT
+        # apply here: it is read by `mcp_tool_middleware`, which deepagents-code
+        # installs in its own agent factory (agent.py). ARGUS builds its agent
+        # with `create_deep_agent` and attaches MCP tools itself, so that
+        # middleware is never in the graph. Verified by deleting the [mcp]
+        # block entirely — a 150 s call still completed, where the 120 s
+        # default would have cut it.
+        #
+        # What does reach the wire is fastmcp's own httpx default,
+        # Timeout(connect=30, read=300). `read` is a BETWEEN-BYTES timeout, not
+        # a wall-clock budget, so it does not cap a long call: calls sleeping
+        # 330 s and 1000 s both returned clean on deepagents 0.7.24. (Under
+        # langchain-mcp-adapters the same 300 was a hard total cap, which is
+        # the 5-minute cut v1.5.2 worked around.) A server that streams nothing
+        # for five minutes would still trip it; one that holds the connection
+        # open will not.
+        #
+        # The keys are still forwarded because they cost nothing, remain
+        # meaningful to any other consumer of this normalized config, and would
+        # start working again if fastmcp reinstates per-transport timeouts.
         if transport in ("streamable_http", "sse"):
             entry.setdefault("timeout", float(cfg.get("timeout", 60)))
             entry.setdefault(

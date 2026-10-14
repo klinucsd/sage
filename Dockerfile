@@ -117,14 +117,23 @@ RUN mkdir -p /home/jovyan/.deepagents/agent/skills && \
 
 # Write NRP provider config to jovyan's config.toml
 #
-# `mcp.tool_timeout` replaces the per-server `sse_read_timeout` ARGUS used to
-# set. Under langchain-mcp-adapters that key was how a long computational MCP
-# call (zonal statistics over every county in a state) got an hour instead of
-# the SDK's 5-minute ceiling. fastmcp's transports take no timeout argument at
-# all, so that key is now inert and the budget comes from this option instead.
-# 900 s is the maximum deepagents accepts — MCP_TOOL_TIMEOUT_CEILING — so the
-# previous 3600 s is no longer reachable; anything above 900 is rejected and
-# silently falls back to the 120 s default, which would cut long calls short.
+# `mcp.tool_timeout` does NOT bound %%ask's MCP calls — it is set here only
+# for the deepagents-code CLI, should anyone run it inside this image.
+#
+# The option is read by `mcp_tool_middleware`, which deepagents-code installs
+# in its own agent factory. ARGUS builds its agent with `create_deep_agent`
+# and attaches MCP tools itself, so that middleware is never in the graph;
+# deleting this block entirely changes nothing for a notebook (verified — a
+# 150 s call still completed, where the 120 s default would have cut it).
+# 900 is MCP_TOOL_TIMEOUT_CEILING, the maximum deepagents accepts: the safest
+# value to leave here in case ARGUS ever does route through that factory.
+#
+# What actually reaches the wire is fastmcp's httpx default,
+# Timeout(connect=30, read=300), where `read` is a between-bytes timeout
+# rather than a wall-clock budget. Long calls are therefore NOT capped —
+# 330 s and 1000 s tool calls both returned clean on deepagents 0.7.24. The
+# 5-minute cut v1.5.2 worked around was the same 300 acting as a hard total
+# cap under langchain-mcp-adapters; fastmcp does not treat it that way.
 RUN python -c "\
 import tomli_w; \
 from pathlib import Path; \
