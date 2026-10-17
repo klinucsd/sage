@@ -3590,6 +3590,47 @@ def _model_key_env_for(provider):
     return PROVIDER_API_KEY_ENV.get(provider)
 
 
+def _model_key_present(api_key_env):
+    """Is this credential available to the next %%ask?
+
+    On Colab, falls back to google.colab.userdata (Colab Secrets) when the
+    variable isn't in os.environ, caching a hit back into os.environ -- the
+    same thing `_sage_interpolate_mcp_env` does for %%mcp, and for the same
+    reason: on Colab a key lives in the 🔑 sidebar, not the environment, and
+    only the installer promoted one (the single provider named in the LLM
+    dict at bootstrap). Without this, pointing %model at any other provider
+    wrote a correct config block and then failed on credentials, and %model
+    reported the key missing while the secret sat there unread.
+
+    Unlike the %%mcp helper this never raises: %model reports, and a missing
+    key is rendered as the hint below rather than an error.
+
+    Returns None when there is no credential to check, else a bool.
+    """
+    if not api_key_env:
+        return None
+    if os.environ.get(api_key_env):
+        return True
+    try:
+        from google.colab import userdata  # type: ignore[import-not-found]
+
+        val = userdata.get(api_key_env)
+        if val:
+            os.environ[api_key_env] = val
+            return True
+    except ImportError:
+        pass          # not on Colab
+    except Exception:
+        pass          # SecretNotFoundError / NotebookAccessError -> treat as absent
+    return False
+
+
+def _model_on_colab():
+    """True on Colab. Only used to tailor the missing-credential hint."""
+    import sys as _sys
+    return "google.colab" in _sys.modules or os.path.exists("/content")
+
+
 def _model_current(path=None):
     """What is configured now, plus the one thing the file cannot say:
     whether the credential it names is actually set in THIS kernel."""
@@ -3611,7 +3652,7 @@ def _model_current(path=None):
         "provider_detected": detected,
         "base_url": block.get("base_url"),
         "api_key_env": api_key_env,
-        "key_present": bool(os.environ.get(api_key_env)) if api_key_env else None,
+        "key_present": _model_key_present(api_key_env),
         "known_providers": sorted(_model_providers(doc).keys()),
         "path": str(Path(path or _MODEL_CONFIG_PATH)),
     }
@@ -3785,10 +3826,24 @@ def _model_render(info, note=None):
         f'<table style="border-collapse:collapse">{body}</table></div>'
     ))
     if info["api_key_env"] and not info["key_present"]:
+        _env = escape(info["api_key_env"])
+        if _model_on_colab():
+            # The Colab Secrets store was already checked by
+            # _model_key_present, so the key is genuinely absent there --
+            # point at the place it has to be added rather than at an
+            # environment the user does not edit on Colab.
+            _how = (
+                f'Add <code>{_env}</code> in the 🔑 sidebar '
+                f'(Add new secret &rarr; Name: <code>{_env}</code>, then turn '
+                f'<em>Notebook access</em> on) and re-run <code>%model</code>'
+            )
+        else:
+            _how = (
+                f'Set <code>{_env}</code> in this kernel\'s environment'
+            )
         display(HTML(
             f'<div style="font-size:0.85em; color:#d32f2f; margin-top:4px">'
-            f'Set <code>{escape(info["api_key_env"])}</code> in this kernel\'s '
-            f'environment before the next <code>%%ask</code>, or the run will '
+            f'{_how} before the next <code>%%ask</code>, or the run will '
             f'fail on credentials.</div>'
         ))
 
@@ -4866,6 +4921,11 @@ try:
         kernel and is shared by every notebook on this pod -- run %model to
         see what is active before assuming. It takes effect on the next
         %%ask; no restart is needed, because the model is built per cell.
+
+        On Colab the named key is looked up in Colab Secrets (the 🔑 sidebar)
+        when it is not already in the environment, and cached for the rest of
+        the session -- so switching to a provider whose key only lives there
+        works without a promotion cell.
         """
         from html import escape
         from IPython.display import display, HTML
