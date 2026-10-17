@@ -2278,8 +2278,19 @@ async def _run_agent_async(
                 warnings.filterwarnings(
                     "ignore", message=r".*RubricMiddleware.*beta.*"
                 )
-                # max_iterations gates REVISION, not grading. 2 gives the
-                # agent one chance to act on the grader's feedback.
+                # max_iterations gates REVISION, not grading. 3 gives the
+                # agent two chances to act on the grader's feedback.
+                #
+                # Raised from 2 after a run where one revision was not enough
+                # and the cell ended "⚠ 2 issues could not be fully
+                # corrected": correcting criterion 4 (add the pre-filter
+                # funnel) introduced a wrong figure in the funnel itself, so
+                # the second grading pass failed criteria 2 and 6 on a problem
+                # the first pass had not seen. One more pass costs nothing on
+                # a clean answer — iterations are consumed only while the
+                # grader is still asking for changes — and the honest
+                # "could not be fully corrected" verdict remains the floor if
+                # it runs out.
                 #
                 # Flag-only (1) was tried and rejected on product grounds: an
                 # ARGUS user is a domain scientist who asked a question, not a
@@ -2297,7 +2308,7 @@ async def _run_agent_async(
                 _rubric_mw = _SageRubricMiddleware(
                     model=model,
                     system_prompt=_sage_grader_system_prompt(prompt),
-                    max_iterations=2,
+                    max_iterations=3,
                     on_evaluation=_on_evaluation,
                 )
             create_kwargs.setdefault("middleware", []).append(_rubric_mw)
