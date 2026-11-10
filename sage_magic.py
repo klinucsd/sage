@@ -626,6 +626,7 @@ def _display_tool_call(tool_name: str, args: dict) -> None:
     </div>
   </details>
 </div>"""
+    _sage_trail_add(html)
     display(HTML(html))
 
 
@@ -672,6 +673,7 @@ def _display_tool_result(tool_name: str, content: str) -> None:
         '  </details>'
         '</div>'
     )
+    _sage_trail_add(html)
     display(HTML(html))
 
 
@@ -843,7 +845,7 @@ def _display_orphan_cleanup_warning(deleted: list[str]) -> None:
         f"<li><i>… and {n - len(shown)} more</i></li>"
         if n > len(shown) else ""
     )
-    display(HTML(
+    html = (
         '<div style="background:#fff8e1; border-left:4px solid #f0ad4e; '
         'padding:10px 14px; margin:6px 0; font-size:0.92em;">'
         f'<b>⚠️ The previous <code>%%ask</code> cell did not complete normally.</b> '
@@ -854,7 +856,9 @@ def _display_orphan_cleanup_warning(deleted: list[str]) -> None:
         'working directory before running cells. Use <code>%reset</code> to '
         'clear all working-directory files.'
         '</div></div>'
-    ))
+    )
+    _sage_trail_notice(html)
+    display(HTML(html))
 
 
 def _get_cell_id() -> str | None:
@@ -2107,12 +2111,17 @@ async def _run_agent_async(
                         _msg = ("Reviewing the answer against the review "
                                 "criteria &mdash; this can take a minute or "
                                 "two on a long task&hellip;")
-                    _d(_H(
+                    # Above the fold, not inside it: this line exists to explain a
+                    # pause, and a reader who must open a collapsed control to find
+                    # out why the cell went quiet has not been told anything.
+                    _rev_html = (
                         "<div style='color:#8a6d00; font-size:0.8em; "
                         "font-style:italic; margin:2px 0 8px 0; "
                         "font-family:-apple-system,sans-serif'>"
                         f"&#128269; {_msg}</div>"
-                    ))
+                    )
+                    _sage_trail_notice(_rev_html)
+                    _d(_H(_rev_html))
                 except Exception:
                     pass  # a progress line must never break the run
 
@@ -2341,6 +2350,7 @@ async def _run_agent_async(
         # JupyterLab doesn't serve arbitrary filesystem paths.
         if text_buffer:
             text = _fix_glm_markdown("".join(text_buffer))
+            _sage_trail_add_markdown(text)
             found, _ = _render_markdown_with_files(text)
             if not found:
                 display(Markdown(text))
@@ -2676,12 +2686,14 @@ async def _run_agent_async(
                 f"<code>%%mcp</code>.)"
                 f"</span>"
             )
-        display(HTML(
+        _warn_html = (
             f"<div style='color:#8a6d00; background:#fff8e1; "
             f"padding:8px 12px; border-left:3px solid #f0b400; "
             f"margin:8px 0; font-family:-apple-system,sans-serif; "
             f"font-size:13px; line-height:1.4'>⚠ {msg}</div>"
-        ))
+        )
+        _sage_trail_notice(_warn_html)
+        display(HTML(_warn_html))
 
     # --- review verdict -----------------------------------------------------
     # Stashed rather than displayed here: this function returns before the
@@ -2975,6 +2987,232 @@ def _sage_display_review(evals: list) -> None:
         f"<div style='margin-top:6px'>{''.join(rows)}{note}</div>"
         f"</details>"
     ))
+
+
+
+# ---------------------------------------------------------------------------
+# Folding the agent's progress once the answer is out
+# ---------------------------------------------------------------------------
+#
+# A %%ask cell streams one card per tool call while it runs -- dozens of them
+# on a long question -- and a reader wants that trail WHILE they wait, almost
+# never after. Once the answer is rendered the trail sits behind a one-line
+# control, one click from coming back.
+#
+# NO JAVASCRIPT. The obvious way to fold outputs that are already on screen is
+# a script, and a script in saved output runs only in a TRUSTED notebook --
+# which a notebook opened in a new pod is not, because the signature that
+# records trust lives in the pod's ephemeral home. The fold would be there the
+# day the cell ran and gone the day the notebook was reopened. So the trail is
+# not folded where it lies: it is captured as it streams, and when the answer
+# is ready the cell's output is cleared and rewritten, with the whole trail
+# inside one <details> element.
+#
+# Collapsed is then what the .ipynb itself holds, and the browser does the
+# opening and closing. It survives a reload, a new pod, nbviewer and GitHub --
+# the same mechanism as the "details" link on each tool card, which has always
+# worked for exactly this reason.
+#
+# What that costs: the trail has to become ONE output, an output carries one
+# MIME type, and the agent's narration streams as Markdown -- so narration is
+# converted to HTML on the way into the buffer. And the clear takes the whole
+# cell, so ANYTHING DISPLAYED DURING A RUN THAT DOES NOT PASS THROUGH THESE
+# HELPERS IS LOST. Every display() between _sage_trail_start and the rewrite
+# must call _sage_trail_notice (re-emitted above the fold) or _sage_trail_add
+# (kept inside it). Adding a new one without a hook is a silent regression.
+#
+# An interrupted run, an API error, or a run that ends without a summary never
+# reaches the rewrite, so its trail stays open and complete on screen -- which
+# is what you want when you are looking for what went wrong.
+#
+# Ported from ARGUS-FEDER, which added it at its users' request. FEDER also
+# carries ~400 lines of transient JavaScript that corrects the scroll position
+# when the trail collapses; that is deliberately NOT ported -- it is polish
+# with a much worse risk profile, and worth revisiting only if the jump proves
+# to bother people here.
+
+SAGE_FOLD_PROGRESS: bool = True  # set False to leave the trail expanded
+
+# What this cell has emitted, split by where it belongs once the trail folds:
+# "pre" is re-emitted above the control, "items" go inside it.
+_SAGE_TRAIL: dict = {"on": False, "pre": [], "items": [],
+                     "fold_id": None, "block": None, "block_id": None}
+_SAGE_MD_PARSER: list = [None]
+
+
+def _sage_trail_start() -> None:
+    """Begin capturing, discarding anything left over.
+
+    A cell can be interrupted and re-run, and an interrupted run never
+    reaches the rewrite that would have cleared its buffer. Resetting here
+    rather than there is what keeps one run's trail out of the next one's.
+    """
+    _SAGE_TRAIL["on"] = SAGE_FOLD_PROGRESS
+    _SAGE_TRAIL["pre"] = []
+    _SAGE_TRAIL["items"] = []
+    _SAGE_TRAIL["fold_id"] = None
+    _SAGE_TRAIL["block"] = None
+    _SAGE_TRAIL["block_id"] = None
+
+
+def _sage_trail_cancel() -> None:
+    """Stop capturing and leave what is on screen exactly as it is."""
+    _SAGE_TRAIL["on"] = False
+    _SAGE_TRAIL["pre"] = []
+    _SAGE_TRAIL["items"] = []
+    _SAGE_TRAIL["fold_id"] = None
+    _SAGE_TRAIL["block"] = None
+    _SAGE_TRAIL["block_id"] = None
+
+
+def _sage_trail_notice(html: str) -> None:
+    """A warning about the run itself: re-emitted above the fold, not in it."""
+    if _SAGE_TRAIL["on"]:
+        _SAGE_TRAIL["pre"].append(html)
+
+
+def _sage_trail_add(html: str) -> None:
+    """A card the agent produced while working: goes inside the fold."""
+    if _SAGE_TRAIL["on"]:
+        _SAGE_TRAIL["items"].append(html)
+
+
+def _sage_trail_add_markdown(text: str) -> None:
+    """The agent's narration between tool calls."""
+    if _SAGE_TRAIL["on"] and text and text.strip():
+        _SAGE_TRAIL["items"].append(_sage_md_to_html(text))
+
+
+def _sage_md_to_html(text: str) -> str:
+    """Narration as HTML, for the single output the fold has to become.
+
+    Two things are lifted out before the converter runs and put back after.
+    Math, because the converter would format inside it and MathJax -- which
+    runs on the rendered HTML, exactly as it does on rendered Markdown -- would
+    then be handed markup instead of TeX. And local image references, because
+    JupyterLab does not serve arbitrary filesystem paths, so a plain
+    `![](/home/jovyan/x.png)` renders as a broken icon; the bytes go inline
+    instead, which is what the streamed version does.
+    """
+    import base64
+    import html as _html
+    import re
+
+    def _inline_image(m):
+        cap, src = m.group(1), m.group(2).strip()
+        try:
+            p = Path(src)
+            if p.suffix.lower() == ".png" and p.is_file():
+                b64 = base64.b64encode(p.read_bytes()).decode()
+                return (f'<img alt="{_html.escape(cap)}" '
+                        f'src="data:image/png;base64,{b64}" '
+                        f'style="max-width:600px;height:auto;display:block">')
+        except Exception:                                        # noqa: BLE001
+            pass
+        # A map layer or a file that has since gone: name it, don't break.
+        return f'<i>{_html.escape(cap or Path(src).name)}</i>'
+
+    try:
+        body = re.sub(r'!\[(.*?)\]\(([^)\n]+)\)', _inline_image, text)
+
+        math: list = []
+
+        def _stash(m):
+            math.append(m.group(0))
+            return f'@@SAGEMATH{len(math) - 1}@@'
+
+        body = re.sub(r'\$\$.+?\$\$|\$(?!\s)[^\n$]*?(?<![\s\\])\$', _stash,
+                      body, flags=re.S)
+
+        if _SAGE_MD_PARSER[0] is None:
+            from markdown_it import MarkdownIt
+            _SAGE_MD_PARSER[0] = MarkdownIt("gfm-like", {"html": True})
+        out = _SAGE_MD_PARSER[0].render(body)
+
+        for i, frag in enumerate(math):
+            out = out.replace(f'@@SAGEMATH{i}@@', frag)
+        return out
+    except Exception:                                            # noqa: BLE001
+        # Never lose narration to a converter problem: show it as it came.
+        return (f'<div style="white-space:pre-wrap">{_html.escape(text)}</div>')
+
+
+def _sage_trail_collapse(n_tool_calls: int = 0) -> None:
+    """Build the folded block, and show nothing yet.
+
+    Building here and showing in _sage_trail_emit is what keeps the cell from
+    sitting with a folded trail and no answer under it: the agent has
+    finished, but the cell has not, and whatever it still has to do -- a
+    widget to flush, a file to sign -- happened in full view of a reader who
+    had just lost the trail and not yet gained the answer.
+
+    Nothing is cleared here either. If building the HTML raises, the streamed
+    trail is still on screen, and so is anything the cell displays afterwards
+    (a traceback, say) -- which is the state a reader can make sense of.
+    """
+    if not _SAGE_TRAIL["on"]:
+        return
+    _SAGE_TRAIL["on"] = False
+    if not _SAGE_TRAIL["items"]:
+        _SAGE_TRAIL["pre"] = []
+        return
+    try:
+        import html as _html
+        import uuid
+
+        _fold_id = "sage-fold-" + uuid.uuid4().hex[:12]
+        n = int(n_tool_calls)
+        # The count is TOOL CALLS -- what "work" means here, and what a reader
+        # can check by opening the fold and counting the cards. Not the number
+        # of items, which also counts the narration between calls and so comes
+        # out at roughly double and matches nothing.
+        if n > 0:
+            calls = "1 tool call" if n == 1 else f"{n} tool calls"
+            label = f"{calls} \u2014 show the agent\u2019s work"
+        else:
+            label = "show the agent\u2019s work"
+
+        block = (
+            "".join(_SAGE_TRAIL["pre"])
+            + f'<details class="sage-trail-fold" id="{_fold_id}" '
+              'style="margin:2px 0 10px 0;">'
+            + '<summary style="cursor:pointer; color:#8a8a8a; font-size:0.85em;'
+              ' font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">'
+            + _html.escape(label)
+            + '</summary>'
+            + '<div style="margin-top:6px;">'
+            + "".join(_SAGE_TRAIL["items"])
+            + '</div></details>'
+        )
+        _SAGE_TRAIL["block"] = block
+        _SAGE_TRAIL["block_id"] = _fold_id
+    except Exception:                                            # noqa: BLE001
+        pass
+    finally:
+        _SAGE_TRAIL["pre"] = []
+        _SAGE_TRAIL["items"] = []
+
+
+def _sage_trail_emit() -> None:
+    """Put the folded trail on screen, in place of the streamed one.
+
+    Called immediately before the first thing that follows it, so the two
+    arrive together. clear_output(wait=True) holds the clear until this
+    block's own display, so the cell never blanks in between. Idempotent:
+    the fold is emitted once however many callers ask for it.
+    """
+    block = _SAGE_TRAIL.get("block")
+    if not block:
+        return
+    try:
+        from IPython.display import display, HTML, clear_output
+        clear_output(wait=True)
+        display(HTML(block))
+        _SAGE_TRAIL["fold_id"] = _SAGE_TRAIL.get("block_id")
+    except Exception:                                            # noqa: BLE001
+        pass
+    finally:
+        _SAGE_TRAIL["block"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -4063,6 +4301,12 @@ try:
             print("Usage: %ask <prompt>  or  %%ask in a cell")
             return
 
+        # From here on, everything this cell displays is captured as well as
+        # shown, so the trail can be rewritten as one collapsed block once the
+        # answer is ready. Started before the pre-run warnings, which the
+        # rewrite puts back above the fold.
+        _sage_trail_start()
+
         # Text-only guard, appended to the END of every request. A system-prompt
         # rule against reading images already exists, but text-only models (e.g.
         # GLM-5.2) still occasionally read a freshly-saved chart PNG to "verify"
@@ -4685,7 +4929,7 @@ try:
         if not _SAGE_MCP_TOOLS_BY_SERVER:
             _nb_with_mcp = _sage_find_notebook_with_mcp_cell()
             if _nb_with_mcp:
-                display(HTML(
+                _mcp_html = (
                     f"<div style='color:#8a6d00; background:#fff8e1; "
                     f"padding:6px 10px; border-left:3px solid #f0b400; "
                     f"margin-bottom:8px; font-family:-apple-system,sans-serif; "
@@ -4695,7 +4939,9 @@ try:
                     f"on MCP tools, run that cell first — kernel restart wipes "
                     f"the registry."
                     f"</div>"
-                ))
+                )
+                _sage_trail_notice(_mcp_html)
+                display(HTML(_mcp_html))
 
         _t_start = _time.time()
         _loop = asyncio.get_event_loop()
@@ -4715,6 +4961,9 @@ try:
             )
         except Exception as _err:
             _loop.set_exception_handler(_orig_exc_handler)
+            # The run failed: leave the trail on screen, in full, where the
+            # reader is going to look for what went wrong.
+            _sage_trail_cancel()
             # Mark this cell as finished (even on error) in the persisted
             # registry so the next cell's orphan cleanup doesn't treat
             # files written during this cell's window as partial outputs.
@@ -4744,6 +4993,13 @@ try:
             ))
             return
         _loop.set_exception_handler(_orig_exc_handler)
+        # Built here, while the streamed trail is still all the cell holds and
+        # the counts are to hand. It goes on screen at _sage_trail_emit, with
+        # whatever comes next.
+        try:
+            _sage_trail_collapse(sum(tool_counts.values()))
+        except Exception:                                        # noqa: BLE001
+            pass
         # Mark this cell as finished normally in the persisted registry.
         # On the next cell entry, the orphan cleanup will see finished_at
         # is set and skip this window.
@@ -4771,6 +5027,8 @@ try:
         except Exception:
             pass
         if _pending:
+            # A widget belongs under the fold, so the fold goes first.
+            _sage_trail_emit()
             from IPython.display import display as _disp
             for _entry in _pending:
                 # Each entry is (object, kwargs) — see _capture_display in
@@ -4841,6 +5099,10 @@ try:
                 _reg = _load_cell_registry()
                 _reg[cell_id] = _trackable
                 _save_cell_registry(_reg)
+
+        # The fold and the answer in one go, which is the whole point of
+        # having built the fold earlier and held it.
+        _sage_trail_emit()
 
         # Render the final report — file references become maps/images inline
         found_any, map_rendered = _render_markdown_with_files(final_text)
