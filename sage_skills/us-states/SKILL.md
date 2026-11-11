@@ -50,16 +50,55 @@ Find all states and their geometries needs to add the following filter into the 
 
 ### Step 2: Send the SPARQL query to the FRINK endpoint
 
-Use the library `sparql_dataframe`:
+Use the library `sparql_dataframe`, through the retry wrapper below.
 
 ```
-pip install sparql_dataframe
+pip install --user sparql_dataframe
 ```
+
+The endpoint scales its backend to zero when idle, so the FIRST query after a
+quiet period has to cold-start a replica and is rejected with HTTP 429 while
+that happens — with no `Retry-After` header. The rejection is transient: once a
+replica is warm the same endpoint absorbs heavy queries without complaint.
+Plain `sparql_dataframe.get` surfaces that 429 as an `HTTPError` and gives up,
+which fails the first query of almost every session.
+
+Cut and paste this helper as-is, and call `sparql_get` instead of
+`sparql_dataframe.get`. Do not replace it with a bare `.get` call:
 
 ```python
+import random, time, urllib.error
 import sparql_dataframe
-endpoint_url = "https://frink.apps.renci.org/federation/sparql"
-df = sparql_dataframe.get(endpoint_url, query)
+
+def sparql_get(endpoint_url, query, attempts=5, backoff=2.0):
+    """sparql_dataframe.get, but patient through endpoint cold starts."""
+    RETRY = (429, 500, 502, 503, 504)
+    last = None
+    for attempt in range(attempts):
+        try:
+            return sparql_dataframe.get(endpoint_url, query)
+        except urllib.error.HTTPError as e:
+            if e.code not in RETRY:
+                raise          # a query the server understood and rejected
+            last = e
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            last = e
+        if attempt < attempts - 1:
+            wait = None
+            if isinstance(last, urllib.error.HTTPError) and last.headers:
+                raw = last.headers.get("Retry-After")
+                if raw:
+                    try: wait = float(raw)
+                    except ValueError: wait = None
+            if wait is None:
+                wait = backoff * (2 ** attempt) + random.uniform(0, 1)
+            time.sleep(min(wait, 30.0))
+    raise RuntimeError(
+        f"SPARQL endpoint {endpoint_url} did not answer after {attempts} "
+        f"attempts. Last error: {last}")
+
+endpoint_url = "https://apps.okn.us/federation/sparql"
+df = sparql_get(endpoint_url, query)
 ```
 
 This code returns a dataframe from the SPARQL query
