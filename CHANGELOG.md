@@ -7,6 +7,14 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## v1.5.8 — 2026-11-10
+
+- **The agent's progress collapses once the answer is out.** A `%%ask` cell streams one card per tool call while it runs, and a reader wants that trail *while* they wait, almost never after. The trail now sits behind a one-line control ("7 tool calls — show the agent's work"), one click from coming back, with the answer directly under it. Ported from ARGUS-FEDER, whose users asked for it. Set `SAGE_FOLD_PROGRESS = False` to keep the old streaming behaviour.
+
+  No JavaScript is involved, and that is the design rather than an omission: a script in saved output runs only in a *trusted* notebook, and the signature recording trust lives in the pod's ephemeral home — so a JavaScript fold would work the day the cell ran and be gone when the notebook reopened in a new pod. Instead the trail is captured as it streams and the cell is rewritten with everything inside one `<details>` element, so "collapsed" is what the `.ipynb` itself holds and it survives a reload, a new pod, nbviewer and GitHub. The clear is held until the replacement displays, so the cell never blanks in between, and the fold is shown only alongside the answer — the cell is never left with a folded trail and nothing beneath it. A failed or interrupted run never reaches the rewrite, leaving its trail open and complete, which is what you want when you are looking for what went wrong. Warnings, and the `--review` progress lines, are re-emitted *above* the fold: a line whose job is to explain a pause is worth nothing behind a collapsed control.
+
+- **`us-counties` and `us-states` were broken and now work.** Both queried `frink.apps.renci.org`, which answers 503; KnowWhereGraph's federated endpoint has moved to `apps.okn.us`. The new endpoint scales its backend to zero when idle, so the first query after a quiet period must cold-start a replica and is rejected with HTTP 429 and no `Retry-After` — enough to fail the first query of nearly every session. Both skills now carry an inlined retry that rides out the cold start, backing off on 429 and 5xx while re-raising anything else immediately, since a query the server understood and rejected is not worth retrying.
+
 ## v1.5.7 — 2026-10-17
 
 Fixes two regressions that shipped in v1.5.6, both of which affect normal use.
