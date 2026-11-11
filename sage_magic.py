@@ -626,8 +626,8 @@ def _display_tool_call(tool_name: str, args: dict) -> None:
     </div>
   </details>
 </div>"""
-    _sage_trail_add(html)
-    display(HTML(html))
+    if not _sage_trail_add(html):
+        display(HTML(html))
 
 
 def _display_tool_result(tool_name: str, content: str) -> None:
@@ -673,8 +673,8 @@ def _display_tool_result(tool_name: str, content: str) -> None:
         '  </details>'
         '</div>'
     )
-    _sage_trail_add(html)
-    display(HTML(html))
+    if not _sage_trail_add(html):
+        display(HTML(html))
 
 
 # ---------------------------------------------------------------------------
@@ -857,8 +857,8 @@ def _display_orphan_cleanup_warning(deleted: list[str]) -> None:
         'clear all working-directory files.'
         '</div></div>'
     )
-    _sage_trail_notice(html)
-    display(HTML(html))
+    if not _sage_trail_notice(html):
+        display(HTML(html))
 
 
 def _get_cell_id() -> str | None:
@@ -2120,8 +2120,8 @@ async def _run_agent_async(
                         "font-family:-apple-system,sans-serif'>"
                         f"&#128269; {_msg}</div>"
                     )
-                    _sage_trail_notice(_rev_html)
-                    _d(_H(_rev_html))
+                    if not _sage_trail_notice(_rev_html):
+                        _d(_H(_rev_html))
                 except Exception:
                     pass  # a progress line must never break the run
 
@@ -2350,10 +2350,16 @@ async def _run_agent_async(
         # JupyterLab doesn't serve arbitrary filesystem paths.
         if text_buffer:
             text = _fix_glm_markdown("".join(text_buffer))
-            _sage_trail_add_markdown(text)
-            found, _ = _render_markdown_with_files(text)
-            if not found:
-                display(Markdown(text))
+            # While the trail is folding, narration goes into the live view
+            # and nowhere else. A second rendering as its own output would
+            # outlive the fold, and a mid-stream `![](*.geojson)` would then
+            # put the same map above the one in the answer. The live view
+            # inlines PNGs itself (see _sage_md_to_html); a mid-stream map
+            # degrades to its file name there and is drawn with the answer.
+            if not _sage_trail_add_markdown(text):
+                found, _ = _render_markdown_with_files(text)
+                if not found:
+                    display(Markdown(text))
             text_buffer.clear()
         _had_tool_after_text[0] = True
         _skip_msg_id[0] = None
@@ -2692,8 +2698,8 @@ async def _run_agent_async(
             f"margin:8px 0; font-family:-apple-system,sans-serif; "
             f"font-size:13px; line-height:1.4'>⚠ {msg}</div>"
         )
-        _sage_trail_notice(_warn_html)
-        display(HTML(_warn_html))
+        if not _sage_trail_notice(_warn_html):
+            display(HTML(_warn_html))
 
     # --- review verdict -----------------------------------------------------
     # Stashed rather than displayed here: this function returns before the
@@ -3004,39 +3010,61 @@ def _sage_display_review(evals: list) -> None:
 # which a notebook opened in a new pod is not, because the signature that
 # records trust lives in the pod's ephemeral home. The fold would be there the
 # day the cell ran and gone the day the notebook was reopened. So the trail is
-# not folded where it lies: it is captured as it streams, and when the answer
-# is ready the cell's output is cleared and rewritten, with the whole trail
-# inside one <details> element.
+# not folded where it lies: it streams into ONE output, held by a display id
+# and updated in place, and when the answer is ready that same output is
+# replaced by the whole trail inside one <details> element.
 #
 # Collapsed is then what the .ipynb itself holds, and the browser does the
 # opening and closing. It survives a reload, a new pod, nbviewer and GitHub --
 # the same mechanism as the "details" link on each tool card, which has always
 # worked for exactly this reason.
 #
-# What that costs: the trail has to become ONE output, an output carries one
-# MIME type, and the agent's narration streams as Markdown -- so narration is
-# converted to HTML on the way into the buffer. And the clear takes the whole
-# cell, so ANYTHING DISPLAYED DURING A RUN THAT DOES NOT PASS THROUGH THESE
-# HELPERS IS LOST. Every display() between _sage_trail_start and the rewrite
-# must call _sage_trail_notice (re-emitted above the fold) or _sage_trail_add
-# (kept inside it). Adding a new one without a hook is a silent regression.
+# What that costs: one output carries one MIME type, and the agent's narration
+# streams as Markdown -- so narration is converted to HTML on the way into the
+# buffer, and goes into the live view and nowhere else.
+#
+# Why ONE output, and not the dozens this used to emit. JupyterLab renders at
+# most `maxNumberOutputs` of them -- 50 by default -- and replaces the rest
+# with a "Show More Outputs" button. Clicking it rendered the whole trail, the
+# cell grew by thousands of pixels, and the fold then took all of that away in
+# a single step: the document shrank under the reader, the browser clamped a
+# scroll position that was now past the end, and `scrollPastEnd` left them in
+# the blank region below the last cell. One output never trips the cap, so the
+# button never appears; a bounded live view keeps the cell's height roughly
+# constant; and the fold became an update to one node rather than a
+# clear_output that tore down and rebuilt the entire output area.
 #
 # An interrupted run, an API error, or a run that ends without a summary never
-# reaches the rewrite, so its trail stays open and complete on screen -- which
-# is what you want when you are looking for what went wrong.
+# reaches the fold. Those paths call _sage_trail_expand instead, because the
+# live view is the only copy on screen and a reader hunting for what went
+# wrong needs all of it, not the last few steps.
 #
 # Ported from ARGUS-FEDER, which added it at its users' request. FEDER also
 # carries ~400 lines of transient JavaScript that corrects the scroll position
-# when the trail collapses; that is deliberately NOT ported -- it is polish
-# with a much worse risk profile, and worth revisiting only if the jump proves
-# to bother people here.
+# when the trail collapses; that is deliberately NOT ported -- bounding the
+# height and folding only after the answer is on screen removes the jump this
+# deployment saw, and JavaScript in saved output is a far worse risk profile.
 
 SAGE_FOLD_PROGRESS: bool = True  # set False to leave the trail expanded
 
+# How much of the trail the live view shows while the cell is still running.
+#
+# An update to a display id re-sends the whole buffer, so showing every card
+# would cost O(n^2) bytes over a run: cards are capped at 100 lines / 3000
+# chars, around 1-4 KB each, which puts a 160-call run well past 100 MB
+# through the kernel comm. Bounding it also keeps the cell's height steady,
+# which is what keeps the reader's scroll position intact when the fold lands.
+#
+# Nothing is dropped from the FOLD -- this bounds only what is on screen while
+# the agent is still working. 0 shows everything.
+SAGE_TRAIL_LIVE_ITEMS: int = 10
+
 # What this cell has emitted, split by where it belongs once the trail folds:
-# "pre" is re-emitted above the control, "items" go inside it.
+# "pre" stays above the control, "items" go inside it. "live_id" is the display
+# id of the single output both are rendered into.
 _SAGE_TRAIL: dict = {"on": False, "pre": [], "items": [],
-                     "fold_id": None, "block": None, "block_id": None}
+                     "fold_id": None, "block": None, "block_id": None,
+                     "live_id": None}
 _SAGE_MD_PARSER: list = [None]
 
 
@@ -3053,34 +3081,138 @@ def _sage_trail_start() -> None:
     _SAGE_TRAIL["fold_id"] = None
     _SAGE_TRAIL["block"] = None
     _SAGE_TRAIL["block_id"] = None
+    _SAGE_TRAIL["live_id"] = None
 
 
 def _sage_trail_cancel() -> None:
-    """Stop capturing and leave what is on screen exactly as it is."""
+    """Stop capturing and leave the whole trail on screen, expanded.
+
+    Reached when the run has gone wrong and the reader is about to go looking
+    for why, so the live view -- which carries only the most recent steps
+    while a cell is healthy -- is expanded to all of them on the way out.
+    """
+    _sage_trail_expand()
     _SAGE_TRAIL["on"] = False
     _SAGE_TRAIL["pre"] = []
     _SAGE_TRAIL["items"] = []
     _SAGE_TRAIL["fold_id"] = None
     _SAGE_TRAIL["block"] = None
     _SAGE_TRAIL["block_id"] = None
+    _SAGE_TRAIL["live_id"] = None
 
 
-def _sage_trail_notice(html: str) -> None:
-    """A warning about the run itself: re-emitted above the fold, not in it."""
-    if _SAGE_TRAIL["on"]:
-        _SAGE_TRAIL["pre"].append(html)
+def _sage_trail_live_html() -> str:
+    """The live view: notices in full, then the most recent steps."""
+    items = _SAGE_TRAIL["items"]
+    n = SAGE_TRAIL_LIVE_ITEMS
+    tail = items[-n:] if n and len(items) > n else items
+    hidden = len(items) - len(tail)
+    head = ""
+    if hidden > 0:
+        head = (
+            '<div style="color:#8a8a8a; font-size:0.8em; margin:2px 0 8px 0;'
+            ' font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">'
+            + ("\u22ef 1 earlier step is hidden while the cell runs"
+               if hidden == 1 else
+               f"\u22ef {hidden} earlier steps are hidden while the cell runs")
+            + " \u2014 the full trail appears once the answer is ready."
+            + "</div>"
+        )
+    return "".join(_SAGE_TRAIL["pre"]) + head + "".join(tail)
 
 
-def _sage_trail_add(html: str) -> None:
+def _sage_trail_show() -> bool:
+    """Refresh the live view, creating it on first use.
+
+    False means it could not be put on screen at all, and the caller has to
+    display its own fragment the old way.
+    """
+    try:
+        from IPython.display import display, HTML, update_display
+        html = _sage_trail_live_html()
+        if _SAGE_TRAIL["live_id"] is None:
+            import uuid
+            _id = "sage-live-" + uuid.uuid4().hex[:12]
+            display(HTML(html), display_id=_id)
+            _SAGE_TRAIL["live_id"] = _id
+        else:
+            update_display(HTML(html), display_id=_SAGE_TRAIL["live_id"])
+        return True
+    except Exception:                                            # noqa: BLE001
+        return False
+
+
+def _sage_trail_expand() -> None:
+    """Put the whole trail in the live view, in place of the recent steps.
+
+    For the paths where the fold is not going to happen: an error, an
+    interrupt, a fold that could not be built. The live view is the only copy
+    on screen, so a reader left holding the last few steps has lost the rest.
+    """
+    if _SAGE_TRAIL["live_id"] is None:
+        return
+    try:
+        from IPython.display import HTML, update_display
+        update_display(
+            HTML("".join(_SAGE_TRAIL["pre"]) + "".join(_SAGE_TRAIL["items"])),
+            display_id=_SAGE_TRAIL["live_id"],
+        )
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
+def _sage_trail_fallback() -> None:
+    """Give the trail up and hand it back to the callers.
+
+    Only reached if IPython will not take a display id at all. Everything
+    buffered so far goes out as separate outputs, except the newest fragment,
+    which the caller that just failed displays itself. The fold is skipped
+    from here on: one that hid only part of what is on screen would be worse
+    than no fold.
+    """
+    pending = list(_SAGE_TRAIL["pre"]) + list(_SAGE_TRAIL["items"])
+    _SAGE_TRAIL["on"] = False
+    _SAGE_TRAIL["pre"] = []
+    _SAGE_TRAIL["items"] = []
+    _SAGE_TRAIL["live_id"] = None
+    try:
+        from IPython.display import display, HTML
+        for frag in pending[:-1]:
+            display(HTML(frag))
+    except Exception:                                            # noqa: BLE001
+        pass
+
+
+def _sage_trail_notice(html: str) -> bool:
+    """A warning about the run itself: above the fold, not inside it.
+
+    True when the live view has it, and the caller must not display it again.
+    """
+    if not _SAGE_TRAIL["on"]:
+        return False
+    _SAGE_TRAIL["pre"].append(html)
+    if _sage_trail_show():
+        return True
+    _sage_trail_fallback()
+    return False
+
+
+def _sage_trail_add(html: str) -> bool:
     """A card the agent produced while working: goes inside the fold."""
-    if _SAGE_TRAIL["on"]:
-        _SAGE_TRAIL["items"].append(html)
+    if not _SAGE_TRAIL["on"]:
+        return False
+    _SAGE_TRAIL["items"].append(html)
+    if _sage_trail_show():
+        return True
+    _sage_trail_fallback()
+    return False
 
 
-def _sage_trail_add_markdown(text: str) -> None:
+def _sage_trail_add_markdown(text: str) -> bool:
     """The agent's narration between tool calls."""
-    if _SAGE_TRAIL["on"] and text and text.strip():
-        _SAGE_TRAIL["items"].append(_sage_md_to_html(text))
+    if not (_SAGE_TRAIL["on"] and text and text.strip()):
+        return False
+    return _sage_trail_add(_sage_md_to_html(text))
 
 
 def _sage_md_to_html(text: str) -> str:
@@ -3187,32 +3319,39 @@ def _sage_trail_collapse(n_tool_calls: int = 0) -> None:
         _SAGE_TRAIL["block"] = block
         _SAGE_TRAIL["block_id"] = _fold_id
     except Exception:                                            # noqa: BLE001
-        pass
+        # No fold is coming, and the live view holds only the recent steps.
+        # Expand it to the whole trail: it is the only copy on screen.
+        _sage_trail_expand()
     finally:
         _SAGE_TRAIL["pre"] = []
         _SAGE_TRAIL["items"] = []
 
 
 def _sage_trail_emit() -> None:
-    """Put the folded trail on screen, in place of the streamed one.
+    """Replace the live view with the folded trail, in place.
 
-    Called immediately before the first thing that follows it, so the two
-    arrive together. clear_output(wait=True) holds the clear until this
-    block's own display, so the cell never blanks in between. Idempotent:
-    the fold is emitted once however many callers ask for it.
+    No clear_output. The live view is one output held by a display id, so
+    updating it leaves every other output in the cell untouched and keeps the
+    fold exactly where the trail was -- above the answer -- whenever this is
+    called. That is what lets the caller fold LAST, after the answer is on
+    screen, instead of having to fold in the same breath as the thing that
+    follows it. Idempotent: the fold lands once, however many callers ask.
     """
     block = _SAGE_TRAIL.get("block")
     if not block:
         return
     try:
-        from IPython.display import display, HTML, clear_output
-        clear_output(wait=True)
-        display(HTML(block))
+        from IPython.display import display, HTML, update_display
+        if _SAGE_TRAIL.get("live_id"):
+            update_display(HTML(block), display_id=_SAGE_TRAIL["live_id"])
+        else:
+            display(HTML(block))
         _SAGE_TRAIL["fold_id"] = _SAGE_TRAIL.get("block_id")
     except Exception:                                            # noqa: BLE001
         pass
     finally:
         _SAGE_TRAIL["block"] = None
+        _SAGE_TRAIL["live_id"] = None
 
 
 # ---------------------------------------------------------------------------
@@ -4976,8 +5115,8 @@ try:
                     f"the registry."
                     f"</div>"
                 )
-                _sage_trail_notice(_mcp_html)
-                display(HTML(_mcp_html))
+                if not _sage_trail_notice(_mcp_html):
+                    display(HTML(_mcp_html))
 
         _t_start = _time.time()
         _loop = asyncio.get_event_loop()
@@ -5029,9 +5168,9 @@ try:
             ))
             return
         _loop.set_exception_handler(_orig_exc_handler)
-        # Built here, while the streamed trail is still all the cell holds and
-        # the counts are to hand. It goes on screen at _sage_trail_emit, with
-        # whatever comes next.
+        # Built here, while the buffer is still intact and the counts are to
+        # hand. It does not reach the screen until _sage_trail_emit, which is
+        # the last thing this cell does.
         try:
             _sage_trail_collapse(sum(tool_counts.values()))
         except Exception:                                        # noqa: BLE001
@@ -5063,8 +5202,8 @@ try:
         except Exception:
             pass
         if _pending:
-            # A widget belongs under the fold, so the fold goes first.
-            _sage_trail_emit()
+            # No fold ordering to respect: the live view holds its own output
+            # position, so a widget displayed now lands below it either way.
             from IPython.display import display as _disp
             for _entry in _pending:
                 # Each entry is (object, kwargs) — see _capture_display in
@@ -5136,10 +5275,6 @@ try:
                 _reg[cell_id] = _trackable
                 _save_cell_registry(_reg)
 
-        # The fold and the answer in one go, which is the whole point of
-        # having built the fold earlier and held it.
-        _sage_trail_emit()
-
         # Render the final report — file references become maps/images inline
         found_any, map_rendered = _render_markdown_with_files(final_text)
 
@@ -5174,6 +5309,16 @@ try:
                 _sage_display_review(_SAGE_LAST_REVIEW)
             except Exception as _disp_err:
                 print(f"[review display failed: {type(_disp_err).__name__}: {_disp_err}]")
+
+        # The fold goes LAST, once the answer, its maps and the review are all
+        # on screen. It holds its own place -- the live view's output, above
+        # the answer -- so folding here changes nothing about WHERE it lands,
+        # only when. And when is the whole point: the cell has already grown by
+        # the answer before it shrinks by the trail, so the document never ends
+        # up shorter than the reader's scroll position and that position
+        # survives. Folding before the answer was rendered is what used to send
+        # the reader to the blank region past the last cell.
+        _sage_trail_emit()
 
     del ask  # keep IPython namespace clean
 
