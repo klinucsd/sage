@@ -3932,34 +3932,70 @@ def _model_upsert_provider(provider, url=None, api_key_env=None, model=None,
 def _model_restore_default(path=None):
     """Back to the shipped NRP default.
 
-    Usually a one-key change, because provider blocks are never overwritten.
-    If the nrp block has gone missing, prefer the backup over the constants --
-    the backup is what the image actually shipped.
+    Restores what the `nrp` block POINTS AT -- its endpoint, its credential,
+    its class and its model list -- not only `models.default`.
+
+    The case that matters is a block that still exists but has been aimed
+    somewhere else. `%model --name nrp:<model> --url <other-service>` rewrites
+    the nrp block in place, so the config goes on naming `nrp` while sending
+    requests to a different service with a different key. Checking only for a
+    MISSING block let that through: `--default` reported "default key only"
+    and left the endpoint pointing at the other service, which is worse than
+    failing, because the model name still reads correctly.
+
+    `params` are deliberately left alone. `stream_chunk_timeout` and
+    `max_retries` are tuning rather than identity, and they are not what
+    breaks when a block is re-aimed.
+
+    The backup is preferred over the constants wherever it has an nrp block:
+    it is what this image actually shipped.
     """
     tomlkit = _model_tomlkit()
     doc = _model_load(path)
-    source = "default key only"
-    if "nrp" not in _model_providers(doc):
-        backup = Path(str(Path(path or _MODEL_CONFIG_PATH)) + ".orig")
-        recovered = False
-        if backup.exists():
-            try:
-                bdoc = tomlkit.parse(backup.read_text())
-                if "nrp" in _model_providers(bdoc):
-                    _model_ensure_providers(doc)["nrp"] = _model_providers(bdoc)["nrp"]
-                    source, recovered = "restored nrp block from backup", True
-            except Exception:
-                pass
-        if not recovered:
-            blk = tomlkit.table()
-            for k in ("class_path", "models", "api_key_env", "base_url"):
-                blk[k] = _MODEL_SHIPPED_NRP[k]
-            params = tomlkit.table()
-            for k, v in _MODEL_SHIPPED_NRP["params"].items():
-                params[k] = v
-            blk["params"] = params
-            _model_ensure_providers(doc)["nrp"] = blk
-            source = "rebuilt nrp block from shipped values"
+
+    # What the shipped nrp block looks like -- backup first, constants second.
+    shipped, origin = None, None
+    backup = Path(str(Path(path or _MODEL_CONFIG_PATH)) + ".orig")
+    if backup.exists():
+        try:
+            bdoc = tomlkit.parse(backup.read_text())
+            if "nrp" in _model_providers(bdoc):
+                shipped, origin = _model_providers(bdoc)["nrp"], "backup"
+        except Exception:                                        # noqa: BLE001
+            pass
+    if shipped is None:
+        shipped, origin = _MODEL_SHIPPED_NRP, "shipped values"
+
+    providers = _model_ensure_providers(doc)
+    if "nrp" not in providers:
+        blk = tomlkit.table()
+        for k in ("class_path", "models", "api_key_env", "base_url"):
+            if k in shipped:
+                blk[k] = shipped[k]
+        params = tomlkit.table()
+        for k, v in (shipped.get("params", {}) or {}).items():
+            params[k] = v
+        blk["params"] = params
+        providers["nrp"] = blk
+        source = f"rebuilt the nrp block from {origin}"
+    else:
+        blk = providers["nrp"]
+        fixed = []
+        for k in ("class_path", "base_url", "api_key_env", "models"):
+            if k not in shipped:
+                continue
+            want = shipped[k]
+            have = blk.get(k)
+            if isinstance(want, (list, tuple)) or isinstance(have, (list, tuple)):
+                same = [str(x) for x in (have or [])] == [str(x) for x in (want or [])]
+            else:
+                same = str(have) == str(want)
+            if not same:
+                blk[k] = want
+                fixed.append(k)
+        source = (f"restored nrp {', '.join(fixed)} from {origin}"
+                  if fixed else "default key only")
+
     if "models" not in doc:
         doc["models"] = tomlkit.table()
     doc["models"]["default"] = _MODEL_SHIPPED_DEFAULT
