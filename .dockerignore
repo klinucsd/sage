@@ -8,6 +8,7 @@
 #
 # Add a line here when a new application skill lands in sage_skills/.
 sage_skills/amaro-datasets/
+sage_skills/p53-dynamics/
 
 # The wildfire review skills. Shipping them in the image was once a deliberate
 # decision -- only invited reviewers were told the image tag -- and Kai reversed
