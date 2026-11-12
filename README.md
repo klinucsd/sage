@@ -182,28 +182,42 @@ temperature = 0
 ```
 
 ```toml
-# config.toml — NRP GLM example
+# config.toml — NRP example, as the image ships it
 [models]
-default = "nrp:glm-5"
+default = "nrp:deepseek-v4-flash"
 
 [models.providers.nrp]
 class_path = "langchain_openai:ChatOpenAI"
-models = ["glm-5", "glm-4.7"]
+models = ["deepseek-v4-flash", "glm-5"]
 api_key_env = "NRP_API_KEY"
 base_url = "https://ellm.nrp-nautilus.io/v1"
 
 [models.providers.nrp.params]
 temperature = 0
-stream_chunk_timeout = 1200.0   # NRP GLM occasionally pauses mid-stream; raise from the 120s default
-max_retries = 6                 # auto-retry transient connection errors with exponential backoff
+stream_chunk_timeout = 1200.0   # NRP occasionally pauses mid-stream; raise from the 120s default
+
+[retries]
+max_retries = 6                 # retry transient model errors, with exponential backoff
+
+[retries.nrp]
+param = "max_retries"           # the kwarg that turns off this provider SDK's own retry loop
 ```
+
+> **`max_retries` belongs under `[retries]`, not in a provider's `params`.**
+> deepagents-code 0.1.84 moved the retry budget from the provider SDK to a
+> middleware: a `params.max_retries` is now stripped at model construction with
+> an "Ignoring max_retries" warning, and the model is built with no retries at
+> all. `[retries.<provider>] param` then names the constructor kwarg that
+> disables that SDK's own loop — without it a custom `class_path` provider keeps
+> the OpenAI client's default of 2 retries *inside* each of the 6, which
+> multiplies rather than configures.
 
 ### 4. Start ARGUS
 
 ```bash
 docker run -p 8888:8888 \
   -v ~/sage-workspace:/home/jovyan/work \
-  kaiucsd/sage-dev:v1.4.0 \
+  kaiucsd/argus-dev:v1.5.9 \
   jupyter lab --ip=0.0.0.0 --NotebookApp.token=''
 ```
 
@@ -295,9 +309,9 @@ API endpoint, parameters, response format, conversion to GeoDataFrame, etc.
 
 ## NRP JupyterHub Deployment
 
-On NRP JupyterHub, select the `kaiucsd/sage-dev:v1.4.0` image. No local setup needed — `NRP_API_KEY` is loaded from `/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env`.
+On NRP JupyterHub, select the `kaiucsd/argus-dev:v1.5.9` image. No local setup needed — `NRP_API_KEY` is loaded from `/home/jovyan/work/_User-Persistent-Storage_CephBlock_/.env`.
 
-> **Always use a specific version tag** (e.g. `:v1.4.0`). NRP JupyterHub caches images by tag on each compute node — mutable tags like `:latest` can keep resolving to a stale version even after a new release is published.
+> **Always use a specific version tag** (e.g. `:v1.5.9`). NRP JupyterHub caches images by tag on each compute node — mutable tags like `:latest` can keep resolving to a stale version even after a new release is published.
 
 ---
 
