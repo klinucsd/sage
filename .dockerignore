@@ -1,0 +1,10 @@
+# Application-specific skills never ship in the image.
+#
+# `COPY sage_skills /tmp/build/skills` copies the DIRECTORY, not the tracked
+# files, so anything sitting in sage_skills/ on the build host is baked in --
+# including skills git never sees. A skill for one application is delivered
+# with %%skill instead, from a public repo or a local path, which also keeps a
+# baked copy from silently shadowing the one a notebook declares.
+#
+# Add a line here when a new application skill lands in sage_skills/.
+sage_skills/amaro-datasets/

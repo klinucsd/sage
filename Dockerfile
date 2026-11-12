@@ -95,6 +95,9 @@ RUN pip install --no-cache-dir google-api-python-client google-auth-oauthlib goo
 # -----------------------------------------------------------------------------
 # Step 2: Copy Assets
 # -----------------------------------------------------------------------------
+# Core skills only. This copies the DIRECTORY, so anything in sage_skills/ on
+# the build host ships -- including untracked skills. Application-specific
+# skills are excluded in .dockerignore and delivered with %%skill instead.
 COPY sage_skills /tmp/build/skills
 COPY apply_sage_patch.py /tmp/build/
 COPY sage_magic.py /tmp/build/
