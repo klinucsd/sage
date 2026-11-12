@@ -3047,17 +3047,32 @@ def _sage_display_review(evals: list) -> None:
 
 SAGE_FOLD_PROGRESS: bool = True  # set False to leave the trail expanded
 
-# How much of the trail the live view shows while the cell is still running.
+# The live view is a box of FIXED HEIGHT holding the whole trail, so the cell
+# is the same size whether a run makes five tool calls or a hundred and sixty.
+# That is what the fold depends on: a constant-height cell leaves it almost no
+# height to take away at the end, and the reader's scroll position survives.
+# Going back through the run means scrolling the box, not the notebook.
+SAGE_TRAIL_LIVE_HEIGHT: int = 420        # px
+
+# An update to a display id re-sends the whole buffer, so a long run costs
+# O(n^2) bytes: cards are capped at 100 lines / 3000 chars, around 1-4 KB
+# each, which puts a 160-call run well past 100 MB through the kernel comm.
+# The budget caps the live view's payload instead of its item count -- a
+# 60-call run fits with room to spare, and only runs past that drop their
+# oldest cards from the live view. 0 means no budget.
 #
-# An update to a display id re-sends the whole buffer, so showing every card
-# would cost O(n^2) bytes over a run: cards are capped at 100 lines / 3000
-# chars, around 1-4 KB each, which puts a 160-call run well past 100 MB
-# through the kernel comm. Bounding it also keeps the cell's height steady,
-# which is what keeps the reader's scroll position intact when the fold lands.
-#
-# Nothing is dropped from the FOLD -- this bounds only what is on screen while
-# the agent is still working. 0 shows everything.
-SAGE_TRAIL_LIVE_ITEMS: int = 10
+# Nothing is dropped from the FOLD either way. This bounds only what is on
+# screen while the agent is still working.
+SAGE_TRAIL_LIVE_BYTES: int = 262144
+
+# An optional hard cap on live items, on top of the budget. 0 means none.
+SAGE_TRAIL_LIVE_ITEMS: int = 0
+
+# How the box is laid out. False (the default) reads oldest-to-newest, top to
+# bottom, and holds its scroll at the bottom where the newest card is. True
+# puts the newest card at the top instead -- see _sage_trail_live_html for why
+# that choice exists.
+SAGE_TRAIL_LIVE_NEWEST_FIRST: bool = False
 
 # What this cell has emitted, split by where it belongs once the trail folds:
 # "pre" stays above the control, "items" go inside it. "live_id" is the display
@@ -3102,23 +3117,72 @@ def _sage_trail_cancel() -> None:
 
 
 def _sage_trail_live_html() -> str:
-    """The live view: notices in full, then the most recent steps."""
+    """The live view: notices above, then the trail in a fixed-height box.
+
+    Direct children are emitted NEWEST FIRST, which is what both layouts
+    want.
+
+    The default box is `flex-direction: column-reverse`, which lays those
+    children out bottom-up -- so it reads oldest-to-newest down the box, and
+    a reversed flex container holds its initial scroll position at the main
+    start, which here is the bottom, where the newest card is. That is the
+    pin-to-bottom that would otherwise need JavaScript, and every update
+    builds a fresh node, so it re-pins on every card.
+
+    SAGE_TRAIL_LIVE_NEWEST_FIRST drops the flex container for an ordinary
+    block, leaving the newest card at the top where scrollTop 0 already is.
+    It reads backwards, which is worse, but it depends on nothing beyond
+    "a scroll box starts at the top" -- the fallback if a browser disagrees
+    about where a reversed flex container starts scrolled.
+
+    Notices stay OUTSIDE the box: a line whose job is to explain a pause is
+    worth nothing if the reader has to scroll a panel to find it.
+    """
     items = _SAGE_TRAIL["items"]
     n = SAGE_TRAIL_LIVE_ITEMS
-    tail = items[-n:] if n and len(items) > n else items
-    hidden = len(items) - len(tail)
-    head = ""
+    kept = list(items[-n:]) if n and len(items) > n else list(items)
+
+    # Newest first, and stop once the budget is spent. At least one card is
+    # always kept, however big it is: a live view showing nothing at all
+    # would be worse than one over budget.
+    children: list = []
+    if SAGE_TRAIL_LIVE_BYTES:
+        total = 0
+        for frag in reversed(kept):
+            total += len(frag)
+            if children and total > SAGE_TRAIL_LIVE_BYTES:
+                break
+            children.append(frag)
+    else:
+        children = list(reversed(kept))
+
+    hidden = len(items) - len(children)
+    # Last child, which is the TOP of the box in both layouts -- above the
+    # oldest card that is still shown, where the missing ones would be.
     if hidden > 0:
-        head = (
-            '<div style="color:#8a8a8a; font-size:0.8em; margin:2px 0 8px 0;'
+        children.append(
+            '<div style="color:#8a8a8a; font-size:0.8em; padding:2px 0 6px 0;'
             ' font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">'
-            + ("\u22ef 1 earlier step is hidden while the cell runs"
+            + ("\u22ef 1 earlier step is not in this window"
                if hidden == 1 else
-               f"\u22ef {hidden} earlier steps are hidden while the cell runs")
-            + " \u2014 the full trail appears once the answer is ready."
+               f"\u22ef {hidden} earlier steps are not in this window")
+            + " \u2014 the fold has the whole trail once the answer is ready."
             + "</div>"
         )
-    return "".join(_SAGE_TRAIL["pre"]) + head + "".join(tail)
+
+    # flex:0 0 auto per child, because a flex item shrinks by default once
+    # the container runs out of room -- which a max-height container with
+    # more content than it can show has, by definition. Without this every
+    # card is squashed instead of the box scrolling.
+    body = "".join(f'<div style="flex:0 0 auto">{c}</div>' for c in children)
+
+    style = (f"max-height:{int(SAGE_TRAIL_LIVE_HEIGHT)}px; overflow-y:auto;"
+             " padding-right:6px; margin:2px 0 10px 0;")
+    if not SAGE_TRAIL_LIVE_NEWEST_FIRST:
+        style += " display:flex; flex-direction:column-reverse;"
+
+    return ("".join(_SAGE_TRAIL["pre"])
+            + f'<div class="sage-trail-live" style="{style}">{body}</div>')
 
 
 def _sage_trail_show() -> bool:
