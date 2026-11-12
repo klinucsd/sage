@@ -8,3 +8,13 @@
 #
 # Add a line here when a new application skill lands in sage_skills/.
 sage_skills/amaro-datasets/
+
+# The wildfire review skills. Shipping them in the image was once a deliberate
+# decision -- only invited reviewers were told the image tag -- and Kai reversed
+# it on 2026-11-11 under the rule above. They are delivered to reviewers as a
+# local path instead; the canonical copy lives outside this repo.
+sage_skills/wildfire-comprehensive-report/
+sage_skills/wildfire-cross-submission-report/
+sage_skills/wildfire-rubric-practitioner/
+sage_skills/wildfire-rubric-review/
+sage_skills/wildfire-rubric-science/
