@@ -7,6 +7,114 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## v1.5.10 — 2026-11-13
+
+Released as `kaiucsd/argus-dev:v1.5.10`, the same image as `v1.5.10-rc11`
+(digest `sha256:10e633b07a484020a397090060e327d39152b184d6f26934d218c3dde74d6457`),
+tested end to end on the SCIRP road-corridor prioritization notebook. The changes
+are the release candidates below, rc1 through rc11. In short:
+
+- Maps: line layers are drawn in their own colours instead of grey hairlines, and a
+  layer in a projected CRS no longer renders as an empty world map.
+- Tool output stays hidden by default, as in v1.5.9; nothing a script prints lands
+  loose in the cell, including printing through `sys.__stdout__`. Terminal escape
+  codes are stripped from tool results, for the agent and for the panel.
+- The review status lines ("Reviewing the answer…", "revising the answer…") are part
+  of the panel, in the order they happened.
+- `%%ask --review` gains four domain-neutral criteria (11 in total): count the list,
+  keep earlier definitions, check ranking claims item by item, and follow any method
+  the question specifies. The verdict header reports the rubric's criterion count and
+  says when the grader skipped some.
+- Not yet carried over: criteria 8–11 are not in the ARGUS-FEDER or WEN-OKN rule files.
+
+## v1.5.10-rc11 — 2026-11-13
+
+- **The "Reviewing the answer…" line now appears after the agent's work, inside the panel, instead of pinned above it.** rc3 made the review-start line a notice rendered above the live box, so it would explain the pause. But it then sat over every tool call while the cell ran, reading as though the review came first. With a revision, "Reviewing the answer" and "Re-checking the corrected answer" stacked together at the top. The line is now a card at the end of the trail, in the order things happened: after the work it reviews, then the revision, then the re-check. That is also where the reader is looking, since the live box keeps its scroll at the newest card. It folds with the rest of the trail, the same as the "revising the answer" line since rc6, so the finished cell's record shows when each review pass began.
+
+## v1.5.10-rc10 — 2026-11-13
+
+- **A script printing through `sys.__stdout__` no longer writes into the notebook cell.** During in-kernel execution `sys.stdout` is captured, but `sys.__stdout__` and `sys.__stderr__` are deliberately left alone, because swapping those objects deadlocked pandas and openpyxl. A script that printed through them bypassed the capture: the text appeared in the cell under the live panel, outside the agent-work fold, and the agent got an empty result. rc5 added a note telling the agent why its output was empty, and it does switch to plain `print()` — but only on the next run, after the first run's lines are already on the page. Observed on the SCIRP notebook: a progress helper written as `print(*a, file=sys.__stdout__)` put eight lines under the live panel before the agent corrected it.
+
+  The script's own text is now rewritten before it runs: `sys.__stdout__` becomes `sys.stdout`, and `sys.__stderr__` becomes `sys.stderr`. That removes the bypass without touching the objects the libraries hold, which is what the deadlock was about. Line numbers do not change, so a traceback still points at the right line. Verified in-kernel: a script printing three ways now returns all three in its result and writes nothing past the capture; the same script on rc9 leaks its progress line.
+
+## v1.5.10-rc9 — 2026-11-13
+
+- **The review verdict now shows how many criteria the rubric has, and says when the grader skipped some.** The header printed the length of the list the grader returned, which is not the same thing. In one run the grader dropped a criterion and the header read "9 criteria"; in another it added one of the question's own requirements as a criterion and read "11", with nothing telling the reader which had happened. The count is now taken from the rubric when it is built. If the grader reports on fewer, the header says so — "11 criteria; the grader reported on only 9" — because an unreported criterion was not checked, and the header must not suggest it was. If it reports on more, the header still shows the rubric's number.
+
+- **A fourth new review criterion: the computation must follow any method the question specifies.** When a question states how something is to be computed — weights, thresholds, scaling, how missing values are handled — the grader checks the code against it. Observed: a question asked for a left-out measure's weight to be spread in proportion, the code split it 55/45 where proportion gives 58/42, and the answer said so in prose — with no criterion that compared the two. Domain-neutral wording; this one has so far been observed in one notebook only, unlike the three added in rc8.
+
+## v1.5.10-rc8 — 2026-11-12
+
+- **Three more `%%ask --review` criteria, for summary errors the existing seven let through.** All three came from the same kind of failure: the computation was right and a sentence about it was wrong. Each is written as something the grader has to *do*, because the existing consistency criterion already named "'the three counties' followed by four" as a failure and still passed "the 15 unsurveyed corridors" followed by eighteen names.
+
+  - **Count the list.** When a number introduces or summarises a list of named items, the grader counts the items.
+  - **Keep earlier definitions.** A quantity an earlier answer in the session already defined or tabulated must keep its definition, scale and value, or the answer must say how and why it differs. Earlier answers' wording is not evidence; only their tables and computed output are. This targets an error that spread across answers: one answer's wrong count was repeated by the next two, and one reviewer "corrected" a later answer into agreement with it. With the rule in place, that repeated count was caught and traced back to its source.
+  - **Check ranking claims item by item.** For "highest", "top-N", "larger than" or "in every case" claims, every named item is checked against the table column. Before this, a reviewer fixed one wrong item in such a claim and left four.
+
+  The wording is domain-neutral. The failures were found in one notebook, but the criteria describe error shapes, and the examples are everyday ones like the existing criteria's. They live in `review_rules.md`, so `sage_magic.py` is unchanged. No false positives across the test runs.
+
+  Known limit: the rules direct the grader to the right comparison, but the grader still checks by eye. In testing it counted an 18-row table as 17, and confirmed that earlier numbers matched without noticing a measure's direction had been reversed. Fixing that means giving it computed facts rather than more instructions.
+
+  These three are not yet in the ARGUS-FEDER or WEN-OKN rule files, so those deployments review against seven criteria, not ten.
+
+## v1.5.10-rc7 — 2026-11-12
+
+- **Tool output is hidden again by default, as it was before rc3.** rc3 made `execute` results visible in the agent-work fold, on a misreading of a report: a script's printout had landed loose in the cell, and that was taken as a request to see tool results. It was not. The loose printout came from a stale `.sage_learnings` entry steering the agent to print through `sys.__stdout__`, which rc3 also fixed at its source. The result cards were a separate change nobody asked for, and they were rejected four times — first in the fold, then live while the cell ran — before the misreading was caught.
+
+  `SAGE_TOOL_OUTPUT_ALWAYS` is now empty. What rc4–rc6 built around it stays, because all of it is correct for anyone who opts in with `%tool_output_on`: ANSI escapes are stripped before a result renders, and an opted-in result goes to the fold only, never the live view.
+
+## v1.5.10-rc6 — 2026-11-12
+
+- **Tool output streamed into the middle of a running cell.** rc3 put `execute` output into the agent-work fold, which is where a reader checking an answer wants it. It also put it into the live view, because both were fed from one list — so while a cell ran, every script's printout appeared in the body of the cell as a green card, and the live view read as though the answer were being assembled from tool dumps. A trail card can now be added with `live=False`: it is in the fold and nowhere else. Tool results use it. Narration and tool-call cards still stream, so a reader watching the run still sees what the agent is doing, and the fold adds what each step said. An error or interrupt still expands the live view to the complete trail, tool output included.
+
+- **"Review found N issues — revising the answer…" was left outside the fold.** When `%%ask --review` sends an answer back, the line announcing it was written with a bare `display()`, so it landed as a loose output between the folded trail and the revised answer — the one piece of the run's record that did not fold. It now goes into the trail as a card, in sequence with the narration: it marks the moment the draft was withdrawn and the revision began, which is exactly where it belongs when someone reads the fold back. It is not transient — unlike the please-wait it records something that happened — and the verdict panel's "1 issue found and corrected" still summarises it below the answer. No display handle is held in the callback, which is what the bare `display()` was protecting; the trail refreshes the one live display id it already owns.
+
+## v1.5.10-rc5 — 2026-11-12
+
+- **The agent read terminal escape codes too.** rc4 stripped ANSI where the fold renders a tool result; the sequences were still in the result itself, so a coloured traceback reached the model as `File \x1b[35m"<stdin>"\x1b[0m, line \x1b[35m4` — punctuation it cannot use, paid for in tokens, in exactly the messages it is trying to debug from. Results now come back clean: `KernelShellBackend.execute` became a thin wrapper that strips escapes once, covering both the in-kernel path and the parent's subprocess path, which is the one coloured tracebacks actually arrive on.
+
+  `timeout` stays declared by name on the public `execute`, because deepagents gates per-command timeouts on `"timeout" in inspect.signature(cls.execute).parameters` and a wrapper taking only `**kwargs` would make the tool refuse the agent's timeout and re-run the command without it. A result whose `output` cannot be rewritten is returned untouched rather than lost.
+
+## v1.5.10-rc4 — 2026-11-12
+
+- **A traceback in a tool result rendered as terminal escape codes.** Showing `execute` output in the fold (rc3) exposed a defect that had been latent because nothing rendered tool results before: the card escapes `&`, `<` and `>` for HTML and left ANSI colour sequences alone, so a coloured traceback arrived on the page as `File \x1b[35m"<stdin>"\x1b[0m, line \x1b[35m4` — 44 of them in one card. Python 3.13 colours its own tracebacks, so any subprocess that fails can produce this; the three cells before it simply happened not to fail.
+
+  ANSI sequences are now stripped before anything else looks at the text, which also makes the 100-line and 3000-character caps measure what a reader sees rather than the markup. Stripped rather than translated into spans: the card is a plain-text excerpt behind a disclosure control, and colour in it would carry no meaning the text does not already have.
+
+## v1.5.10-rc3 — 2026-11-12
+
+- **The "reviewing the answer" line stayed on screen after the review was over, at the top of the cell.** `%%ask --review` announces that grading has begun, because the agent goes quiet for a minute or two while the grader reads the transcript and nothing else says why. That line was filed as a notice, and notices are kept: they are baked into the folded trail, which sits above the answer. So a finished cell opened with a please-wait about a review that had already run, ahead of the answer it reviewed, duplicating the verdict panel at the bottom.
+
+  Notices now come in two kinds. A warning reports something about the run — files were deleted, the MCP registry is empty — and is still true afterwards, so it stays. A line that explains a pause has no reader once the pause is over, so it is `transient`: shown in the live view, directly above the box whose stillness it accounts for, and dropped when the fold is built. The three existing notices are unchanged; only the review line is transient.
+
+  Two paths keep it deliberately. If the fold never happens — an error, an interrupt — the live view expands to the whole run, including what it was waiting on when it stopped. And a run that ends with no tool calls to fold takes the line down itself, so a transient notice never outlives its run.
+
+- **The agent-work fold showed that a script ran and never what it printed.** Tool results were all-or-nothing behind `SAGE_SHOW_TOOL_OUTPUT`, off by default, and the default is right for most tools: a `read_file` result is the file, a `glob` result is the list the pattern implies, and printing them doubles the fold to repeat the card above. `execute` is the exception. Its result is the one thing the agent observed rather than requested, and with it hidden the fold could not answer the question a reader opens it to ask — what did the script actually say. `execute` output is now shown by default (`SAGE_TOOL_OUTPUT_ALWAYS`), still capped at 100 lines / 3000 characters and still inside its own collapsible card; `%tool_output_on` continues to show everything.
+
+- **A script that printed through `sys.__stdout__` came back with an empty result and no explanation.** `sys.__stdout__` is deliberately not redirected during in-kernel execution — swapping it deadlocks pandas and openpyxl — so a script using it bypasses the capture entirely: the text goes to the notebook cell's own output stream, landing outside the fold, and the tool result is empty.
+
+  Returning nothing is what made this trap self-sealing. The agent reads an empty result as "stdout was swallowed", works around it by printing through `sys.__stdout__` — and records the conclusion as a lesson. Observed on the SCIRP notebook: a `.sage_learnings` entry claiming the kernel hides stdout led the next run to write the workaround into its script from the start, which reproduced the symptom the lesson described, while plain `print()` in the same session captured 4804, 2436 and 90 bytes without trouble. The result now names the cause and says that a plain `print()` is returned, so the misreading has nothing to form on.
+
+## v1.5.10-rc2 — 2026-11-12
+
+- **A map layer in a projected CRS rendered as an empty world map.** Web maps place features by latitude and longitude, so a GeoJSON written in anything else arrives with coordinates Folium reads as degrees — metres, usually, which fall outside the world. Nothing raises: the map draws zoomed fully out with the layer listed in the control and nothing visible on it.
+
+  This is easy to produce rather than exotic, because distance, buffer and area work has to be done in a projected CRS, so the frame being written is often already in one. Observed with half-mile road segments written in EPSG:3310 after the reprojection was applied to a different variable in the same script.
+
+  GeoPandas writes a `crs` member when the frame is not WGS84 and reads it back, so the layer says what it is and the mistake is detectable at load. Layers are now reprojected to EPSG:4326 before Folium sees them. A layer that declares no CRS is left alone — GeoJSON already means WGS84, and guessing would be worse than trusting.
+
+  The map also says when it happened: a caption naming each reprojected layer and its source CRS, with the one-line fix. Reprojecting silently would have drawn this map correctly and left the next such layer to be diagnosed from a screenshot, which is how this one was found.
+
+## v1.5.10-rc1 — 2026-11-12
+
+- **Line layers on a map were drawn as grey hairlines, ignoring their colours.** A GeoJSON layer was styled as though every geometry were a polygon: `fillColor` carried the colour, while `color` was pinned to `#333333` and `weight` to 0.5. Leaflet paints a line with `color` and `weight` and ignores `fillColor` entirely, because a line has no interior — so the colour went somewhere the renderer never reads, and every LineString came out the same half-pixel grey.
+
+  Two things that look like separate complaints were this one defect. A `.colormap.json` sidecar classifying corridors by zone produced a correct four-colour legend above a map whose lines were uniformly grey: the legend is built from the sidecar directly, so it showed exactly what the lines should have been and weren't. And two line layers on one map were indistinguishable, because the per-layer colour from `_LAYER_COLORS` also reached only `fillColor` — distinct colours were assigned and discarded.
+
+  The style function now branches on geometry type. A LineString takes the colour directly at `weight: 3, opacity: 0.9`; polygons and points keep the styling they already had, including the `#333333` outline and the fill opacity that distinguished a colormapped layer from a plain one. Verified by rendering: four zone colours reach the lines, a second line layer gets its own colour, and polygon output is unchanged.
+
+  The colour and fill opacity are bound as default arguments rather than captured, because folium may call the style function after the layer loop has moved on — a closure would then paint every layer with the last layer's values.
+
 ## v1.5.9 — 2026-11-11
 
 - **The progress fold no longer throws the reader to the end of the notebook.** v1.5.8 streamed one output per tool call and then replaced the cell with `clear_output`. JupyterLab renders at most 50 outputs (`maxNumberOutputs`) and hides the rest behind a "Show More Outputs" button — and clicking it, the natural thing to do while watching a long run, rendered the whole trail and grew the cell by thousands of pixels. The fold then took all of that away in one step: the document shrank under the reader, the browser clamped a scroll position that was now past the end, and `scrollPastEnd` left them in the blank region below the last cell with the answer far above.

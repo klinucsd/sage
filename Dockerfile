@@ -178,9 +178,14 @@ print('Written', p)"
 # Deployment-level additions to the %%ask --review rubric, appended to the
 # three base criteria by _load_review_rules() at kernel start. Criteria 4-6
 # originated in ARGUS-FEDER and criterion 7 in the WEN-OKN app; all four are
-# domain-general and are byte-identical across the three deployments, so a
-# reviewed answer means the same thing in each. Must land before the chown
-# below, which is what makes it readable by jovyan.
+# domain-general and byte-identical across the three deployments. Criteria
+# 8-10 (count vs named list, definitions kept across answers, ranking claims
+# checked item by item) originated here in v1.5.10-rc8, and criterion 11 (the
+# computation follows a method the question specifies) in v1.5.10-rc9. All are
+# domain-general, but none has yet been copied to the ARGUS-FEDER or WEN-OKN
+# rule files, so until they are, a reviewed answer here is checked against four
+# more criteria than in those deployments. Must land before the chown below, which
+# is what makes it readable by jovyan.
 RUN cp /tmp/build/review_rules.md /home/jovyan/.deepagents/review_rules.md
 
 # Install KernelShellBackend as an importable module in site-packages

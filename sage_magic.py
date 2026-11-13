@@ -239,6 +239,18 @@ SAGE_THREAD_ID = generate_thread_id()[:8]
 SAGE_MESSAGES: list = []
 SAGE_SHOW_TOOL_OUTPUT: bool = False  # toggled by %tool_output_on / %tool_output_off
 
+# Tools whose result is shown in the agent-work fold regardless of the flag
+# above. Empty: no tool output is shown unless %tool_output_on asks for it.
+#
+# rc3 through rc6 shipped ("execute",) here, on a misreading of a report about
+# a script's printout landing loose in the cell. That printout was a stale
+# .sage_learnings entry steering the agent to print through sys.__stdout__,
+# not a request to see tool results -- and Kai rejected the result cards in
+# the fold four times before the misreading was caught (2026-11-12). The
+# mechanism stays, for anyone who wants a specific tool's results visible
+# without the all-or-nothing flag; the default is the pre-rc3 behaviour.
+SAGE_TOOL_OUTPUT_ALWAYS: tuple = ()
+
 # ---------------------------------------------------------------------------
 # Output directory — persistent, next to the notebook
 # ---------------------------------------------------------------------------
@@ -632,10 +644,27 @@ def _display_tool_call(tool_name: str, args: dict) -> None:
 
 def _display_tool_result(tool_name: str, content: str) -> None:
     """Render a tool result as a collapsible output block, capped at 100 lines / 3000 chars."""
-    if not SAGE_SHOW_TOOL_OUTPUT:
+    if not (SAGE_SHOW_TOOL_OUTPUT or tool_name in SAGE_TOOL_OUTPUT_ALWAYS):
         return
 
+    import re as _re
+
     from IPython.display import display, HTML
+
+    # Terminal colour codes, removed before anything else looks at the text.
+    # A tool that writes to a pipe can still emit them -- Python 3.13 colours
+    # its own tracebacks, and that is how they arrive here: a coloured
+    # traceback from a subprocess reaches the card as literal escape soup
+    # (`File \x1b[35m"<stdin>"\x1b[0m, line \x1b[35m4`), because escaping the
+    # text for HTML leaves ESC sequences untouched and a browser prints them.
+    # Observed on the SCIRP notebook 2026-11-12, in the first result since
+    # execute output became visible that happened to contain a traceback.
+    #
+    # Stripping rather than translating to <span>: this card is a plain-text
+    # excerpt behind a disclosure control, and the line counts and character
+    # budget below should measure the text a reader sees, not the markup.
+    _ANSI = _re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+    content = _ANSI.sub("", content or "")
 
     def _esc(s):
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -673,7 +702,7 @@ def _display_tool_result(tool_name: str, content: str) -> None:
         '  </details>'
         '</div>'
     )
-    if not _sage_trail_add(html):
+    if not _sage_trail_add(html, live=False):
         display(HTML(html))
 
 
@@ -1318,12 +1347,33 @@ def _display_combined_map(
         import json as _json
 
         geojson_layers = []  # (name, gdf, colormap_or_None)
+        crs_reprojected = []  # (layer name, source CRS) for layers not in WGS84
         for path in geojson_files:
             try:
                 with warnings.catch_warnings():
                     warnings.filterwarnings("ignore", message="Non closed ring")
                     warnings.filterwarnings("ignore", message="Could not parse column")
                     gdf = gpd.read_file(path)
+
+                # Web maps place features by latitude and longitude, so a layer
+                # in any other CRS has to be reprojected before Folium sees it.
+                # Without this, a GeoJSON written in a projected CRS -- easy to
+                # produce, since distance and area work must be done in one --
+                # carries coordinates in metres that are read as degrees. Folium
+                # raises nothing: the features land outside the world and the map
+                # renders zoomed fully out with nothing on it. GeoPandas writes a
+                # `crs` member when the frame is not WGS84 and reads it back, so
+                # the mistake is detectable here even though it is invisible on
+                # the map. A layer that declares no CRS is left alone: GeoJSON
+                # already means WGS84, and guessing would be worse than trusting.
+                try:
+                    if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
+                        _src_crs = gdf.crs.to_string()
+                        gdf = gdf.to_crs(4326)
+                        crs_reprojected.append((path.stem, _src_crs))
+                except Exception:
+                    pass
+
                 import numpy as _np
                 for col in gdf.columns:
                     if col == "geometry":
@@ -1492,21 +1542,32 @@ def _display_combined_map(
                         legend_fields_seen.add(field)
 
             has_color_col = "_color" in gdf.columns
+
+            # Lines are styled by `color`/`weight`; `fillColor`/`fillOpacity` do
+            # nothing for them because a line has no interior. Styling every
+            # geometry as a polygon therefore drew LineStrings as 0.5px #333333
+            # hairlines — the colormap sidecar and the per-layer colour both
+            # reached `fillColor` and were discarded, so a legend could show four
+            # categories while every line on the map was the same grey, and two
+            # line layers were indistinguishable. Branch on geometry type so lines
+            # take the colour directly at a visible weight; polygons and points
+            # keep the styling they already had.
+            # c and fill_op are bound as defaults, not captured: folium may call
+            # style_function after this loop has moved on, and a closure would
+            # then give every layer the last layer's colour.
+            def _style(x, c=color, fill_op=0.85 if has_color_col else 0.8):
+                col = x["properties"].get("_color") or c
+                if "LineString" in (x.get("geometry") or {}).get("type", ""):
+                    return {"color": col, "weight": 3, "opacity": 0.9}
+                return {
+                    "fillColor": col, "color": "#333333",
+                    "weight": 0.5, "fillOpacity": fill_op,
+                }
+
             folium.GeoJson(
                 gdf,
                 marker=folium.CircleMarker(radius=5, fill=True),
-                style_function=(
-                    lambda x: {
-                        "fillColor": x["properties"].get("_color") or "#3388ff",
-                        "color": "#333333",
-                        "weight": 0.5, "fillOpacity": 0.85,
-                    }
-                ) if has_color_col else (
-                    lambda x, c=color: {
-                        "fillColor": c, "color": "#333333",
-                        "weight": 0.5, "fillOpacity": 0.8,
-                    }
-                ),
+                style_function=_style,
                 popup=folium.GeoJsonPopup(fields=popup_fields) if popup_fields else None,
             ).add_to(fg)
             fg.add_to(m)
@@ -1529,6 +1590,18 @@ def _display_combined_map(
         # Fit map to data extent; max_zoom prevents over-zooming on single points
         if fit_bounds:
             m.fit_bounds(fit_bounds, max_zoom=10)
+
+        # A reprojected layer is drawn correctly, but silence here would leave the
+        # next one to be diagnosed from a screenshot. Say what was adjusted.
+        if crs_reprojected:
+            _items = "; ".join(f"<b>{_n}</b> from {_c}" for _n, _c in crs_reprojected)
+            m.get_root().html.add_child(folium.Element(
+                "<div style=\"position:absolute;bottom:8px;left:8px;z-index:9999;"
+                "background:rgba(255,255,255,.92);border:1px solid #ccc;border-radius:4px;"
+                "padding:4px 8px;font:11px/1.4 sans-serif;color:#555;max-width:60%\">"
+                f"Reprojected to WGS84 for display: {_items}. "
+                "Write map layers with <code>.to_crs(4326)</code> to avoid this."
+                "</div>"))
 
         # Add single scrollable legend panel containing all colormap layers
         if legend_entries:
@@ -2111,16 +2184,24 @@ async def _run_agent_async(
                         _msg = ("Reviewing the answer against the review "
                                 "criteria &mdash; this can take a minute or "
                                 "two on a long task&hellip;")
-                    # Above the fold, not inside it: this line exists to explain a
-                    # pause, and a reader who must open a collapsed control to find
-                    # out why the cell went quiet has not been told anything.
+                    # A card at the END of the trail, in the order things happened:
+                    # the review starts after the agent's work, so this line comes
+                    # after it. Placed above the live box (rc3-rc10) it sat pinned
+                    # over all the tool calls while the cell ran, reading as though
+                    # the review came first -- and with a revision, "Reviewing" and
+                    # "Re-checking" stacked together at the top (reported by Kai,
+                    # 2026-11-13). As the newest card it is also where the reader
+                    # is looking: the live box holds its scroll at the bottom.
+                    # It folds with the rest of the trail, like the "revising the
+                    # answer" line, so the finished cell's record of the run shows
+                    # when each review pass began.
                     _rev_html = (
                         "<div style='color:#8a6d00; font-size:0.8em; "
                         "font-style:italic; margin:2px 0 8px 0; "
                         "font-family:-apple-system,sans-serif'>"
                         f"&#128269; {_msg}</div>"
                     )
-                    if not _sage_trail_notice(_rev_html):
+                    if not _sage_trail_add(_rev_html):
                         _d(_H(_rev_html))
                 except Exception:
                     pass  # a progress line must never break the run
@@ -2249,14 +2330,22 @@ async def _run_agent_async(
                     # withdrawn, so until the replacement lands there is
                     # nothing on screen and no sign anything is happening.
                     #
-                    # Additive display ONLY — no handle is captured here and
-                    # nothing already on screen is touched. Rewriting or
-                    # clearing this line later would mean holding a display
-                    # handle across the revision, and manipulating handles in
-                    # this callback is what previously produced empty cells
-                    # and a desynced dedup state. The line is left in place
-                    # afterwards for the same reason narration is: it records
-                    # something that really happened.
+                    # Into the trail as a card, so it folds with everything
+                    # else. It marks a real moment in the run -- the draft was
+                    # withdrawn here and the revision work follows it -- so it
+                    # belongs in sequence with the narration rather than as a
+                    # loose output stranded between the fold and the answer,
+                    # which is where a bare display() left it (reported by Kai,
+                    # 2026-11-12). Not transient: unlike the please-wait, this
+                    # line records something that happened, and the fold is
+                    # where the record of the run lives.
+                    #
+                    # Still no handle captured, which was the point of the
+                    # original bare display(): _sage_trail_add appends and
+                    # refreshes the ONE live display id the trail already
+                    # owns. Manipulating handles inside this callback is what
+                    # previously produced empty cells and a desynced dedup
+                    # state, and nothing here does that.
                     try:
                         _n_gaps = sum(
                             1 for _c in (_rubric_field(ev, "criteria", []) or [])
@@ -2267,12 +2356,14 @@ async def _run_agent_async(
                             if _n_gaps else "requested changes"
                         )
                         from IPython.display import display as _d, HTML as _H
-                        _d(_H(
+                        _rev_line = (
                             "<div style='color:#8a6d00; font-size:0.8em; "
                             "font-style:italic; margin:2px 0 8px 0; "
                             "font-family:-apple-system,sans-serif'>"
                             f"🔍 Review {_what} — revising the answer…</div>"
-                        ))
+                        )
+                        if not _sage_trail_add(_rev_line):
+                            _d(_H(_rev_line))
                     except Exception:
                         pass  # a progress line must never break the run
 
@@ -2472,6 +2563,13 @@ async def _run_agent_async(
         # SAGE_REVIEW_RULES is "" there and this is a no-op.
         if SAGE_REVIEW_RULES:
             _agent_input["rubric"] += SAGE_REVIEW_RULES + "\n"
+        # How many criteria the rubric HAS, for the verdict header. The grader's
+        # list is not that number: it has dropped a criterion (reporting 9 of
+        # 10) and added a requirement from the question as one of its own
+        # (reporting 11), and the header showed whichever count came back.
+        global _SAGE_LAST_RUBRIC_N
+        _SAGE_LAST_RUBRIC_N = sum(1 for _l in _agent_input["rubric"].splitlines()
+                                  if _l.lstrip().startswith("- "))
     async for chunk in agent.astream(
         _agent_input,
         stream_mode="messages",
@@ -2714,6 +2812,9 @@ async def _run_agent_async(
 # ask() so it can be rendered after the final report rather than before it.
 # None when the last run had no review.
 _SAGE_LAST_REVIEW: list | None = None
+
+# Number of criteria in the rubric that run was graded against. None when unknown.
+_SAGE_LAST_RUBRIC_N: int | None = None
 
 
 _SAGE_TEXT_ONLY_GUARD = (
@@ -2982,6 +3083,13 @@ def _sage_display_review(evals: list) -> None:
     # disclosure triangle. The reader is a scientist who asked a question, not
     # a reviewer — the corrected answer is the product, and the review is
     # provenance available on demand rather than something they must read.
+    # The count shown is the rubric's, not the grader's. When the grader came
+    # back with fewer, say so: a criterion it skipped was not checked, and the
+    # header must not imply otherwise.
+    _n_rubric = _SAGE_LAST_RUBRIC_N or len(criteria)
+    _count = f"{_n_rubric} criteria"
+    if criteria and len(criteria) < _n_rubric:
+        _count += f"; the grader reported on only {len(criteria)}"
     display(HTML(
         f"<details style='background:{bg}; border-left:3px solid {border}; "
         f"padding:5px 10px; margin:3px 0 12px 0; "
@@ -2989,7 +3097,7 @@ def _sage_display_review(evals: list) -> None:
         f"line-height:1.45'>"
         f"<summary style='color:{fg}; cursor:pointer'>"
         f"🔍 <b>Review</b> — {icon} {label} "
-        f"<span style='color:#888'>({len(criteria)} criteria)</span></summary>"
+        f"<span style='color:#888'>({_count})</span></summary>"
         f"<div style='margin-top:6px'>{''.join(rows)}{note}</div>"
         f"</details>"
     ))
@@ -3075,9 +3183,18 @@ SAGE_TRAIL_LIVE_ITEMS: int = 0
 SAGE_TRAIL_LIVE_NEWEST_FIRST: bool = False
 
 # What this cell has emitted, split by where it belongs once the trail folds:
-# "pre" stays above the control, "items" go inside it. "live_id" is the display
-# id of the single output both are rendered into.
-_SAGE_TRAIL: dict = {"on": False, "pre": [], "items": [],
+# "pre" stays above the control, "items" go inside it, and "pre_transient" is
+# above the control only while the run is live -- it is dropped when the fold
+# is built. "live_id" is the display id of the single output they render into.
+#
+# The distinction is between a warning and a please-wait. A warning ("these
+# files were deleted", "the MCP registry is empty") is about the run and is
+# still true when the run is over, so it belongs in the permanent record. A
+# line explaining a pause has no reader once the pause is finished: what it
+# leaves behind is a stale announcement sitting above an answer that has since
+# arrived, in a position that reads as though the announcement came first.
+_SAGE_TRAIL: dict = {"on": False, "pre": [], "pre_transient": [], "items": [],
+                     "items_live": [],
                      "fold_id": None, "block": None, "block_id": None,
                      "live_id": None}
 _SAGE_MD_PARSER: list = [None]
@@ -3092,7 +3209,9 @@ def _sage_trail_start() -> None:
     """
     _SAGE_TRAIL["on"] = SAGE_FOLD_PROGRESS
     _SAGE_TRAIL["pre"] = []
+    _SAGE_TRAIL["pre_transient"] = []
     _SAGE_TRAIL["items"] = []
+    _SAGE_TRAIL["items_live"] = []
     _SAGE_TRAIL["fold_id"] = None
     _SAGE_TRAIL["block"] = None
     _SAGE_TRAIL["block_id"] = None
@@ -3109,7 +3228,9 @@ def _sage_trail_cancel() -> None:
     _sage_trail_expand()
     _SAGE_TRAIL["on"] = False
     _SAGE_TRAIL["pre"] = []
+    _SAGE_TRAIL["pre_transient"] = []
     _SAGE_TRAIL["items"] = []
+    _SAGE_TRAIL["items_live"] = []
     _SAGE_TRAIL["fold_id"] = None
     _SAGE_TRAIL["block"] = None
     _SAGE_TRAIL["block_id"] = None
@@ -3138,7 +3259,9 @@ def _sage_trail_live_html() -> str:
     Notices stay OUTSIDE the box: a line whose job is to explain a pause is
     worth nothing if the reader has to scroll a panel to find it.
     """
-    items = _SAGE_TRAIL["items"]
+    # The live list, not the full trail: a card added with live=False is in
+    # the fold and nowhere else. See _sage_trail_add.
+    items = _SAGE_TRAIL["items_live"]
     n = SAGE_TRAIL_LIVE_ITEMS
     kept = list(items[-n:]) if n and len(items) > n else list(items)
 
@@ -3181,7 +3304,10 @@ def _sage_trail_live_html() -> str:
     if not SAGE_TRAIL_LIVE_NEWEST_FIRST:
         style += " display:flex; flex-direction:column-reverse;"
 
+    # Transient notices sit last, closest to the box: a line explaining why
+    # the box has stopped moving reads best directly above it.
     return ("".join(_SAGE_TRAIL["pre"])
+            + "".join(_SAGE_TRAIL["pre_transient"])
             + f'<div class="sage-trail-live" style="{style}">{body}</div>')
 
 
@@ -3217,8 +3343,14 @@ def _sage_trail_expand() -> None:
         return
     try:
         from IPython.display import HTML, update_display
+        # Transient notices are kept here. This path is the one where the fold
+        # never happens -- an error, an interrupt -- and a reader about to work
+        # out what went wrong wants the whole run, including what it was
+        # waiting on when it stopped.
         update_display(
-            HTML("".join(_SAGE_TRAIL["pre"]) + "".join(_SAGE_TRAIL["items"])),
+            HTML("".join(_SAGE_TRAIL["pre"])
+                 + "".join(_SAGE_TRAIL["pre_transient"])
+                 + "".join(_SAGE_TRAIL["items"])),
             display_id=_SAGE_TRAIL["live_id"],
         )
     except Exception:                                            # noqa: BLE001
@@ -3234,10 +3366,14 @@ def _sage_trail_fallback() -> None:
     from here on: one that hid only part of what is on screen would be worse
     than no fold.
     """
-    pending = list(_SAGE_TRAIL["pre"]) + list(_SAGE_TRAIL["items"])
+    pending = (list(_SAGE_TRAIL["pre"])
+               + list(_SAGE_TRAIL["pre_transient"])
+               + list(_SAGE_TRAIL["items"]))
     _SAGE_TRAIL["on"] = False
     _SAGE_TRAIL["pre"] = []
+    _SAGE_TRAIL["pre_transient"] = []
     _SAGE_TRAIL["items"] = []
+    _SAGE_TRAIL["items_live"] = []
     _SAGE_TRAIL["live_id"] = None
     try:
         from IPython.display import display, HTML
@@ -3247,25 +3383,42 @@ def _sage_trail_fallback() -> None:
         pass
 
 
-def _sage_trail_notice(html: str) -> bool:
+def _sage_trail_notice(html: str, transient: bool = False) -> bool:
     """A warning about the run itself: above the fold, not inside it.
 
     True when the live view has it, and the caller must not display it again.
+
+    `transient` is for a line that explains a pause rather than reporting
+    something about the run: it shows while the run is live and is dropped
+    when the fold is built, because by then the pause is over and whatever
+    the wait produced is on screen under it.
     """
     if not _SAGE_TRAIL["on"]:
         return False
-    _SAGE_TRAIL["pre"].append(html)
+    _SAGE_TRAIL["pre_transient" if transient else "pre"].append(html)
     if _sage_trail_show():
         return True
     _sage_trail_fallback()
     return False
 
 
-def _sage_trail_add(html: str) -> bool:
-    """A card the agent produced while working: goes inside the fold."""
+def _sage_trail_add(html: str, live: bool = True) -> bool:
+    """A card the agent produced while working: goes inside the fold.
+
+    `live=False` keeps it out of the live view while the run is going, so it
+    appears only once the trail folds. For material a reader opens the fold
+    to check, not material they need to watch arrive -- a tool's raw output,
+    above all. Shown live, every script's printout lands in the middle of the
+    cell as it runs, and the live view reads as the answer being made of tool
+    dumps (reported by Kai, 2026-11-12, after rc3 made execute output visible).
+    The narration and the tool-call cards still stream, so a reader watching
+    the run sees what the agent is doing; the fold adds what each step said.
+    """
     if not _SAGE_TRAIL["on"]:
         return False
     _SAGE_TRAIL["items"].append(html)
+    if live:
+        _SAGE_TRAIL["items_live"].append(html)
     if _sage_trail_show():
         return True
     _sage_trail_fallback()
@@ -3350,6 +3503,19 @@ def _sage_trail_collapse(n_tool_calls: int = 0) -> None:
         return
     _SAGE_TRAIL["on"] = False
     if not _SAGE_TRAIL["items"]:
+        # No fold is coming. A transient notice is still on screen and its
+        # wait is over, so take it down here -- the invariant is that one
+        # never outlives the run, and _sage_trail_emit has no block to do it
+        # with on this path.
+        if _SAGE_TRAIL["pre_transient"]:
+            _SAGE_TRAIL["pre_transient"] = []
+            try:
+                from IPython.display import HTML, update_display
+                if _SAGE_TRAIL["live_id"]:
+                    update_display(HTML("".join(_SAGE_TRAIL["pre"])),
+                                   display_id=_SAGE_TRAIL["live_id"])
+            except Exception:                                    # noqa: BLE001
+                pass
         _SAGE_TRAIL["pre"] = []
         return
     try:
@@ -3368,6 +3534,11 @@ def _sage_trail_collapse(n_tool_calls: int = 0) -> None:
         else:
             label = "show the agent\u2019s work"
 
+        # "pre" only. Transient notices are deliberately absent: this block is
+        # the permanent record of the run, and it lands above the answer, so a
+        # please-wait baked into it would sit at the top of a finished cell
+        # announcing a wait the reader never saw, ahead of the answer it was
+        # waiting for.
         block = (
             "".join(_SAGE_TRAIL["pre"])
             + f'<details class="sage-trail-fold" id="{_fold_id}" '
@@ -3388,7 +3559,9 @@ def _sage_trail_collapse(n_tool_calls: int = 0) -> None:
         _sage_trail_expand()
     finally:
         _SAGE_TRAIL["pre"] = []
+        _SAGE_TRAIL["pre_transient"] = []
         _SAGE_TRAIL["items"] = []
+        _SAGE_TRAIL["items_live"] = []
 
 
 def _sage_trail_emit() -> None:

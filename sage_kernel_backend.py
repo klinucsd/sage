@@ -16,6 +16,7 @@ possible from a subprocess.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 from pathlib import Path
 
@@ -24,6 +25,29 @@ from deepagents.backends.protocol import ExecuteResponse
 
 
 _SHELL_OPERATORS = {"|", "||", "&", "&&", ";", ";;", ">", ">>", "<", "<<", "<<<"}
+
+# Terminal colour codes, removed from every result before the agent reads it.
+# Python 3.13 colours its own tracebacks, so a failing subprocess returns
+# `File \x1b[35m"<stdin>"\x1b[0m, line \x1b[35m4` — which the model has to read
+# past, and which pays tokens for punctuation it cannot use. It reached a
+# notebook page too, once execute output became visible in the fold (2026-11-12,
+# SCIRP notebook: 44 sequences in a single card). The page is fixed where it
+# renders; this is the same text one step earlier, for the other reader.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+# `sys.__stdout__` / `sys.__stderr__` in an agent's script, rewritten to the
+# ordinary streams before it runs. Those two objects are deliberately NOT
+# swapped during in-kernel execution (see _run_in_kernel: replacing them
+# deadlocks pandas/openpyxl), so a script printing through them bypasses the
+# capture and writes straight into the notebook cell, outside the agent-work
+# fold, while the agent gets an empty result. The note in execute() tells the
+# agent afterwards, but by then the text is already on the page -- observed
+# 2026-11-13, a progress printer `print(*a, file=sys.__stdout__)` put eight
+# lines under the live panel before the agent switched to plain print().
+# Rewriting the script's text removes the bypass without touching the objects
+# the libraries hold, which is what the deadlock was about. Line numbers are
+# unchanged, so tracebacks still point at the right line.
+_DUNDER_STREAM = re.compile(r"\bsys\.__(stdout|stderr)__\b")
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +190,27 @@ class KernelShellBackend(LocalShellBackend):
             self._ipython = None
 
     def execute(self, command: str, timeout=None, **kwargs) -> ExecuteResponse:
+        """Run the command, then hand back a result with no terminal escapes.
+
+        A wrapper rather than a strip at each exit, because the body returns
+        from four places and two of them are the parent's subprocess path --
+        which is where coloured tracebacks actually come from, and which this
+        class does not otherwise touch.
+
+        `timeout` stays named in this signature: deepagents gates the feature
+        with `"timeout" in inspect.signature(cls.execute).parameters`, so a
+        bare **kwargs here would make the execute tool refuse the agent's
+        timeout call. See `_execute` for why the value is ignored in-kernel.
+        """
+        resp = self._execute(command, timeout=timeout, **kwargs)
+        try:
+            if resp.output and "\x1b" in resp.output:
+                resp.output = _ANSI.sub("", resp.output)
+        except Exception:                                        # noqa: BLE001
+            pass  # cleaning the text must never cost the result itself
+        return resp
+
+    def _execute(self, command: str, timeout=None, **kwargs) -> ExecuteResponse:
         if self._ipython is None:
             return super().execute(command, timeout=timeout)
 
@@ -199,7 +244,7 @@ class KernelShellBackend(LocalShellBackend):
         # `timeout` is accepted and deliberately IGNORED on this path: in-kernel
         # execution runs in-process in the live IPython kernel, so there is no
         # subprocess to bound. The parameter must nonetheless be declared BY NAME
-        # in the signature above, because deepagents gates the feature with
+        # on the PUBLIC `execute` above, because deepagents gates the feature with
         # `execute_accepts_timeout()`, which does `"timeout" in
         # inspect.signature(cls.execute).parameters`. A bare `**kwargs` fails
         # that check, so the execute tool refused the agent's timeout call with
@@ -269,6 +314,7 @@ class KernelShellBackend(LocalShellBackend):
         except OSError:
             pass
 
+        code = _DUNDER_STREAM.sub(lambda m: f"sys.{m.group(1)}", code)
         wrapped_code = (
             code
             + "\ntry:\n    import matplotlib.pyplot as _sage_plt; _sage_plt.close('all')\n"
@@ -373,6 +419,30 @@ class KernelShellBackend(LocalShellBackend):
             # Agent sees only stdout/stderr text
             if _stdout_txt:
                 output_parts.append(_stdout_txt)
+            elif "__stdout__" in code:
+                # sys.__stdout__ is deliberately NOT redirected (see the
+                # comment above the capture: swapping it deadlocks pandas /
+                # openpyxl). A script printing through it therefore bypasses
+                # the buffer entirely -- the text goes to the notebook cell's
+                # own output stream, outside the agent-work fold, and this
+                # result comes back empty.
+                #
+                # Returning nothing is what makes that trap self-sealing. The
+                # agent reads the empty result as "stdout was swallowed" and
+                # records it: observed 2026-11-12, where
+                # .sage_learnings/scirp-road-corridors carried "the kernel
+                # hides stdout of `-c` snippets" and the next run wrote the
+                # sys.__stdout__ workaround into its script from the start,
+                # reproducing the symptom the lesson described -- while plain
+                # print() in the same session captured 4804B, 2436B and 90B.
+                # Naming the cause here is what keeps the misreading, and the
+                # lesson it becomes, from forming at all.
+                output_parts.append(
+                    "[note] This run printed through sys.__stdout__, which is "
+                    "not captured here -- that text went to the notebook cell "
+                    "instead. Use a plain print() and the output is returned "
+                    "in this result."
+                )
             if _stderr_txt:
                 output_parts.append(f"[stderr] {_stderr_txt.rstrip()}")
 

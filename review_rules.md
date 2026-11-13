@@ -22,3 +22,23 @@
   the record), treat the aggregate as a likely composition artifact: flag it
   and prefer the per-unit (fixed-panel or per-item median) estimate as the
   headline. This fails even when each number is individually sourced.
+- When a number introduces or summarises a list of named items ("the four
+  sites -- A, B, C, D, E"), count the named items. If the count and the list
+  disagree, this fails, even if the number appears correctly elsewhere.
+- A quantity that an earlier answer in this session already defined or
+  tabulated must keep that definition, scale and value. A count an earlier
+  table gives as 18 must not reappear as 15, and a score defined earlier as
+  0 or 1 must not reappear as a raw count. If this answer measures it a
+  different way, it must say how and why the result differs. Earlier answers'
+  wording is not evidence; only their tables and computed output are.
+- For any claim that items are highest, lowest, top-N, larger than another
+  item, or hold "in every" case, check each named item against the table
+  column the claim refers to. "Top 10 in every scenario" fails if any named
+  item falls outside the top 10 in any column, and the correction must fix
+  every contradicted item, not just the first.
+- When the question specifies how something is to be computed -- weights,
+  thresholds, scaling, how missing values are handled, how items are grouped
+  or cut -- check the code in the transcript against that specification. A
+  computation that departs from it fails, unless the answer states the
+  departure and why. "Spread the weight in proportion" fails if the code
+  splits it 55/45 where proportion gives 58/42.
