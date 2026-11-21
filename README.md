@@ -90,11 +90,11 @@ Multiple `%%mcp` cells **merge** (per-server replace on name collision), so diff
 ARGUS keeps a per-skill `Learnings.md` file in the workspace. When a `%%ask` cell hits a subtle data quirk, a working-but-non-obvious approach, or an avoidable failure, the agent can record the lesson into the relevant skill's `Learnings.md`. Subsequent cells in the same workspace pick up those learnings automatically, so ARGUS gets better at your specific domain over time without changing any code. Learnings are local to your workspace — they don't leak to other users — and you can edit or delete them like any other Markdown file.
 
 ### 10. Multiple LLM Providers
-ARGUS works with any LangChain-compatible LLM endpoint. Configure your preferred provider in a `config.toml` file:
+ARGUS works with any LangChain-compatible LLM endpoint. Configure your preferred provider in a `config.toml` file, or switch from inside a notebook with [`%model`](#choosing-the-model):
 
 | Provider | Notes |
 |---|---|
-| NRP GLM-5 | Free for NRP/NDP users; default in the published image (GLM-4.7 available as a fallback) |
+| NRP DeepSeek-V4-Flash | Free for NRP/NDP users; default in the published image (GLM-5 also available) |
 | OpenAI GPT-5.5 | Standard OpenAI API |
 | Anthropic Claude | Via `langchain_anthropic` |
 | Any OpenAI-compatible endpoint | `base_url` configurable |
@@ -166,6 +166,8 @@ NRP_API_KEY=your_nrp_key_here
 ```
 
 ### 3. Add your LLM configuration
+
+You can also switch models later from inside a notebook with `%model` (see [Choosing the model](#choosing-the-model)).
 
 ```toml
 # config.toml — OpenAI example
@@ -252,6 +254,20 @@ on December 9, 2024? Report the distance from the earthquake to each station.
 ```python
 %reset    # Clear output files, conversation history, and execution log — start fresh
 ```
+
+### Choosing the model
+
+```python
+%model                                    # show the current model, its endpoint, and whether its API key is set
+%model --default                          # back to the image default, nrp:deepseek-v4-flash
+
+%model --name openai:gpt-5.5 --api-key-env OPENAI_API_KEY
+%model --name zai:glm-5 --url https://api.z.ai/api/coding/paas/v4 --api-key-env ZAI_API_KEY
+```
+
+Write the model as `provider:model`. The provider is a name you choose for the `[models.providers.<provider>]` block in `config.toml`. `--url` and `--api-key-env` create or update that block, so a new OpenAI-compatible endpoint needs no hand-editing. If you give `--url` or `--api-key-env` with a bare model name (no `provider:` prefix and no `--provider`), ARGUS names the block after the model's leading word (`glm-5` → `glm`). A bare name on its own is matched to the provider whose model list contains it.
+
+The change takes effect on the next `%%ask`, with no kernel restart. It is saved in `~/.deepagents/config.toml`, so it survives kernel restarts and applies to **every notebook on the pod**. Run `%model` to check which model is active before relying on it. On Colab, the API key is read from Colab Secrets (the 🔑 sidebar) when it is not in the environment.
 
 ### Output folder
 
