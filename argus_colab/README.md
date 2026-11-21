@@ -17,7 +17,7 @@ Paste this exact line in the second cell. It's identical for every provider:
 ```python
 import urllib.request
 exec(urllib.request.urlopen(
-    'https://raw.githubusercontent.com/klinucsd/sage/main/argus_colab/install.py'
+    'https://raw.githubusercontent.com/scil-sdsc/argus/main/argus_colab/install.py'
 ).read().decode(), globals())
 ```
 
@@ -160,7 +160,7 @@ If anything fails, the installer prints a clear, specific error message naming e
 
 **`%%ask` returns no output** — see the "If the smoke test fails" section in `bootstrap_test.ipynb`, or check `SAGE_MESSAGES[-1]` and `_SAGE_LAST_RUN_CHUNKS` for diagnostic details.
 
-**Other** — open an issue at https://github.com/klinucsd/sage/issues with the cell output and your `LLM` config (with your API key redacted).
+**Other** — open an issue at https://github.com/scil-sdsc/argus/issues with the cell output and your `LLM` config (with your API key redacted).
 
 ## Pinning to a release
 
@@ -169,7 +169,7 @@ The installer pulls from the `main` branch by default. Once we cut a formal rele
 ```python
 import urllib.request
 exec(urllib.request.urlopen(
-    'https://raw.githubusercontent.com/klinucsd/sage/v1.4.3/argus_colab/install.py'
+    'https://raw.githubusercontent.com/scil-sdsc/argus/v1.4.3/argus_colab/install.py'
 ).read().decode(), globals())
 ```
 

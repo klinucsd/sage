@@ -14,7 +14,7 @@ Usage from inside a Colab notebook:
     # Cell 2 — universal install (same lines for every provider).
     import urllib.request
     exec(urllib.request.urlopen(
-        'https://raw.githubusercontent.com/klinucsd/sage/main/argus_colab/install.py'
+        'https://raw.githubusercontent.com/scil-sdsc/argus/main/argus_colab/install.py'
     ).read().decode(), globals())
 
 After cell 2 completes, %%ask, %%mcp, %%skill are all registered and ARGUS
@@ -259,7 +259,7 @@ else:
         '        "url": "https://api.z.ai/api/coding/paas/v4",\n'
         '        "api_key_env": "ZAI_API_KEY",\n'
         "    }\n\n"
-        "See https://github.com/klinucsd/sage/blob/main/argus_colab/README.md "
+        "See https://github.com/scil-sdsc/argus/blob/main/argus_colab/README.md "
         "for templates covering OpenAI, Anthropic, ZAI, OpenRouter, NRP, Gemini, "
         "and other providers."
     )
@@ -352,7 +352,7 @@ except ImportError:
 # Pull from 'main' during pre-1.0 active development; once a stable release
 # tag is cut, this URL can be pinned to that tag for reproducibility.
 _ARGUS_REF = "main"
-_ARGUS_BASE = f"https://raw.githubusercontent.com/klinucsd/sage/{_ARGUS_REF}"
+_ARGUS_BASE = f"https://raw.githubusercontent.com/scil-sdsc/argus/{_ARGUS_REF}"
 for _fname in ("sage_magic.py", "sage_kernel_backend.py"):
     urllib.request.urlretrieve(f"{_ARGUS_BASE}/{_fname}", f"/content/{_fname}")
 if "/content" not in sys.path:
@@ -389,7 +389,7 @@ else:
     # One GitHub tree call enumerates every file in the sage repo at this ref —
     # avoids N per-skill API calls and stays well under the unauth rate limit.
     _tree_url = (
-        f"https://api.github.com/repos/klinucsd/sage/git/trees/{_ARGUS_REF}"
+        f"https://api.github.com/repos/scil-sdsc/argus/git/trees/{_ARGUS_REF}"
         f"?recursive=1"
     )
     try:
@@ -418,7 +418,7 @@ else:
             _local = _skill_dir / _rel
             _local.parent.mkdir(parents=True, exist_ok=True)
             _raw_url = (
-                f"https://raw.githubusercontent.com/klinucsd/sage/"
+                f"https://raw.githubusercontent.com/scil-sdsc/argus/"
                 f"{_ARGUS_REF}/{_entry['path']}"
             )
             urllib.request.urlretrieve(_raw_url, str(_local))
