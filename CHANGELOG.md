@@ -7,6 +7,21 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## v1.5.11-rc3 — 2026-11-17
+
+- **The answer no longer reports ARGUS's internal self-check.** The system prompt ends with a closing audit asking the agent to confirm every edit-and-retry was recorded in a skill's Learnings.md. Agents reported its outcome to the reader, e.g. "Both scripts ran cleanly on the first attempt — no edit-and-retry cycles, so no Learnings.md entry is needed" as the first line of an answer. The prompt now says the audit is internal and the report answers the user's question only.
+
+## v1.5.11-rc2 — 2026-11-17
+
+- **Problems the run already handled no longer print red tracebacks in the cell.** The agent's libraries (deepagents, LangChain, LangGraph, the OpenAI client, httpx) log what they recover from, and with no handler of their own those records reached the cell's stderr, which Jupyter paints red. When NRP returned a 504 to the answer review, a 60-line traceback appeared under a correct answer, while ARGUS's Review box already said the review did not complete. Their records now go to `~/.sage_logs/agent_libraries.log`; other loggers are unaffected.
+- **The Review box says plainly when the review could not run**: "The model service did not respond (HTTP 504), so the answer above has not been checked", instead of quoting the exception with the server's HTML error page.
+
+## v1.5.11-rc1 — 2026-11-16
+
+- **Formulas in an answer render as mathematics instead of raw LaTeX.** ARGUS escaped every `$` in an answer to `&#36;`, so a stray currency amount could never open a math span, but that also stopped real formulas from reaching MathJax. And JupyterLab renders only dollar delimiters, while models often write LaTeX's `\[…\]` and `\(…\)`. Those reached the reader as backslashes and braces. In a display block written across lines, a line holding only `=` was even read as a heading underline, so part of the formula turned into a heading. Observed twice in the SCIRP notebook: a treatment-score formula in one answer and a scoring formula in the next.
+
+  `_fix_glm_markdown` now sets code and mathematics aside, escapes the remaining `$`, and puts the set-aside spans back last, after the bold fixers. Display math (`$$…$$`, `\[…\]`, `\begin{…}…\end{…}`) is converted to `$$…$$` on its own lines, and `\(…\)` to `$…$`. Inline `$…$` follows ARGUS-FEDER's rule. Once an answer is doing mathematics (a displayed formula, or an inline span with a TeX command), a single-line `$…$` is math. Otherwise a span has to carry a sub- or superscript or a relation with no whitespace, such as `$T_e$` or `$10^{15}$`. So "runs cost $1.50 and $5" stays text. Code spans and fences are untouched. Checked against 1,875 saved answers: three differ, only in their formula delimiters.
+
 ## v1.5.10 — 2026-11-13
 
 Released as `kaiucsd/argus-dev:v1.5.10`, the same image as `v1.5.10-rc11`

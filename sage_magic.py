@@ -536,6 +536,34 @@ warnings.filterwarnings("ignore", message="Enable tracemalloc")
 import logging as _logging
 _logging.getLogger("fastmcp.server.providers.proxy").setLevel(_logging.WARNING)
 
+# The agent's libraries log what they recover from -- a retried model call, a
+# review grader that timed out -- and with no handler of their own those
+# records fall through to Python's last-resort handler, i.e. the cell's
+# stderr, which Jupyter paints red. A 504 from NRP during review printed a
+# 60-line traceback under a correct answer, while ARGUS's own Review box
+# already said "did not complete". Something the run handled, or that ARGUS
+# reports in its own words, is not the reader's problem; it goes to a log
+# file for whoever debugs, and the cell shows only what needs acting on.
+def _route_library_logs() -> None:
+    try:
+        _log_dir = Path.home() / ".sage_logs"
+        _log_dir.mkdir(parents=True, exist_ok=True)
+        _handler = _logging.FileHandler(_log_dir / "agent_libraries.log",
+                                        encoding="utf-8")
+    except OSError:
+        _handler = _logging.NullHandler()
+    _handler.setFormatter(_logging.Formatter(
+        "%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    for _name in ("deepagents", "deepagents_code", "langchain", "langchain_core",
+                  "langchain_openai", "langgraph", "openai", "httpx", "httpcore"):
+        _lg = _logging.getLogger(_name)
+        if not any(getattr(h, "_sage_route", False) for h in _lg.handlers):
+            _handler._sage_route = True
+            _lg.addHandler(_handler)
+        _lg.propagate = False
+
+_route_library_logs()
+
 del _sys
 
 
@@ -1869,8 +1897,54 @@ def _fix_glm_markdown(text: str) -> str:
     text = re.sub(r'([^\n|#\s])(#{1,6} )', r'\1\n\2', text)
     # Fix: numbered list items missing space after period: "2.INCIDENT" → "2. INCIDENT"
     text = re.sub(r'^(\d+)\.([^\s\d])', r'\1. \2', text, flags=re.MULTILINE)
-    # Escape ALL dollar signs to prevent JupyterLab MathJax from treating $...$ as LaTeX math.
-    # Any $ can start/end a math expression and consume large spans of text.
+    # Dollar signs and LaTeX — protect the mathematics, escape every other '$'.
+    #
+    # JupyterLab pulls math out of the source BEFORE it parses the markdown, so a
+    # bare '$' in prose is dangerous: "three runs cost $1.50 and the fourth $5"
+    # pairs the two amounts and everything between them vanishes into a math
+    # span. Escaping every '$' to '&#36;' stopped that, but a real equation then
+    # never reached MathJax either.
+    #
+    # And JupyterLab renders only dollar delimiters. LaTeX's \[...\] and \(...\)
+    # reach the reader as raw backslashes and braces -- worse, a display block
+    # with a line holding only "=" becomes a setext heading underline. Models
+    # write \[...\] often, so convert rather than ask them not to.
+    #
+    # So: stash code (a '$' there is neither math nor escapable), stash display
+    # math converted to $$...$$ on its own lines, stash inline math, escape
+    # what is left, and restore the stash at the very end -- after the bold
+    # fixers, which must not see LaTeX or code either. Inline $...$ is the
+    # ambiguous case; the rule follows ARGUS-FEDER's: once the answer is doing
+    # mathematics (a displayed formula, or an inline span with a TeX command),
+    # a single-line $...$ is math; otherwise a span has to carry a sub- or
+    # superscript or a relation with no whitespace ("$T_e$", "$10^{15}$").
+    _stashed = []
+
+    def _stash_text(s):
+        _stashed.append(s)
+        return "\x00SAGE%d\x00" % (len(_stashed) - 1)
+
+    def _stash(m):
+        return _stash_text(m.group(0))
+
+    text = re.sub(r'```[\s\S]*?```', _stash, text)
+    text = re.sub(r'`[^`\n]+`', _stash, text)
+
+    _before_math = len(_stashed)
+    text = re.sub(r'\$\$[\s\S]+?\$\$', _stash, text)
+    text = re.sub(r'\\\[([\s\S]+?)\\\]',
+                  lambda m: _stash_text("\n$$\n" + m.group(1).strip() + "\n$$\n"), text)
+    text = re.sub(r'\\begin\{([A-Za-z]+\*?)\}[\s\S]+?\\end\{\1\}',
+                  lambda m: _stash_text("\n$$\n" + m.group(0) + "\n$$\n"), text)
+    has_display_math = len(_stashed) > _before_math
+    text = re.sub(r'\\\(([^\n]+?)\\\)',
+                  lambda m: _stash_text("$" + m.group(1).strip() + "$"), text)
+    math_bearing = has_display_math or len(_stashed) > _before_math or re.search(
+        r'\$[^\n$]{0,120}\\[A-Za-z][^\n$]{0,120}\$', text)
+    if math_bearing:
+        text = re.sub(r'\$[^\n$]{1,120}?\$', _stash, text)
+    else:
+        text = re.sub(r'\$(?=[^\s$]*[\^_=][A-Za-z0-9{])[^\s$]{1,60}?\$', _stash, text)
     text = text.replace('$', '&#36;')
     # Bold marker fixes — order matters!
     # Phase 1: Fix INTERNAL spacing (strip stray spaces inside ** markers)
@@ -1896,6 +1970,11 @@ def _fix_glm_markdown(text: str) -> str:
     # old regex matched `** more **` as a bold pair). See [[feedback_sage_bold_regex]]
     # Rule 3 for the full story.
     text = re.sub(r'\*\*(?=[^\s*])([^*\n]*\w[^*\n]*)\*\*([^\s*])', r'**\1** \2', text)
+    # Put the stashed code and math back, untouched by every fixer above.
+    # Descending order, so a span holding an earlier placeholder is restored
+    # before the placeholder it carries.
+    for _i in range(len(_stashed) - 1, -1, -1):
+        text = text.replace("\x00SAGE%d\x00" % _i, _stashed[_i])
     return text
 
 
@@ -3076,7 +3155,15 @@ def _sage_display_review(evals: list) -> None:
     # Only show the grader's prose when it adds something beyond the per-criterion
     # verdicts — on a clean pass it is usually redundant.
     note = ""
-    if explanation and result != "satisfied":
+    if result == "grader_error":
+        # The grader's explanation embeds the raw exception, which for a
+        # gateway timeout is the server's HTML error page. Say it plainly.
+        import re as _re
+        _code = _re.search(r"HTTP (\d{3})", explanation)
+        note = ("<div style='margin-top:6px; color:#555'>The model service did "
+                "not respond" + (f" (HTTP {_code.group(1)})" if _code else "") +
+                ", so the answer above has not been checked.</div>")
+    elif explanation and result != "satisfied":
         note = (f"<div style='margin-top:6px; color:#555'>{explanation}</div>")
 
     # Rendered like a tool card: one quiet summary line, details behind a
@@ -5219,7 +5306,9 @@ try:
             f"chance before the cell ends. Only then proceed to the "
             f"final report. This audit exists because skipping the WRITE "
             f"RULE mid-task is the single most common protocol failure; "
-            f"the audit is the safety net.\n"
+            f"the audit is the safety net. The audit is internal: the report "
+            f"to the user answers their question and says nothing about this "
+            f"audit, Learnings.md, or how the scripts ran.\n"
             f"\n"
             f"PACKAGE INSTALL RULE — `/opt/conda/` is read-only for the kernel user, so any "
             f"`pip install` without `--user` fails with `Permission denied` and floods the cell. "
