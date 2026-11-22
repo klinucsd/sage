@@ -2090,6 +2090,8 @@ async def _run_agent_async(
     from deepagents_code.config import create_model
     try:
         from sage_kernel_backend import KernelShellBackend
+        import sage_kernel_backend as _skb
+        _skb.RUNNING_HOOK = _sage_running_notice
     except ImportError:
         KernelShellBackend = None
     from deepagents_code.model_config import ModelConfigError
@@ -3281,7 +3283,7 @@ SAGE_TRAIL_LIVE_NEWEST_FIRST: bool = False
 # leaves behind is a stale announcement sitting above an answer that has since
 # arrived, in a position that reads as though the announcement came first.
 _SAGE_TRAIL: dict = {"on": False, "pre": [], "pre_transient": [], "items": [],
-                     "items_live": [],
+                     "items_live": [], "running": None,
                      "fold_id": None, "block": None, "block_id": None,
                      "live_id": None}
 _SAGE_MD_PARSER: list = [None]
@@ -3302,6 +3304,7 @@ def _sage_trail_start() -> None:
     _SAGE_TRAIL["fold_id"] = None
     _SAGE_TRAIL["block"] = None
     _SAGE_TRAIL["block_id"] = None
+    _SAGE_TRAIL["running"] = None
     _SAGE_TRAIL["live_id"] = None
 
 
@@ -3321,6 +3324,7 @@ def _sage_trail_cancel() -> None:
     _SAGE_TRAIL["fold_id"] = None
     _SAGE_TRAIL["block"] = None
     _SAGE_TRAIL["block_id"] = None
+    _SAGE_TRAIL["running"] = None
     _SAGE_TRAIL["live_id"] = None
 
 
@@ -3366,7 +3370,12 @@ def _sage_trail_live_html() -> str:
     else:
         children = list(reversed(kept))
 
-    hidden = len(items) - len(children)
+    # The "still running" notice goes after the newest card -- the bottom of
+    # the box, where the reader is looking -- and is never in the fold.
+    if _SAGE_TRAIL.get("running"):
+        children.insert(0, _SAGE_TRAIL["running"])
+
+    hidden = len(items) - len(children) + (1 if _SAGE_TRAIL.get("running") else 0)
     # Last child, which is the TOP of the box in both layouts -- above the
     # oldest card that is still shown, where the missing ones would be.
     if hidden > 0:
@@ -3487,6 +3496,42 @@ def _sage_trail_notice(html: str, transient: bool = False) -> bool:
         return True
     _sage_trail_fallback()
     return False
+
+
+_SAGE_RUNNING_MARK = "sage-running-notice"
+
+
+def _sage_running_notice(seconds) -> None:
+    """While a command runs, its elapsed time at the bottom of the live panel,
+    under the newest card; gone when it ends.
+
+    Called from a background thread by sage_kernel_backend (RUNNING_HOOK) while
+    the kernel's main thread runs the command, so it only updates the existing
+    live view: nothing else touches the trail until the command returns. It
+    goes through the ORIGINAL display(): during the command the patched one
+    captures displays into the script's own output.
+    """
+    if not _SAGE_TRAIL["on"] or _SAGE_TRAIL["live_id"] is None:
+        return
+    _SAGE_TRAIL["running"] = None
+    if seconds is not None:
+        m, sec = divmod(int(seconds), 60)
+        took = f"{m} min {sec:02d} s" if m else f"{sec} s"
+        _SAGE_TRAIL["running"] = (
+            f"<div class='{_SAGE_RUNNING_MARK}' style='color:#555; background:#f3f6fa; "
+            f"padding:6px 12px; border-left:3px solid #7a9cc6; margin:6px 0; "
+            f"font-family:-apple-system,sans-serif; font-size:13px; line-height:1.4'>"
+            f"\u23f3 Still running: {took}. This step's output appears when it "
+            f"finishes.</div>")
+    try:
+        import sage_kernel_backend as _skb
+        from IPython.display import HTML
+        show = _skb._ORIG_DISPLAY
+        if show is None:
+            from IPython.display import display as show
+        show(HTML(_sage_trail_live_html()), display_id=_SAGE_TRAIL["live_id"], update=True)
+    except Exception:                                            # noqa: BLE001
+        pass
 
 
 def _sage_trail_add(html: str, live: bool = True) -> bool:

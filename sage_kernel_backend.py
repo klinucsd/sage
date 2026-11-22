@@ -69,6 +69,66 @@ _DUNDER_STREAM = re.compile(r"\bsys\.__(stdout|stderr)__\b")
 # between capturing into the current run's list and passing through.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# "Still running" notice
+#
+# A command's output reaches the cell only when it ends, so a script that runs
+# for minutes -- a model download, a CPU prediction -- leaves the cell looking
+# stuck: observed 2026-11-21, a 12-minute CDeep3M prediction showed nothing
+# but its tool card, and the reader went to a terminal to check it was alive.
+# While a command runs, a background thread calls RUNNING_HOOK(seconds) every
+# RUNNING_EVERY seconds once it has run RUNNING_AFTER seconds, and
+# RUNNING_HOOK(None) when it ends. sage_magic sets the hook; it shows the
+# elapsed time in the live panel. The command itself is untouched.
+# ---------------------------------------------------------------------------
+
+RUNNING_HOOK = None
+RUNNING_AFTER = 20
+RUNNING_EVERY = 5
+
+
+class _Running:
+    def __enter__(self):
+        self._hook, self._shown, self._thread = RUNNING_HOOK, False, None
+        if self._hook is None:
+            return self
+        import contextvars
+        import threading
+        import time
+        self._stop = threading.Event()
+        t0 = time.monotonic()
+
+        def loop():
+            if self._stop.wait(RUNNING_AFTER):
+                return
+            while not self._stop.is_set():
+                try:
+                    self._hook(time.monotonic() - t0)
+                    self._shown = True
+                except Exception:                                # noqa: BLE001
+                    pass
+                if self._stop.wait(RUNNING_EVERY):
+                    return
+
+        # The copied context carries the cell's parent header, so the update
+        # lands in this cell's output.
+        self._thread = threading.Thread(target=contextvars.copy_context().run, args=(loop,),
+                                        name="sage-running", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        if self._thread is not None:
+            self._stop.set()
+            self._thread.join(timeout=5)
+            if self._shown:
+                try:
+                    self._hook(None)
+                except Exception:                                # noqa: BLE001
+                    pass
+        return False
+
+
 _ACTIVE_CAPTURE: list | None = None
 _ORIG_DISPLAY = None
 
@@ -202,7 +262,8 @@ class KernelShellBackend(LocalShellBackend):
         bare **kwargs here would make the execute tool refuse the agent's
         timeout call. See `_execute` for why the value is ignored in-kernel.
         """
-        resp = self._execute(command, timeout=timeout, **kwargs)
+        with _Running():
+            resp = self._execute(command, timeout=timeout, **kwargs)
         try:
             if resp.output and "\x1b" in resp.output:
                 resp.output = _ANSI.sub("", resp.output)

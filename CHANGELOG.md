@@ -7,6 +7,18 @@ All notable changes to the Sage Docker image are documented here.
 
 ---
 
+## v1.5.11-rc6 — 2026-11-21
+
+- **The "Still running" line is worded for any step**: "⏳ Still running: 9 min 15 s. This step's output appears when it finishes." It appears for every step that runs longer than 20 seconds, in any notebook; rc4 and rc5 gave downloads and predictions as examples.
+
+## v1.5.11-rc5 — 2026-11-21
+
+- **The "Still running" line moved to the end of the progress panel**, under the step that is running. In rc4 it sat above the panel, at the top of the cell, where a reader watching the newest step did not see it (reported by Kai on the CDeep3M test).
+
+## v1.5.11-rc4 — 2026-11-21
+
+- **A long-running step no longer looks stuck.** A script's output reaches the cell only when the script ends, so a 12-minute CDeep3M prediction on a CPU pod showed nothing but its tool card, and the reader opened a terminal to check it was still alive. Once a command has run for 20 seconds, a line above the live panel now says "⏳ Still running: 7 min 30 s", updated every 5 seconds, and disappears when the command ends; it is not kept in the saved notebook's fold. A background thread in `sage_kernel_backend` drives it through the original `display()`, so the script's own output and figures are captured exactly as before.
+
 ## v1.5.11-rc3 — 2026-11-17
 
 - **The answer no longer reports ARGUS's internal self-check.** The system prompt ends with a closing audit asking the agent to confirm every edit-and-retry was recorded in a skill's Learnings.md. Agents reported its outcome to the reader, e.g. "Both scripts ran cleanly on the first attempt — no edit-and-retry cycles, so no Learnings.md entry is needed" as the first line of an answer. The prompt now says the audit is internal and the report answers the user's question only.
